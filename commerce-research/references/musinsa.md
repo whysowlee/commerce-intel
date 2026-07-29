@@ -1,0 +1,302 @@
+# 무신사 어댑터
+
+조사 시점 **2026-07-29**. 표시가 "확인"인 항목은 그날 실제 응답으로 검증했고,
+"미검증"은 확인하지 못한 것이다. **미검증 항목을 사실처럼 쓰지 마라.** 런타임에 직접 보고 판단한다.
+
+## 접근 정책
+
+`https://www.musinsa.com/robots.txt` (파일 표기 Last Updated 2026.05.13) 확인:
+
+- `User-agent: *` → `Disallow: /` (일반 봇 전면 차단)
+- **`Claude-User`, `Claude-SearchBot` → `Allow: /`** — 전면 허용
+- `ClaudeBot` → `Allow: /` 단 `/auth/ /fashiontalk/ /festival/ /like/ /mypage/ /showcase/` 제외
+
+정직한 신원으로 접근하면 사이트가 밝힌 정책 안에 있다.
+**User-Agent를 다른 것으로 위장하지 마라.** 403/429가 나오면 멈춘다.
+
+## 수집 경로 두 가지
+
+무신사는 페이지마다 서버 렌더 여부가 다르다. 화면만 읽으면 랭킹·브랜드 상품이 안 잡힌다.
+
+| 페이지 | 화면(HTML)에 상품이 있나 |
+|---|---|
+| 카테고리 `/category/{code}/goods` | **있다** — 목록이 서버 렌더된다 (확인) |
+| 상품 상세 `/products/{no}` | **있다** — 가격·할인율·평점·후기수 (확인) |
+| 브랜드 `/brand/{slug}` | **없다** — 헤더만 나오고 상품 0개 (확인) |
+| 랭킹 `/main/musinsa/ranking` | **없다** — 껍데기만 (확인) |
+
+그래서 **경로 A(사이트가 자기 화면을 그릴 때 쓰는 JSON)를 먼저 쓰고,
+응답 모양이 이 문서와 다르면 경로 B(화면 읽기)로 내려간다.** 어느 쪽을 썼는지
+`meta.notes`에 적어 둔다. 두 경로 모두 비로그인으로 200을 확인했다.
+
+## 죽은 URL — 쓰지 마라 (확인)
+
+옛 문서에 흔히 나오지만 지금은 전부 실패한다.
+
+- `store.musinsa.com/app/contents/bestranking` → 404
+- `search.musinsa.com/ranking/best` → 호스트 응답 없음
+- `/brands/{slug}` (복수형) → 308로 `/brand/{slug}`로 넘어간다. **정식은 단수 `/brand/`**
+- `/main/ranking`, `/ranking`, `/rank` → 308 또는 404
+
+## 1. 브랜드 전 상품 (스토리 A)
+
+브랜드 페이지는 껍데기라서 목록 엔드포인트를 쓴다. (확인)
+
+```
+GET https://api.musinsa.com/api2/dp/v2/plp/goods
+    ?brand={slug}&gf=A&sortCode=POPULAR&size=60&page=1&caller=BRAND
+```
+
+- **`caller`가 없으면 400**이다 (`DISPLAY_000_0001 잘못된 파라미터 요청입니다`).
+  브랜드는 `BRAND`, 카테고리는 `CATEGORY`. 바꿔 넣어도 400.
+- `gf`는 성별 필터: `A` 전체 / `M` 남성 / `F` 여성. 전수 수집이면 `A`.
+- 한 페이지 60개. 응답의 `totalCount`를 `meta.source_total`에 넣는다.
+- 다음 페이지는 응답의 `pagination.nextPageUrl`을 **그대로 따라간다.**
+  이 URL에 `hmacId=` 서명이 붙어 있어서 직접 조립하는 것보다 안전하다.
+- 인사일런스(`insilence`) 실측: `totalCount=564, totalPages=10, size=60`.
+
+**브랜드 slug 찾는 법**: 추측하지 마라. 어느 상품 목록 응답이든 항목에
+`brandLinkUrl`(`https://www.musinsa.com/brand/{slug}`)과 `brandName`(한글명)이 들어 있다.
+브랜드명을 사이트 검색에 넣어 상품 하나를 찾은 뒤 거기서 slug를 뽑는다.
+
+## 2. 카테고리 (스토리 B)
+
+```
+https://www.musinsa.com/category/{code}/goods?gf=A            # 화면 (상품까지 렌더됨)
+GET https://api.musinsa.com/api2/dp/v2/plp/goods?category={code}&gf=A&size=60&page=1&caller=CATEGORY
+```
+
+- `/category/{code}` 로만 요청하면 307로 `/category/{code}/goods?gf=A`로 넘어간다.
+- 카테고리 코드는 **6자리**(대분류 3 + 소분류 3).
+- 확인된 대분류: `001` 상의 · `002` 아우터 · `003` 바지 · `004` 가방 ·
+  `100` 원피스/스커트 · `103` 신발 · `104` 뷰티 · `120` 모자 (중고는 `109xxx`)
+- 확인된 소분류: **`003002` 데님팬츠** (`totalCount≈24,673`, 412페이지).
+  **나머지 소분류 코드는 미검증** — 사이트 네비게이션에서 직접 읽어라.
+- 정렬은 쿼리로 먹는다(`sortCode=NEW` 등). 다만 **모르는 값을 넣어도 400을 주지 않고
+  조용히 기본값으로 돌아간다.** 정렬을 바꿨으면 결과가 실제로 달라졌는지 확인해라.
+  `POPULAR` `NEW` `LOW_PRICE` `REVIEW`가 서로 다른 결과를 내는 것까지만 확인했다.
+
+**카테고리 순회·필터 (2026-07-29 확인)**:
+
+- **page≥2 URL을 직접 조립하면 403이다** (`잘못된 접근입니다`). 브랜드와 마찬가지로
+  응답의 `pagination.nextPageUrl`(hmacId 서명 포함)을 **그대로 따라간다** — 체인으로는
+  200이다. `size=100`도 동작한다
+- 화면 URL(`/category/{code}/goods`)은 `page` 파라미터를 **무시하고 항상 1페이지를
+  렌더한다**(무한 스크롤). 브라우저 없는 환경에서 카테고리 전량 수집은 경로 A 체인이 유일하다
+- **가격 필터 `minPrice`/`maxPrice` 동작 확인** — 총계가 실제로 줄어든다
+  (데님팬츠 10~20만원 5,464 / 남성+10~20만원 2,833 실측). 범위 협의의 좁힘 축으로 쓴다
+- 성별 주의: 남(14,275)+여(14,767) > 전체(24,692) — **유니섹스가 양쪽에 중복 집계**된다.
+  성별 축만으로는 절반이 되지 않는다
+- **`nextPageUrl`은 데이터가 소진된 뒤에도 계속 온다** (2026-07-29 실측: 3,460개 완집 후에도
+  빈 페이지가 이어짐 — 200페이지 상한이 없었으면 무한 루프). 리뷰의 `totalPages` 함정과
+  같은 규칙을 적용해라: **빈 결과가 나오면 순회를 끝낸다.** `hasNext`·`nextPageUrl` 존재를
+  종료 판정에 쓰지 마라
+
+데님팬츠 24,673개(재조회 24,692)는 그대로 감당이 안 된다. §SKILL.md 스토리 B 2번대로
+규모를 먼저 알리고 범위를 좁힐지 물어라.
+
+## 3. 랭킹 (스토리 C)
+
+```
+GET https://api.musinsa.com/api2/hm/web/v5/pans/ranking/sections/{sectionId}
+    ?storeCode=musinsa&gf=A&ageBand=AGE_BAND_ALL&period=REALTIME&categoryCode={대분류}&page=1
+```
+
+- **한 번에 102개가 온다. top 100은 1페이지로 끝난다.** (확인)
+  `hasNext=false`로 오지만 `link.next`에 101위 이후를 이어 볼 URL이 들어 있다.
+- `sectionId` = 랭킹 테마 (확인): `199` 전체 · `200` NEW · `201` 급상승 · `202` 캐주얼 ·
+  `203` 스트리트 · `204` 워크웨어 · `205` 프레피 · `206` 로맨틱 · `207` 걸코어 ·
+  `209` 미니멀 · `210` 시크 · `301` 레트로 · `1770` 부티크 · `1827` USED ·
+  `2075` 오프라인 · `2210` 아울렛 · `2211` 키즈
+- **"바지 랭킹" = `sections/199` + `categoryCode=003`** (확인, 102건 반환)
+- `period`: `REALTIME` `DAILY` `WEEKLY` `MONTHLY` (확인). 화면 표기는 "실시간/1일/1주/1개월"이다.
+  사용자가 "주간 랭킹"이라고 하면 `WEEKLY`로 옮긴다.
+- `ageBand`: `AGE_BAND_ALL|MINOR|20|25|30|35|40` · `soldOut`: `true`(기본, 품절 포함)/`false`
+- `1770`/`2210`/`2211`은 `categoryCode` 대신 `contentsId`를 쓰는 다른 체계다. **미검증.**
+
+### 랭킹의 시간 특성 (확인, 2026-07-29)
+
+- **현행 랭킹은 과거로 소급 조회할 수 없다.** `date`/`baseDate`/`targetDate` 등을 넣어
+  응답을 대조한 결과 전부 무시된다(미지 파라미터와 응답이 바이트 수준 동일).
+  `period`는 시점이 아니라 **트레일링 윈도우**다 — 기준일 지정 불가
+- 갱신 주기(응답 `information.updatedAt` 실측): `REALTIME`은 약 30분 주기 갱신
+  (뉴스룸도 30분 단위 명시), `DAILY`/`WEEKLY`/`MONTHLY`는 **매일 새벽 04:4x에 하루
+  1회 배치 생성**. 윈도우 경계가 달력일인지 24시간인지는 미검증
+- 축적 주기에 주는 의미: REALTIME이 30분마다 갱신되므로 **30분에 1번 축적이 원본
+  갱신 주기와 정확히 맞는다.** 더 자주 찍어도 같은 데이터를 중복 수집할 뿐이다.
+  DAILY/WEEKLY/MONTHLY 기준 축적이라면 하루 1회(새벽 05시 이후)면 충분하다
+
+참고: 무신사에 월간 랭킹 아카이브 API가 존재하지만
+(`api2/dp/v1/ranking-archive/goods?yearMonth=YYYYMM`, 2024.01~직전 완결월, TOP30 고정)
+**쓰지 않는다 — 2026-07-29 결정.** 과거 데이터는 30분 축적분만 쓴다.
+이 줄은 나중에 아카이브를 재발견해서 다시 붙이는 일을 막으려고 남겨 둔다.
+
+### 랭킹에만 있는 실시간 지표 (확인)
+
+`info.additionalInformation[]`에 문자열로 들어온다. 바지 랭킹 102건 실측 분포:
+`"N명이 보는 중"` 82건, `"N천명이 보는 중"` 4건, `"N명이 구매 중"` 12건, 없음 16건.
+`image.labels`에는 누적 판매 배지가 온다(예: `{"text":"판매 5.5천개"}`).
+
+숫자로 옮길 때: `천` = ×1000, `만` = ×10000 (`"1.2천명"` → `1200`).
+**이건 사이트가 반올림해 보여준 값이다.** 그대로 담되 정밀한 수치인 양 다루지 마라.
+**이 지표들은 랭킹 목록에만 있고 상품 상세에는 없다.**(확인 — PDP에서 0건)
+
+## 4. 상품 상세
+
+`https://www.musinsa.com/products/{goodsNo}` (확인)
+
+비로그인에서 실제로 나오는 것:
+
+| 항목 | 나오나 | 필드 / 표기 |
+|---|---|---|
+| 평점 | 나온다 | `goodsReview.satisfactionScore` — **0~5 스케일** |
+| 후기 수 | 나온다 | `goodsReview.totalCount` |
+| 정가/판매가/할인율 | 나온다 | `normalPrice` / `salePrice`(=`finalPrice`) / `discountRate` |
+| 품절 | 나온다 | `isSoldOut`, `isSoonOutOfStock`(품절임박), `isRestock` |
+| 카테고리 경로 | 나온다 | `baseCategoryFullPath` |
+| 핏·촉감·신축성 | 나온다 | `goodsMaterial` (스토리 B 속성 분류에 쓸 수 있다) |
+| **상품 좋아요(하트)** | **나온다** | 구매하기 버튼 옆 숫자 (예: `84`) — **수집은 아래 배치 API로 한다** |
+| **조회수** | **나온다 — 단 구간 표기** | 정보 탭 표: `조회수  300회 이상 (최근 1개월)` |
+| 브랜드 좋아요 | 나온다 | 브랜드명 옆 (예: `8.9만`) — **상품 지표가 아니다** |
+| 누적 판매량 | 플래그만 확인 | `isCumulativePurchaseShow: true`. 숫자 출처 미검증 |
+
+이 값들은 **서버 렌더 HTML에 없고 화면에서 따로 불러온다.** 원본 HTML만 훑고
+"미노출"이라고 판정하면 안 된다(1차 조사가 실제로 그 실수를 했다).
+**하트는 아래 배치 API로 해결됐고(2026-07-29), 조회수 구간 표기의 엔드포인트만
+미발견이다** — 조회수는 브라우저로 화면을 읽는 환경에서만 수집한다.
+
+### 상품 하트 배치 API (2026-07-29 확인)
+
+```
+POST https://like.musinsa.com/like/api/v2/liketypes/goods/counts
+Content-Type: application/json
+{"relationIds": [6832635, 6724257]}
+→ data.contents.items[]: {likeType: "GOODS", relationId, count, liked}
+```
+
+- 비로그인 200. **여러 상품을 한 요청으로 조회한다** (100개 동시 확인, 상한 미검증).
+  상품마다 상세를 열 필요가 없다 — 564개 브랜드도 요청 6번이면 끝난다
+- 응답에 `likeType: "GOODS"`가 명시돼 함정 2(하트 3종 혼동)를 구조적으로 피한다
+- 같은 호스트의 `/like/api/v2/members/liketypes/...`(등록/해제)는 상태를 바꾸는
+  조작이므로 **쓰지 않는다**(스킬 비범위)
+
+### 함정 1 — 조회수를 정수로 담지 마라
+
+무신사 조회수는 **`"300회 이상 (최근 1개월)"`처럼 구간으로 표기된다.**
+`view_count: 300`으로 담으면 없는 정밀도를 만들어내는 것이고, 그 값으로 순위를 매기면
+리포트가 조용히 틀린다.
+
+**`view_count`는 `null`로 두고, 원문을 `view_count_display`에 문자열 그대로 담는다.**
+`build_report.py`가 문구 그대로 싣고 순위 차트에서는 뺀다.
+둘 다 채우면 `validate_data.py`가 경고한다.
+
+### 함정 2 — 하트가 세 종류다
+
+한 화면에 하트 숫자가 여러 개 뜬다. 셋은 완전히 다른 값이다.
+
+| 위치 | 무엇 | 담을 곳 |
+|---|---|---|
+| 구매하기 버튼 옆 (예: `84`) | **상품** 좋아요 | `like_count` |
+| 브랜드명 옆 (예: `8.9만`) | **브랜드** 좋아요 | 상품 레코드에 담지 마라 |
+| 스냅 영역 | 스냅 게시물 좋아요 | 담지 마라 |
+
+브랜드 하트(8.9만)를 상품 하트로 읽으면 모든 상품이 같은 값을 갖게 된다.
+**값이 상품마다 다른지 두어 개 비교해서 확인해라.**
+
+### 함정 3 — 스냅 지표를 상품 지표로 읽지 마라
+
+상품 상세 HTML을 `viewCount` / `likeCount`로 찾으면 값이 잡힌다. 그런데 그건
+`snapReviews.aggregations`의 값, 즉 **스냅(Snap) 게시물의 조회수·좋아요다.**
+상품의 지표가 아니다. 상품 조회수는 위의 구간 표기 쪽이다.
+
+## 5. 리뷰
+
+> **스토리 B는 리뷰 본문을 수집하지 않는다(2026-07-29 결정).** 만족/불만족 판단은
+> 노출된 후기 수·평균 평점만 쓴다. 아래는 검증된 사실의 기록으로 남긴다 —
+> 후기 **총 개수**만 필요할 때는 count 엔드포인트가 여전히 유용하다.
+
+```
+GET https://goods.musinsa.com/api2/review/v1/view/list?goodsNo={no}&page={n}&pageSize=20
+GET https://goods.musinsa.com/api2/review/v1/view/list/count?goodsNo={no}   # 총 개수만
+```
+
+비로그인 200 확인. 지켜야 할 것 두 가지:
+
+1. **`pageSize` 상한은 20이다.** 21 이상은 400을 준다 (21·25·30·50·100 전부 확인).
+2. **`totalPages`를 믿지 마라.** 212건 / `totalPages=22`로 오지만 21페이지에서 2건,
+   22페이지는 0건이었다. **빈 배열이 나올 때까지** 돌아서 끝을 판정해라.
+
+정렬 `sort`는 `goods_est_asc`(평점 낮은 순)만 반영을 확인했다. 다른 값은 **에러 없이
+기본 정렬로 조용히 돌아간다.** 전수 수집이면 정렬을 건드릴 이유가 없다.
+
+리뷰 항목 필드(확인): `no`, `content`, `grade`(1~5), `createDate`(ISO+09:00),
+`goodsOption`(구매 옵션), `likeCount`, `images[]`, `typeName`(일반/스타일),
+`userProfileInfo`(닉네임·성별·키·몸무게 등), `reviewSurveySatisfaction.questions[]`
+(예: `{attribute:"사이즈", answers:[{answerShortText:"정사이즈"}]}`).
+
+`reviewSurveySatisfaction`은 구조화된 답이라 만족/불만족 정리에 특히 쓸 만하다.
+사용자 신체정보까지 오지만 **리포트에 개인을 특정할 수 있는 정보를 싣지 마라.**
+인용은 본문만 쓰고 닉네임은 옮기지 않는다.
+
+총계와 실제 수집 수가 조금 어긋날 수 있다(212 vs 202 실측). 비공개/삭제 리뷰로 보이며
+**원인 미검증**이다. 차이가 나면 `meta.notes`에 적는다.
+
+## 필드 매핑
+
+### 목록(PLP) → 데이터 계약
+
+| 계약 | 무신사 |
+|---|---|
+| `product_id` | `goodsNo` |
+| `name` | `goodsName` |
+| `url` | `goodsLinkUrl` |
+| `image_url` | `thumbnail` |
+| `brand` | `brandName` (한글명. slug는 `brand`) |
+| `price_original` | `normalPrice` |
+| `price_sale` | `price` 또는 `finalPrice` |
+| `discount_rate` | `saleRate` 또는 `finalDiscount` |
+| `review_count` | `reviewCount` |
+| `rating` | **`reviewScore ÷ 20`** — 목록은 0~100 스케일이다 |
+| `sold_out` | `isSoldOut` |
+| `view_count` | **항상 `null`** — 무신사는 구간으로만 보여준다 |
+| `view_count_display` | 상품 상세의 `"300회 이상 (최근 1개월)"` 문구 그대로 |
+| `like_count` | 하트 배치 API `liketypes/goods/counts`의 `count` (브랜드 하트 아님) |
+
+`isAd: true`는 광고 상품이다. 전수 수집에는 넣되, 랭킹 해석에 쓸 때는 구분해 둔다.
+
+### 랭킹 → 데이터 계약
+
+| 계약 | 무신사 |
+|---|---|
+| `rank` | `image.rank` |
+| `product_id` | `id` |
+| `name` / `brand` | `info.productName` / `info.brandName` |
+| `price_sale` / `discount_rate` | `info.finalPrice` / `info.discountRatio` |
+| `price_original` | **랭킹 목록 미노출** — `info.strikethrough`는 가격이 아니라 **불리언**이다(2026-07-29 실측, 이전 매핑은 오류). 노출된 `finalPrice`·`discountRatio`에서 산술 복원해 담고 그 사실을 `meta.notes`에 남긴다. 할인 0이면 `finalPrice`와 같다 |
+| `url` | `onClick.url` |
+| `viewers_now` | `info.additionalInformation`의 `"N명이 보는 중"` |
+| `buyers_now` | `info.additionalInformation`의 `"N명이 구매 중"` |
+| `purchase_count` | `image.labels`의 `"판매 N개"` 배지가 있을 때만 |
+
+### 스케일 주의
+
+`rating`은 계약상 **5점 만점**이다. 목록의 `reviewScore`는 100점, 상세의
+`satisfactionScore`는 5점이다. 섞어 담으면 `validate_data.py`가 "평점이 0~5 범위를
+벗어난다"고 경고한다. 그 경고가 뜨면 스케일 변환을 빠뜨린 것이다.
+
+## 런타임에 직접 확인할 것
+
+이 문서가 답을 못 주는 것들이다. 필요해지면 그때 화면에서 확인해라.
+
+1. ~~상품 좋아요를 주는 엔드포인트~~ — **해결(2026-07-29)**: §상품 하트 배치 API.
+   **조회수** 엔드포인트만 여전히 미발견 — 브라우저로 상세 화면을 읽는 환경에서만 수집한다
+2. **조회수 구간의 계단** — `300회 이상` 말고 어떤 값들이 나오는지(100/500/1000…),
+   "최근 1개월"이 고정인지. 여러 상품을 비교해 확인해라
+3. ~~상품 좋아요가 목록(PLP) 응답에도 있는지~~ — **해결(2026-07-29)**: 배치 API가 있어
+   목록·상세 어느 쪽도 열 필요 없다
+4. 상품 상세의 **누적 판매량 표시** — 플래그는 켜져 있는데 숫자 출처를 못 찾았다
+2. 정렬 드롭다운의 라벨과 `sortCode` 매핑 — 잘못된 값이 조용히 폴백되므로 응답만으론 검증 불가
+3. 6자리 소분류 카테고리 코드 (`003002` 외 전부 미검증)
+4. 목록 화면의 페이지네이션 UX(무한스크롤인지 더보기인지) — 경로 B로 내려갈 때만 필요
+5. 부티크/아울렛/키즈 랭킹의 `contentsId` 파라미터 체계
+6. 깊게 스크롤할 때 로그인 모달이 뜨는지 (조사 범위에선 안 떴다)

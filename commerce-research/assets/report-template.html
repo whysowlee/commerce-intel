@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>리포트 구조 템플릿</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb;
+  --text: #0b0b0b; --text-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --baseline: #c3c2b7; --border: rgba(11,11,11,0.10);
+  --seq: #2a78d6;
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a;
+  --series-4: #eda100; --series-5: #e87ba4;
+  --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+  --up: #006300; --down: #d03b3b;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19;
+    --text: #ffffff; --text-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --baseline: #383835; --border: rgba(255,255,255,0.10);
+    --seq: #3987e5;
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70;
+    --series-4: #c98500; --series-5: #d55181;
+    --up: #0ca30c;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19;
+  --text: #ffffff; --text-2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --baseline: #383835; --border: rgba(255,255,255,0.10);
+  --seq: #3987e5;
+  --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70;
+  --series-4: #c98500; --series-5: #d55181;
+  --up: #0ca30c;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 32px 20px 96px;
+  background: var(--page); color: var(--text);
+  font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+main { max-width: 1180px; margin: 0 auto; }
+h1 { font-size: 26px; margin: 0 0 14px; letter-spacing: -0.01em; }
+h2 { font-size: 18px; margin: 0 0 12px; }
+h3 { font-size: 14px; margin: 0 0 8px; color: var(--text-2); font-weight: 600; }
+h4 { font-size: 14px; margin: 0 0 6px; }
+a { color: inherit; text-decoration: none; }
+a:hover { text-decoration: underline; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em;
+  background: var(--grid); padding: 1px 5px; border-radius: 4px; }
+
+header { background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; padding: 20px 22px; margin-bottom: 20px; }
+.meta { display: flex; flex-wrap: wrap; gap: 8px 32px; margin: 0; }
+.meta-item dt { font-size: 12px; color: var(--muted); margin: 0; }
+.meta-item dd { margin: 2px 0 0; font-size: 14px; font-variant-numeric: tabular-nums; }
+
+.banner { margin-top: 14px; padding: 10px 14px; border-radius: 8px; font-size: 14px;
+  border-left: 3px solid var(--muted); background: var(--page); }
+.banner-critical { border-left-color: var(--critical); }
+.banner-warning { border-left-color: var(--warning); }
+.banner-info { border-left-color: var(--series-1); }
+
+.kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px; margin-bottom: 24px; }
+.kpi { background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: 14px 16px; }
+.kpi-label { font-size: 12px; color: var(--muted); }
+.kpi-value { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; margin-top: 2px; }
+.kpi-note { font-size: 12px; color: var(--text-2); margin-top: 2px; }
+
+section { background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; padding: 20px 22px; margin-bottom: 20px; }
+.section-note { font-size: 13px; color: var(--muted); margin: -6px 0 14px; }
+.empty { color: var(--muted); font-size: 14px; margin: 4px 0; }
+
+.chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(440px, 1fr)); gap: 26px; }
+.chart-block { min-width: 0; }
+.mini-list { list-style: none; margin: 4px 0 0; padding: 0; }
+.mini-list li { padding: 5px 0; border-bottom: 1px solid var(--grid); font-size: 14px; }
+.mini-list li:last-child { border-bottom: 0; }
+.mini-list strong { font-variant-numeric: tabular-nums; margin-right: 8px; }
+.chart { width: 100%; height: auto; overflow: visible; }
+.bar { fill: var(--seq); }
+.bar:hover { fill-opacity: 0.82; }
+.bar-label { font-size: 11px; fill: var(--text-2); }
+.bar-value { font-size: 11px; fill: var(--text-2); font-variant-numeric: tabular-nums; }
+.axis { font-size: 10px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+.grid { stroke: var(--grid); stroke-width: 1; }
+.baseline { stroke: var(--baseline); stroke-width: 1; }
+.line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.dot { stroke: var(--surface); stroke-width: 2; }
+.series-label { font-size: 11px; fill: var(--text-2); }
+
+.table-tools { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.filter { flex: 0 1 300px; padding: 7px 10px; font: inherit; font-size: 13px;
+  border: 1px solid var(--border); border-radius: 7px;
+  background: var(--page); color: var(--text); }
+.table-count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
+table.grid { border-collapse: collapse; width: 100%; font-size: 13px; }
+table.grid th, table.grid td { padding: 8px 10px; text-align: left;
+  border-bottom: 1px solid var(--grid); vertical-align: middle; }
+table.grid thead th { position: sticky; top: 0; background: var(--surface);
+  font-size: 12px; color: var(--text-2); font-weight: 600; white-space: nowrap; z-index: 1; }
+table.grid th[data-sort]:not([data-sort="none"]) { cursor: pointer; user-select: none; }
+table.grid th[data-sort]:not([data-sort="none"]):hover { color: var(--text); }
+table.grid th.sorted-asc::after { content: " ▲"; font-size: 9px; }
+table.grid th.sorted-desc::after { content: " ▼"; font-size: 9px; }
+table.grid tbody tr:hover { background: var(--page); }
+.col-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.col-name { min-width: 240px; max-width: 380px; }
+.col-img { width: 64px; }
+.thumb { width: 52px; height: 66px; object-fit: cover; border-radius: 5px;
+  background: var(--grid); display: block; }
+.thumb-missing { background: repeating-linear-gradient(45deg, var(--grid),
+  var(--grid) 4px, var(--surface) 4px, var(--surface) 8px); }
+.na { color: var(--muted); font-size: 12px; }
+.approx { color: var(--text-2); font-size: 12px; }
+.price-sale { font-weight: 600; }
+.price-was { color: var(--muted); text-decoration: line-through; font-size: 12px; }
+.tag { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 4px;
+  background: var(--grid); color: var(--text-2); margin-left: 4px; white-space: nowrap; }
+.tag-out { background: var(--grid); color: var(--text-2); }
+.tag-off { background: color-mix(in srgb, var(--critical) 16%, transparent); color: var(--critical); }
+.delta-up { color: var(--up); } .delta-down { color: var(--down); } .delta-flat { color: var(--muted); }
+
+#tip { position: fixed; z-index: 20; pointer-events: none; opacity: 0;
+  transition: opacity .1s; background: var(--text); color: var(--surface);
+  font-size: 12px; padding: 5px 9px; border-radius: 6px; max-width: 260px; }
+footer { max-width: 1180px; margin: 0 auto; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+<!-- ─────────────────────────────────────────────────────────────────────
+     코드 실행이 안 되는 환경에서 리포트를 직접 쓸 때 쓰는 뼈대다.
+     이 파일은 build_report.py가 뽑아내므로 스타일이 실제 리포트와 어긋나지 않는다.
+     아래 블록을 필요한 것만 골라 복사해 채우고, 나머지는 지운다.
+
+     지켜야 할 것:
+     - 사이트가 안 준 값은 <span class="na">미노출</span>. 숫자를 지어내지 않는다.
+     - 구간 표기("300회 이상 (최근 1개월)")는 <span class="approx">문구 그대로</span>.
+     - 만족/불만족 판단은 노출된 평점·후기 수만 쓴다. 리뷰 본문을 해석하지 않는다.
+     ────────────────────────────────────────────────────────────────── -->
+
+<!-- [1] 헤더 — 항상 넣는다 -->
+<header>
+  <h1>대상 + 스토리 이름</h1>
+  <dl class="meta">
+    <div class="meta-item"><dt>사이트</dt><dd>무신사</dd></div>
+    <div class="meta-item"><dt>수집 시각</dt><dd>2026-00-00 00:00:00</dd></div>
+    <div class="meta-item"><dt>수집 항목</dt><dd>0건</dd></div>
+    <div class="meta-item"><dt>지표 노출률</dt><dd>review_count 100% · rating 100%</dd></div>
+    <div class="meta-item"><dt>이 사이트가 안 주는 지표</dt><dd>view_count</dd></div>
+  </dl>
+  <!-- 부분 수집·구조 변경 의심일 때만 남긴다. 아니면 지운다. -->
+  <div class="banner banner-critical"><strong>부분 수집 데이터다.</strong> 중단 사유를 여기 쓴다.</div>
+  <div class="banner banner-warning">필수 필드 결측률 0.0% — 기준 5%를 넘었다</div>
+  <div class="banner banner-info">스냅샷이 1개라 변화 분석을 하지 않았다.</div>
+</header>
+
+<!-- [2] KPI — 4~6개가 적당하다 -->
+<div class="kpi-row">
+  <div class="kpi">
+    <div class="kpi-label">상품 수</div>
+    <div class="kpi-value">0</div>
+    <div class="kpi-note">부연</div>
+  </div>
+</div>
+
+<!-- [3] 차트가 들어갈 자리.
+     손으로 SVG를 그리기 어려우면 차트를 빼고 표로만 간다 — 그게 정직하다.
+     비교 항목이 2개 이하면 막대그래프 대신 이 목록을 쓴다. -->
+<section>
+  <h2>플랫폼별 인기</h2>
+  <p class="section-note">사이트가 노출하는 지표만 싣는다. 미노출 지표는 만들지 않는다.</p>
+  <ul class="mini-list">
+    <li><strong>11,951</strong> 상품명 <span class="na">브랜드</span></li>
+  </ul>
+</section>
+
+<!-- [4] 상품 표 — 행마다 이 구조를 반복한다.
+     data-k는 정렬 키다. 값이 없으면 빈 문자열로 두면 정렬 시 뒤로 밀린다.
+     전수조사(스토리2) 표는 이미지 열(col-img)을 통째로 뺀다 — 1만 행 규모 대비. -->
+<section>
+  <h2>전 상품</h2>
+  <div class="table-tools">
+    <input class="filter" type="search" placeholder="상품명·브랜드로 거르기" data-for="t-main">
+    <span class="table-count" id="t-main-count">0행</span>
+  </div>
+  <div class="table-wrap">
+    <table id="t-main" class="grid">
+      <thead>
+        <tr>
+          <th class="col-img" data-sort="none">이미지</th>
+          <th class="col-name" data-sort="text">상품명</th>
+          <th data-sort="text">브랜드</th>
+          <th class="col-num" data-sort="num">가격</th>
+          <th class="col-num" data-sort="num">후기</th>
+          <th class="col-num" data-sort="num">평점</th>
+          <th class="col-num" data-sort="num">조회수</th>
+          <th class="col-num" data-sort="num">좋아요</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="col-img" data-k=""><a href="#" target="_blank" rel="noopener"><img class="thumb"
+            src="https://" alt="" loading="lazy" referrerpolicy="no-referrer"></a></td>
+          <td class="col-name" data-k="상품명"><a href="#" target="_blank" rel="noopener">상품명</a>
+            <span class="tag tag-out">품절</span></td>
+          <td data-k="브랜드">브랜드</td>
+          <td class="col-num" data-k="97890"><span class="price-sale">97,890원</span><br>
+            <span class="price-was">139,900원</span> <span class="tag tag-off">30%</span></td>
+          <td class="col-num" data-k="212">212</td>
+          <td class="col-num" data-k="4.8">4.8</td>
+          <td class="col-num" data-k=""><span class="approx">300회 이상 (최근 1개월)</span></td>
+          <td class="col-num" data-k="">
+            <span class="na">미노출</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+</main>
+<footer>코드 실행이 없는 환경에서 이 구조를 따라 직접 채운다. 사이트가 안 준 값은 미노출로 두고 추정하지 않는다.</footer>
+<div id="tip" role="status"></div>
+<script>
+(function () {
+  var tip = document.getElementById('tip');
+  document.addEventListener('mouseover', function (e) {
+    var t = e.target.closest('[data-tip]');
+    if (!t) { tip.style.opacity = 0; return; }
+    tip.textContent = t.getAttribute('data-tip');
+    tip.style.opacity = 1;
+  });
+  document.addEventListener('mousemove', function (e) {
+    if (tip.style.opacity === '0' || tip.style.opacity === '') return;
+    var x = e.clientX + 14, y = e.clientY + 14;
+    if (x + tip.offsetWidth > window.innerWidth - 8) x = e.clientX - tip.offsetWidth - 14;
+    if (y + tip.offsetHeight > window.innerHeight - 8) y = e.clientY - tip.offsetHeight - 14;
+    tip.style.left = x + 'px'; tip.style.top = y + 'px';
+  });
+
+  document.querySelectorAll('table.grid thead th[data-sort]').forEach(function (th) {
+    if (th.dataset.sort === 'none') return;
+    th.addEventListener('click', function () {
+      var table = th.closest('table');
+      var idx = Array.prototype.indexOf.call(th.parentNode.children, th);
+      var asc = !th.classList.contains('sorted-asc');
+      table.querySelectorAll('th').forEach(function (o) {
+        o.classList.remove('sorted-asc', 'sorted-desc');
+      });
+      th.classList.add(asc ? 'sorted-asc' : 'sorted-desc');
+      var body = table.tBodies[0];
+      var rows = Array.prototype.slice.call(body.rows);
+      var numeric = th.dataset.sort === 'num';
+      rows.sort(function (a, b) {
+        var x = a.cells[idx].dataset.k, y = b.cells[idx].dataset.k;
+        if (x === '' && y === '') return 0;
+        if (x === '') return 1;           // 값 없는 행은 방향과 무관하게 뒤로
+        if (y === '') return -1;
+        if (numeric) return asc ? x - y : y - x;
+        return asc ? x.localeCompare(y, 'ko') : y.localeCompare(x, 'ko');
+      });
+      rows.forEach(function (r) { body.appendChild(r); });
+    });
+  });
+
+  document.querySelectorAll('.filter').forEach(function (input) {
+    var table = document.getElementById(input.dataset.for);
+    var counter = document.getElementById(input.dataset.for + '-count');
+    if (!table) return;
+    input.addEventListener('input', function () {
+      var q = input.value.trim().toLowerCase();
+      var shown = 0;
+      Array.prototype.forEach.call(table.tBodies[0].rows, function (row) {
+        var hit = !q || row.textContent.toLowerCase().indexOf(q) !== -1;
+        row.hidden = !hit;
+        if (hit) shown++;
+      });
+      if (counter) counter.textContent = shown + '행';
+    });
+  });
+})();
+</script>
+</body>
+</html>

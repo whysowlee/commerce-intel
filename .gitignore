@@ -4,6 +4,10 @@ node_modules/
 .env.*
 dist/
 build/
+tests/.work/
+data/
+output/
+description.md
 __pycache__/
 *.pyc
 .venv/
