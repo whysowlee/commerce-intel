@@ -224,6 +224,86 @@ def dist_chart(buckets, unit="개"):
     return "".join(parts)
 
 
+# 추이 요약 규칙 (2026-07-29 확정): 시점이 48개를 넘으면 균등 구간의 마지막 스냅샷만 그린다.
+# 평균을 내지 않고 실측 스냅샷을 고른다 — 없는 값을 만들지 않는다. 첫·끝 시점은 항상 포함.
+# 48 = 무신사 하루치(30분×48). 가격·할인 변화 감지는 이 규칙과 무관하게 원본 전체로 한다.
+MAX_TREND_POINTS = 48
+
+
+def downsample_indices(count, limit=MAX_TREND_POINTS):
+    if count <= limit:
+        return list(range(count))
+    picked = {0, count - 1}
+    for bucket in range(1, limit + 1):
+        picked.add((count * bucket + limit - 1) // limit - 1)
+    return sorted(picked)
+
+
+def value_trend_chart(series_list, stamps, unit="명"):
+    """실시간 지표 등 일반 수치의 추이 선그래프. 0을 기준선으로 둔다. 최대 5개 계열."""
+    series_list = [s for s in series_list if any(is_num(p) for p in s["points"])][:5]
+    if not series_list or len(stamps) < 2:
+        return None
+
+    top = max(p for s in series_list for p in s["points"] if is_num(p))
+    if top <= 0:
+        return None
+
+    width, height = 720, 260
+    pad_l, pad_r, pad_t, pad_b = 52, 150, 16, 44
+    plot_w = width - pad_l - pad_r
+    plot_h = height - pad_t - pad_b
+    step = plot_w / max(1, len(stamps) - 1)
+
+    def y_of(value):
+        return pad_t + (1 - value / top) * plot_h
+
+    parts = ['<svg class="chart" viewBox="0 0 %d %d" role="img" '
+             'preserveAspectRatio="xMinYMin meet" aria-label="실시간 지표 추이">' % (width, height)]
+    for i in range(4):
+        value = top * (3 - i) / 3
+        gy = pad_t + plot_h * i / 3
+        parts.append('<line class="grid" x1="%d" y1="%.1f" x2="%.1f" y2="%.1f"/>'
+                     % (pad_l, gy, pad_l + plot_w, gy))
+        parts.append('<text class="axis" x="%d" y="%.1f" text-anchor="end">%s</text>'
+                     % (pad_l - 8, gy + 4, format(int(round(value)), ",")))
+    label_every = max(1, len(stamps) // 8)
+    for idx, stamp in enumerate(stamps):
+        if idx % label_every and idx != len(stamps) - 1:
+            continue
+        parts.append('<text class="axis" x="%.1f" y="%d" text-anchor="middle">%s</text>'
+                     % (pad_l + idx * step, height - pad_b + 18, esc(stamp[5:10])))
+
+    for s_idx, series in enumerate(series_list):
+        color_var = "var(--series-%d)" % (s_idx + 1)
+        pts = [
+            (pad_l + idx * step, y_of(value), idx, value)
+            for idx, value in enumerate(series["points"])
+            if is_num(value)
+        ]
+        if not pts:
+            continue
+        path = " ".join(
+            ("M%.1f %.1f" if i == 0 else "L%.1f %.1f") % (p[0], p[1])
+            for i, p in enumerate(pts)
+        )
+        parts.append('<path class="line" d="%s" style="stroke:%s"/>' % (path, color_var))
+        for x, y, idx, value in pts:
+            tip = "%s · %s · %s%s" % (series["name"], stamps[idx], format(int(value), ","), unit)
+            parts.append(
+                '<circle class="dot" cx="%.1f" cy="%.1f" r="4" style="fill:%s" '
+                'data-tip="%s"><title>%s</title></circle>' % (x, y, color_var, esc(tip), esc(tip))
+            )
+        parts.append(
+            '<text class="series-label" x="%.1f" y="%.1f">%s</text>'
+            % (pts[-1][0] + 10, pts[-1][1] + 4, esc(clip(series["name"], 16)))
+        )
+    parts.append('<line class="baseline" x1="%d" y1="%.1f" x2="%.1f" y2="%.1f"/>'
+                 % (pad_l, pad_t + plot_h, pad_l + plot_w, pad_t + plot_h))
+    parts.append("</svg>")
+    return "".join(parts)
+
+
 def rank_trend_chart(series_list, stamps):
     """순위 추이 선그래프. 순위는 작을수록 위로 간다. 최대 5개 계열."""
     series_list = series_list[:5]
@@ -907,24 +987,58 @@ def ranking_diff_body(diff):
         body = '<p class="empty">기간 내 가격·할인 변화가 감지되지 않았다</p>'
     out.append(section("가격·할인 변화", body, note="연속한 스냅샷 쌍을 비교해 잡은 변화다. 스냅샷 사이에 일어난 변화는 잡히지 않는다."))
 
-    stamps = [s.get("collected_at") for s in snapshots]
+    all_stamps = [s.get("collected_at") for s in snapshots]
+    idxs = downsample_indices(len(all_stamps))
+    stamps = [all_stamps[i] for i in idxs]
+    sample_note = ""
+    if len(stamps) < len(all_stamps):
+        sample_note = (
+            " 스냅샷 %s개를 균등 구간의 대표 %s개 시점으로 요약해 그렸다"
+            "(평균이 아니라 실측 스냅샷을 고른 것이다)."
+            % (format(len(all_stamps), ","), format(len(stamps), ","))
+        )
+
     trends = diff.get("trends") or []
     movers_by_id = {m["product_id"]: m for m in movers}
     picked = sorted(
         (t for t in trends if t["product_id"] in movers_by_id),
         key=lambda t: -abs(movers_by_id[t["product_id"]]["delta"]),
     )[:5]
-    series = []
-    for trend in picked:
-        by_stamp = {p["at"]: p.get("rank") for p in trend["series"]}
-        series.append({"name": trend.get("name") or trend["product_id"], "points": [by_stamp.get(s) for s in stamps]})
+
+    def series_for(field):
+        result = []
+        for trend in picked:
+            by_stamp = {p["at"]: p.get(field) for p in trend["series"]}
+            result.append(
+                {"name": trend.get("name") or trend["product_id"],
+                 "points": [by_stamp.get(s) for s in stamps]}
+            )
+        return result
+
     out.append(
         section(
             "순위 추이 (변동 큰 5개)",
-            rank_trend_chart(series, stamps),
-            note="계열이 5개를 넘지 않도록 변동 폭이 큰 상품만 그린다. 전체 추이는 diff JSON의 trends에 있다.",
+            rank_trend_chart(series_for("rank"), stamps),
+            note="계열이 5개를 넘지 않도록 변동 폭이 큰 상품만 그린다. 전체 추이는 diff JSON의 trends에 있다."
+            + sample_note,
         )
     )
+
+    # 실시간 지표 추이 — 무신사 랭킹 목록에만 있는 값이라 없으면 섹션 자체를 만들지 않는다
+    live_blocks = []
+    for field, title in (("viewers_now", "보는 중 인원 추이"), ("buyers_now", "구매 중 인원 추이")):
+        chart = value_trend_chart(series_for(field), stamps)
+        if chart:
+            live_blocks.append('<div class="chart-block"><h3>%s</h3>%s</div>' % (esc(title), chart))
+    if live_blocks:
+        out.append(
+            section(
+                "실시간 지표 추이 (변동 큰 5개)",
+                '<div class="chart-grid">%s</div>' % "".join(live_blocks),
+                note="사이트가 반올림해 노출한 값이다(예: 1.2천명→1200). 미노출 시점은 선이 비어 있다."
+                + sample_note,
+            )
+        )
     return "".join(out)
 
 

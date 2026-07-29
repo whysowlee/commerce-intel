@@ -258,6 +258,9 @@ def main():
     check("D6b 변화 없음이 명시된 리포트가 나온다",
           code == 0 and "감지되지 않았다" in same_page and "움직인 상품이 없다" in same_page)
 
+    check("D2i 급등락 임계값이 랭킹 길이의 10%(최소 3)로 계산된다",
+          s["big_move_threshold"] == 3, str(s.get("big_move_threshold")))
+
     code, log = run("build_report.py", out("diff.json"), "--out", out("ranking.html"))
     check("D4 변화 리포트 생성", code == 0, "exit=%d\n%s" % (code, log[-400:]))
     page = read(out("ranking.html"))
@@ -268,6 +271,16 @@ def main():
           "col-img 헤더 %d개" % page.count('<th class="col-img"'))
     check("D4d 순위 추이 선그래프", "순위 추이" in page and 'class="line"' in page)
     check("D4e 결측 구간이 있어도 그린다", "series-label" in page)
+    check("D4g 실시간 지표 추이 섹션이 뜬다",
+          "실시간 지표 추이" in page and "보는 중 인원 추이" in page)
+
+    sys.path.insert(0, SCRIPTS)
+    import build_report as br
+    ds = br.downsample_indices(336)
+    check("D7 추이 다운샘플 — 48구간 대표만 남는다",
+          len(ds) <= br.MAX_TREND_POINTS + 1 and ds[0] == 0 and ds[-1] == 335
+          and ds == sorted(set(ds)), "len=%d" % len(ds))
+    check("D7b 48개 이하면 전부 그린다", br.downsample_indices(48) == list(range(48)))
 
     print("\n%s" % ("-" * 56))
     print("통과 %d · 실패 %d" % (len(PASSED), len(FAILED)))

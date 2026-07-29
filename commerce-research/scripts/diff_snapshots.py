@@ -20,7 +20,14 @@ import os
 import sys
 from datetime import datetime
 
-BIG_MOVE = 10  # 순위 변동 이 이상이면 "급상승/급하락"으로 센다
+# 급상승/급하락 강조 기준: 랭킹 길이의 10%, 최소 3계단 (2026-07-29 확정).
+# top100이면 10계단. 강조 표시에만 쓰이고 진입/이탈·전체 변동 표는 임계값과 무관하다.
+BIG_MOVE_RATIO = 0.10
+BIG_MOVE_MIN = 3
+
+
+def big_move_threshold(ranking_size):
+    return max(BIG_MOVE_MIN, round(ranking_size * BIG_MOVE_RATIO))
 
 
 def parse_dt(value):
@@ -245,11 +252,14 @@ def build_diff(snapshots):
                     "rank": as_number(item.get("rank")),
                     "price_sale": item.get("price_sale"),
                     "discount_rate": item.get("discount_rate"),
+                    "viewers_now": as_number(item.get("viewers_now")),
+                    "buyers_now": as_number(item.get("buyers_now")),
                 }
             )
 
-    big_risers = [m for m in movers if m["delta"] >= BIG_MOVE]
-    big_fallers = [m for m in movers if m["delta"] <= -BIG_MOVE]
+    threshold = big_move_threshold(max(len(first["items"]), len(last["items"])))
+    big_risers = [m for m in movers if m["delta"] >= threshold]
+    big_fallers = [m for m in movers if m["delta"] <= -threshold]
 
     return {
         "meta": {
@@ -279,7 +289,7 @@ def build_diff(snapshots):
             "stayed": len(movers),
             "big_risers": len(big_risers),
             "big_fallers": len(big_fallers),
-            "big_move_threshold": BIG_MOVE,
+            "big_move_threshold": threshold,
             "price_change_events": len(price_changes),
             "discount_started": len([c for c in price_changes if c["kind"] == "discount_started"]),
         },

@@ -123,8 +123,14 @@ GET https://api.musinsa.com/api2/hm/web/v5/pans/ranking/sections/{sectionId}
   (뉴스룸도 30분 단위 명시), `DAILY`/`WEEKLY`/`MONTHLY`는 **매일 새벽 04:4x에 하루
   1회 배치 생성**. 윈도우 경계가 달력일인지 24시간인지는 미검증
 - 축적 주기에 주는 의미: REALTIME이 30분마다 갱신되므로 **30분에 1번 축적이 원본
-  갱신 주기와 정확히 맞는다.** 더 자주 찍어도 같은 데이터를 중복 수집할 뿐이다.
-  DAILY/WEEKLY/MONTHLY 기준 축적이라면 하루 1회(새벽 05시 이후)면 충분하다
+  갱신 주기와 정확히 맞는다** (2026-07-29 확정). 더 자주 찍어도 같은 데이터를 중복
+  수집할 뿐이다. DAILY/WEEKLY/MONTHLY 기준 축적이라면 하루 1회(새벽 05시 이후)면 충분하다
+- **갱신 시각을 스냅샷 meta에 같이 저장해라** — 응답 `data.modules[]` 중
+  `type == "QUERY_UPDATEDAT"` 모듈의 `information.updatedAt`(epoch ms). 같은 랭킹을
+  중복 수집했는지 이 값으로 바로 판정할 수 있다 (카테고리 무관 전역 배치 값이다)
+- **함정 — 광고 배너가 랭킹 항목에 섞여 있다**: 응답 항목 중 `BANNER_COLUMN`은 광고이고
+  **요청마다 바뀐다.** `type == "PRODUCT_COLUMN"`만 걸러 담아라. 안 거르면 매 요청
+  랭킹이 변한 것처럼 보인다
 
 참고: 무신사에 월간 랭킹 아카이브 API가 존재하지만
 (`api2/dp/v1/ranking-archive/goods?yearMonth=YYYYMM`, 2024.01~직전 완결월, TOP30 고정)
