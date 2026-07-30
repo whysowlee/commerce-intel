@@ -40,12 +40,14 @@ tests/run_tests.py        회귀 111건. 픽스처만 쓰고 사이트에 붙지
 ## 원본 저장소와의 관계
 
 ```
-upstream = https://github.com/whysowlee/commerce-browser-skill.git   (fetch만 가능)
-origin   = 없음 — 새 원격을 붙일 때까지 push가 막혀 있다
+origin   = https://github.com/whysowlee/commerce-intel.git            (private, 여기로 push)
+upstream = https://github.com/whysowlee/commerce-browser-skill.git   (fetch 전용 — push URL 차단)
 ```
 
 - 원본 개선 가져오기: `git fetch upstream && git merge upstream/main`
-- 새 원격 붙이기: `gh repo create commerce-intel --private --source=. --remote=origin`
+- **`git push upstream`은 일부러 막아뒀다** — 이 프로젝트 커밋이 원본 공개 레포로 새지 않게 한 것이다.
+  푸시는 항상 `origin`으로 간다(`git push`가 그렇게 추적돼 있다)
+- 이 레포는 **private**이다. 공개하려면 `gh repo edit --visibility public`
 
 ## 이어서 할 일 (2026-07-30 기준 열린 항목)
 
