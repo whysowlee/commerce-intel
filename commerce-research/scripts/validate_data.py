@@ -56,6 +56,30 @@ MISSING_WARN = 5.0     # % — 이 위로는 WARN
 MISSING_FAIL = 30.0    # % — 이 위로는 FAIL(사이트 구조 변경 의심)
 TOTAL_TOLERANCE = 5.0  # % — 사이트 노출 총계 대비 허용 오차
 
+# 사람이 읽는 문자열 — 인코딩이 깨지면 리포트가 통째로 못 읽게 되는 칸들
+TEXT_FIELDS = ("name", "brand", "category", "view_count_display", "purchase_count_display")
+
+
+def looks_mojibake(text):
+    """UTF-8 바이트를 latin-1로 디코드한 흔적을 찾는다.
+
+    2026-07-29 라인시트 수집이 상품 상세 HTML을 latin-1로 읽어 category 564행이
+    전부 깨진 채 리포트까지 나갔다. 눈으로 봐야만 알 수 있는 실패였으므로 검증기가 잡는다.
+
+    제대로 디코드된 한글은 latin-1로 인코딩이 아예 안 되므로 여기서 걸리지 않는다.
+    """
+    if not isinstance(text, str) or text.isascii():
+        return False
+    try:
+        raw = text.encode("latin-1")
+    except UnicodeEncodeError:
+        return False
+    # UTF-8 선두 바이트(0xC2~0xF4) 뒤에 연속 바이트(0x80~0xBF)가 붙어 있으면 그 흔적이다
+    for idx in range(len(raw) - 1):
+        if 0xC2 <= raw[idx] <= 0xF4 and 0x80 <= raw[idx + 1] <= 0xBF:
+            return True
+    return False
+
 
 def is_missing(value):
     """필수 필드 기준의 결측 판정. null과 빈 문자열을 결측으로 본다."""
@@ -116,6 +140,8 @@ def validate_items(items, story, rep):
     """항목별 검증. 필드별 결측 카운트를 돌려준다."""
     missing_counts = {f: 0 for f in REQUIRED_FIELDS}
     exposed_counts = {f: 0 for f in tuple(OPTIONAL_METRICS) + tuple(DISPLAY_FIELDS)}
+    mojibake_counts = {f: 0 for f in TEXT_FIELDS}
+    mojibake_samples = {}
     seen_ids = {}
     ranks = []
     review_total = 0
@@ -129,6 +155,11 @@ def validate_items(items, story, rep):
         for field in REQUIRED_FIELDS:
             if is_missing(item.get(field)):
                 missing_counts[field] += 1
+
+        for field in TEXT_FIELDS:
+            if looks_mojibake(item.get(field)):
+                mojibake_counts[field] += 1
+                mojibake_samples.setdefault(field, item.get(field))
 
         pid = item.get("product_id")
         if not is_missing(pid):
@@ -218,7 +249,16 @@ def validate_items(items, story, rep):
             % review_total
         )
 
-    return missing_counts, exposed_counts, review_total
+    for field, hits in mojibake_counts.items():
+        if not hits:
+            continue
+        rep.error(
+            "%s %d건이 인코딩이 깨졌다 (예: %r) — 응답 바이트를 latin-1로 읽었는지 확인할 것. "
+            "UTF-8로 다시 디코드해야 하고, mojibake 문자열에 strip()을 걸면 끝 바이트가 날아간다"
+            % (field, hits, mojibake_samples[field][:24])
+        )
+
+    return missing_counts, exposed_counts, review_total, mojibake_counts
 
 
 def attribute_coverage(items):
@@ -276,7 +316,9 @@ def main():
         rep.error("items가 비어 있다 — 빈 리포트를 만들지 말고 수집 0건 사유를 먼저 확인할 것")
 
     story = meta.get("story")
-    missing_counts, exposed_counts, review_total = validate_items(items, story, rep)
+    missing_counts, exposed_counts, review_total, mojibake_counts = validate_items(
+        items, story, rep
+    )
 
     count = len(items)
     declared = meta.get("item_count")
@@ -354,6 +396,7 @@ def main():
         "exposure_by_field_pct": {k: round(v, 1) for k, v in exposure_rates.items()},
         "attribute_coverage_pct": round(attr_rate, 1) if attr_rate is not None else None,
         "unexpected_review_bodies": review_total,
+        "mojibake_by_field": {k: v for k, v in mojibake_counts.items() if v},
         "errors": rep.errors,
         "warnings": rep.warnings,
         "infos": rep.infos,

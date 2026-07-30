@@ -11,3 +11,8 @@ description.md
 __pycache__/
 *.pyc
 .venv/
+
+# 브라우저 도구 부산물
+.playwright-mcp/
+musinsa-sweep-rest.json
+.claude/settings.local.json

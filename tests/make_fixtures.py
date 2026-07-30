@@ -83,7 +83,34 @@ def build(out_dir):
     )
 
     # F1-5 크로스 플랫폼용 29cm (조회수 미노출 사이트를 가정)
-    items29 = [product(i, "29cm", expose_views=False) for i in range(100, 114)]
+    #
+    # 멀티 플랫폼 매칭(SPEC v6 §4 스토리1)을 검증하려면 픽스처에 세 종류가 다 있어야 한다:
+    #   ① 양쪽에 같은 이름으로 있는 상품 (매칭됨)
+    #   ② 29CM에만 있는 상품
+    #   ③ 무신사에만 있는 상품 (위 무신사 픽스처의 나머지)
+    # 그리고 **카테고리 이름을 일부러 다르게** 둬서 품목 통합축이 동일 상품의 대응 관계로
+    # 만들어지는지 본다. 이름이 같으면 축을 만들 필요가 없어 시험이 안 된다.
+    CAT_29CM = {"코트": "코트/자켓", "니트": "니트웨어", "셔츠": "셔츠/블라우스", "팬츠": "데님 팬츠"}
+
+    items29 = []
+    # ① 무신사 상품 10개를 29CM에도 입점시킨다 — 이름은 그대로, 값은 사이트마다 다르게.
+    for src in items[:10]:
+        twin = product(int(src["product_id"].split("-")[1]), "29cm", expose_views=False)
+        twin["name"] = src["name"]                       # 매칭 키는 상품명이다
+        twin["category"] = CAT_29CM[src["category"]]     # 카테고리 이름은 사이트마다 다르다
+        twin["price_original"] = src["price_original"]   # 정가는 같고
+        # 판매가는 플랫폼별로 다르게 둔다 — 가격 포지셔닝 섹션을 시험하기 위한 것이다.
+        twin["price_sale"] = round(src["price_sale"] * 0.9)
+        twin["discount_rate"] = round(
+            (twin["price_original"] - twin["price_sale"]) / twin["price_original"] * 100
+        )
+        items29.append(twin)
+    # ② 29CM 단독 입점 4개
+    for i in range(100, 104):
+        solo = product(i, "29cm", expose_views=False)
+        solo["category"] = CAT_29CM[solo["category"]]
+        items29.append(solo)
+
     made.append(
         write(
             os.path.join(out_dir, "29cm-brand-linesheet-good.json"),
@@ -94,9 +121,9 @@ def build(out_dir):
                     "target": "인사일런스",
                     "collected_at": "2026-07-29 14:20:00",
                     "item_count": len(items29),
-                    "source_total": 14,
+                    "source_total": len(items29),
                     "incomplete": False,
-                    "notes": [],
+                    "notes": ["29CM은 사이트가 총계를 노출하지 않아 순회 합집합으로 산정했다"],
                 },
                 "items": items29,
             },
@@ -183,6 +210,34 @@ def build(out_dir):
     scan[2]["attributes_basis"] = "unknown"
     scan[4]["review_count"] = 0        # F2-2 후기 0건 상품
     scan[6]["rating"] = None           # 평점 미노출 상품
+
+    # F2-4 색상 변형 — group_variants.py 회귀용.
+    # ① 미분류 3색 한 벌(대표 1건만 판단하면 3건이 채워진다)
+    # ② 형제가 이미 분류된 2색 한 벌(판단 없이 전파된다)
+    # ③ 한 벌에 서로 다른 핏이 섞인 경우(충돌로 표시돼야 한다)
+    variants = []
+    for suffix, fit, basis in (
+        ("_BLACK", "unknown", "unknown"), ("_IVORY", "unknown", "unknown"),
+        (" (Charcoal)", "unknown", "unknown"),
+    ):
+        item = product(900 + len(variants), "musinsa", brand="인사일런스", category="데님팬츠")
+        item["name"] = "와이드 벨티드 팬츠" + suffix
+        item["attributes"] = {"핏": fit}
+        item["attributes_basis"] = basis
+        variants.append(item)
+    for suffix, fit, basis in ((" BLACK", "unknown", "unknown"), (" NAVY", "부츠컷", "name")):
+        item = product(910 + len(variants), "musinsa", brand="인사일런스", category="데님팬츠")
+        item["name"] = "플레어 데님" + suffix
+        item["attributes"] = {"핏": fit}
+        item["attributes_basis"] = basis
+        variants.append(item)
+    for suffix, fit in ((" [BLACK]", "슬림"), (" [GREY]", "와이드")):
+        item = product(920 + len(variants), "musinsa", brand="인사일런스", category="데님팬츠")
+        item["name"] = "충돌 테스트 팬츠" + suffix
+        item["attributes"] = {"핏": fit}
+        item["attributes_basis"] = "image"
+        variants.append(item)
+    scan.extend(variants)
     made.append(
         write(
             os.path.join(out_dir, "musinsa-market-scan.json"),
@@ -198,6 +253,32 @@ def build(out_dir):
                     "notes": [],
                 },
                 "items": scan,
+            },
+        )
+    )
+
+    # F1-mojibake 인코딩이 깨진 수집 결과.
+    # 상품 상세 HTML을 latin-1로 디코드하면 실제로 이 모양이 된다(2026-07-29 사고 재현).
+    broken_text = []
+    for idx in range(6):
+        item = product(idx, "musinsa", category="니트/스웨터")
+        item["category"] = "니트/스웨터".encode("utf-8").decode("latin-1")
+        broken_text.append(item)
+    made.append(
+        write(
+            os.path.join(out_dir, "musinsa-brand-linesheet-mojibake.json"),
+            {
+                "meta": {
+                    "site": "musinsa",
+                    "story": "brand-linesheet",
+                    "target": "인사일런스",
+                    "collected_at": "2026-07-29 18:47:51",
+                    "item_count": len(broken_text),
+                    "source_total": len(broken_text),
+                    "incomplete": False,
+                    "notes": [],
+                },
+                "items": broken_text,
             },
         )
     )
@@ -233,10 +314,15 @@ def build(out_dir):
             # 랭킹 목록에만 붙는 실시간 지표. 일부 항목은 아예 안 뜬다(미노출 = null).
             item["viewers_now"] = RNG.randint(20, 1800) if rank % 5 else None
             item["buyers_now"] = RNG.randint(3, 90) if rank % 7 == 0 else None
-            # 마지막 스냅샷에서 3번 상품에 할인이 들어간다
+            # 마지막 스냅샷에서 3번 상품에 할인이 들어간다 (전 시점 상주 → 시점 확정)
             if stamp.startswith("2026-03-31") and pool_idx == 3:
                 item["discount_rate"] = 30
                 item["price_sale"] = round(item["price_original"] * 0.7)
+            # 0번 상품은 중간 스냅샷에 없다가 돌아오면서 할인이 들어간다.
+            # 연속 쌍만 비교하는 구 규칙으로는 이 변화가 안 잡힌다 — v5 감지 기준 회귀용.
+            if stamp.startswith("2026-03-31") and pool_idx == 0:
+                item["discount_rate"] = 40
+                item["price_sale"] = round(item["price_original"] * 0.6)
             items.append(item)
         made.append(
             write(

@@ -81,8 +81,14 @@ section { background: var(--surface); border: 1px solid var(--border);
 .section-note { font-size: 13px; color: var(--muted); margin: -6px 0 14px; }
 .empty { color: var(--muted); font-size: 14px; margin: 4px 0; }
 
-.chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(440px, 1fr)); gap: 26px; }
+/* auto-fill이어야 블록이 1개일 때 트랙이 합쳐지지 않는다.
+   auto-fit은 빈 트랙을 접어서 520px 차트를 컨테이너 폭까지 늘려 버린다 — 옆 섹션과
+   크기가 안 맞는 원인이었다(2026-07-30). */
+.chart-grid { display: grid; gap: 26px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 440px), 1fr)); }
 .chart-block { min-width: 0; }
+/* 그리드 밖에 홀로 놓이는 차트(추이 등)도 본문 폭까지 늘어나지 않게 묶는다. */
+.chart-solo { max-width: 880px; }
 .mini-list { list-style: none; margin: 4px 0 0; padding: 0; }
 .mini-list li { padding: 5px 0; border-bottom: 1px solid var(--grid); font-size: 14px; }
 .mini-list li:last-child { border-bottom: 0; }
@@ -104,16 +110,77 @@ section { background: var(--surface); border: 1px solid var(--border);
   border: 1px solid var(--border); border-radius: 7px;
   background: var(--page); color: var(--text); }
 .table-count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* 다중 선택 필터 — 여러 개를 켜면 OR, 서로 다른 그룹끼리는 AND로 걸린다. */
+.facets { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.facet-group { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.facet-label { font-size: 12px; color: var(--muted); margin-right: 4px;
+  flex: 0 0 auto; min-width: 52px; }
+.chip { font: inherit; font-size: 12px; padding: 3px 9px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--page); color: var(--text-2);
+  cursor: pointer; white-space: nowrap; }
+.chip:hover { color: var(--text); border-color: var(--baseline); }
+.chip.is-on { background: var(--seq); border-color: var(--seq); color: #fff; }
+.chip em { font-style: normal; opacity: 0.65; margin-left: 4px;
+  font-variant-numeric: tabular-nums; }
 .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
 table.grid { border-collapse: collapse; width: 100%; font-size: 13px; }
 table.grid th, table.grid td { padding: 8px 10px; text-align: left;
   border-bottom: 1px solid var(--grid); vertical-align: middle; }
 table.grid thead th { position: sticky; top: 0; background: var(--surface);
   font-size: 12px; color: var(--text-2); font-weight: 600; white-space: nowrap; z-index: 1; }
+/* 정렬 가능한 열은 눌러 보기 전에도 눌리는 줄 알아야 한다 — 중립 화살표를 늘 띄운다. */
 table.grid th[data-sort]:not([data-sort="none"]) { cursor: pointer; user-select: none; }
+table.grid th[data-sort]:not([data-sort="none"])::after {
+  content: " \2195"; font-size: 10px; opacity: 0.3; }
 table.grid th[data-sort]:not([data-sort="none"]):hover { color: var(--text); }
-table.grid th.sorted-asc::after { content: " ▲"; font-size: 9px; }
-table.grid th.sorted-desc::after { content: " ▼"; font-size: 9px; }
+table.grid th[data-sort]:not([data-sort="none"]):hover::after { opacity: 0.7; }
+table.grid th.sorted-asc::after { content: " \25B2"; font-size: 9px; opacity: 1; }
+table.grid th.sorted-desc::after { content: " \25BC"; font-size: 9px; opacity: 1; }
+/* 이름만으로 뜻이 안 통하는 열은 점선 밑줄로 표시하고 hover에 풀이를 붙인다 */
+.th-tip { text-decoration: underline dotted; text-decoration-color: var(--muted);
+  text-underline-offset: 3px; cursor: help; }
+
+/* 스토리3 — 표 안 스파크라인. 그리기는 인라인 JS가 하고 여기선 자리와 크기만 잡는다. */
+.col-spark { width: 124px; }
+.col-spark .vs { white-space: nowrap; }
+.col-pick { width: 30px; text-align: center; }
+.spark { display: block; width: 104px; height: 24px; }
+.spark svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.spark-line { fill: none; stroke: var(--seq); stroke-width: 1.6;
+  stroke-linejoin: round; stroke-linecap: round; }
+.spark-dot { fill: var(--seq); }
+.spark-band { fill: color-mix(in srgb, var(--critical) 9%, transparent); }
+.spark-empty { fill: var(--muted); }
+.chart-strip { height: 54px; }
+.dot-warn { fill: var(--warning) !important; }
+
+/* 추이 차트 조작부 */
+.trend-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px;
+  margin-bottom: 14px; }
+.trend-field { display: inline-flex; align-items: center; gap: 6px; font-size: 13px;
+  color: var(--text-2); }
+.trend-n { width: 72px; padding: 5px 8px; font: inherit; font-size: 13px;
+  border: 1px solid var(--border); border-radius: 7px;
+  background: var(--page); color: var(--text); }
+.trend-mode { padding: 5px 8px; font: inherit; font-size: 13px;
+  border: 1px solid var(--border); border-radius: 7px;
+  background: var(--page); color: var(--text); }
+.trend-check { gap: 5px; }
+.trend-status { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.trend-host { min-height: 40px; }
+.panel-grid { display: grid; gap: 18px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); }
+.panel { min-width: 0; }
+.panel h4 { font-size: 12px; margin: 0 0 2px; font-weight: 600; }
+.panel h4 a { color: inherit; }
+.panel .panel-note { font-size: 11px; color: var(--muted); margin: 0 0 4px;
+  font-variant-numeric: tabular-nums; }
+.axis-right { fill: var(--series-2); }
+.price-line { fill: none; stroke: var(--series-2); stroke-width: 1.6;
+  stroke-dasharray: 4 2; stroke-linejoin: round; }
+.detail-row > td { background: var(--page); padding: 14px 16px; }
+tr.is-open { background: var(--page); }
 table.grid tbody tr:hover { background: var(--page); }
 .col-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .col-name { min-width: 240px; max-width: 380px; }
@@ -130,7 +197,60 @@ table.grid tbody tr:hover { background: var(--page); }
   background: var(--grid); color: var(--text-2); margin-left: 4px; white-space: nowrap; }
 .tag-out { background: var(--grid); color: var(--text-2); }
 .tag-off { background: color-mix(in srgb, var(--critical) 16%, transparent); color: var(--critical); }
+.tag-stay { background: color-mix(in srgb, var(--seq) 14%, transparent); color: var(--seq); }
+.tag-in { background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--up); }
+.tag-out2 { background: color-mix(in srgb, var(--critical) 14%, transparent); color: var(--down); }
+.tag-mid { background: var(--grid); color: var(--muted); }
 .delta-up { color: var(--up); } .delta-down { color: var(--down); } .delta-flat { color: var(--muted); }
+.arrow { color: var(--muted); }
+/* 규모 대비 반응 지수 — 1.0이 '규모만큼'이다. 과대/과소만 표시하고 색으로 단정하지 않는다. */
+.idx { font-variant-numeric: tabular-nums; }
+.idx-over { color: var(--up); font-weight: 600; }
+.idx-under { color: var(--down); }
+.vs { display: block; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* 입점 칼럼 — 어느 플랫폼에 있는 상품인지. 색으로 우열을 매기지 않는다(사실 표기다). */
+.col-presence { white-space: nowrap; }
+.tag-presence { display: inline-block; font-size: 11px; padding: 2px 7px; border-radius: 10px;
+  background: var(--grid); color: var(--text-2); white-space: nowrap; margin: 0; }
+/* 전 플랫폼 입점만 채워서 구분한다. 단독 입점은 결함이 아니라 유통 사실이라 중립색이다. */
+.tag-presence.is-all { background: color-mix(in srgb, var(--seq) 18%, transparent);
+  color: var(--seq); font-weight: 600; }
+
+/* 품목 대응 근거 — 통합축을 독자가 검증할 수 있게 접어서 싣는다. */
+details.axis-map { margin-top: 10px; }
+details.axis-map > summary { cursor: pointer; font-size: 13px; color: var(--text-2);
+  user-select: none; }
+details.axis-map ul { margin: 8px 0 0; padding-left: 18px; columns: 2; column-gap: 28px;
+  font-size: 12px; color: var(--text-2); }
+details.axis-map li { margin: 2px 0; break-inside: avoid; }
+details.axis-map code { font-size: 11px; background: var(--grid); padding: 1px 4px;
+  border-radius: 3px; }
+@media (max-width: 720px) { details.axis-map ul { columns: 1; } }
+
+/* 시점별 원자료 — 통합 표 아래에 접어 둔다. */
+details.raw { margin-top: 14px; border-top: 1px solid var(--grid); padding-top: 10px; }
+details.raw > summary { cursor: pointer; font-size: 13px; color: var(--text-2);
+  user-select: none; }
+details.raw > summary:hover { color: var(--text); }
+details.raw > summary::marker { color: var(--muted); }
+details.raw .table-wrap { margin-top: 10px; }
+
+/* 순위 추이 위에 겹치는 할인 시점 마커.
+   점선 = 시점 확정, 띠 = 순위권 밖이라 구간으로만 아는 사건. */
+.event-line { stroke-width: 1.5; stroke-dasharray: 3 3; opacity: 0.75; }
+.event-band { opacity: 0.10; }
+.event-tick { font-size: 9px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 8px 0 0;
+  font-size: 12px; color: var(--text-2); }
+.legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.legend-swatch { width: 22px; height: 0; border-top: 2px solid currentColor; flex: 0 0 auto; }
+.legend-swatch.dashed { border-top-style: dashed; }
+.legend-swatch.band { height: 11px; border-top: 0;
+  background: color-mix(in srgb, currentColor 20%, transparent); }
+/* 계열 범례 — 이름은 본문 색으로 읽고 색은 스와치만 쓴다 */
+.legend-series { gap: 4px 18px; }
+.legend-series .legend-name { color: var(--text-2); }
 
 #tip { position: fixed; z-index: 20; pointer-events: none; opacity: 0;
   transition: opacity .1s; background: var(--text); color: var(--surface);
@@ -260,7 +380,11 @@ footer { max-width: 1180px; margin: 0 auto; color: var(--muted); font-size: 12px
       });
       th.classList.add(asc ? 'sorted-asc' : 'sorted-desc');
       var body = table.tBodies[0];
-      var rows = Array.prototype.slice.call(body.rows);
+      var rows = Array.prototype.slice.call(body.rows).filter(function (r) {
+        return !r.classList.contains('detail-row');   // 펼친 상세는 정렬 대상이 아니다
+      });
+      body.querySelectorAll('tr.detail-row').forEach(function (r) { r.remove(); });
+      body.querySelectorAll('tr.is-open').forEach(function (r) { r.classList.remove('is-open'); });
       var numeric = th.dataset.sort === 'num';
       rows.sort(function (a, b) {
         var x = a.cells[idx].dataset.k, y = b.cells[idx].dataset.k;
@@ -271,24 +395,450 @@ footer { max-width: 1180px; margin: 0 auto; color: var(--muted); font-size: 12px
         return asc ? x.localeCompare(y, 'ko') : y.localeCompare(x, 'ko');
       });
       rows.forEach(function (r) { body.appendChild(r); });
+      // 정렬이 바뀌면 '표 순서대로 상위 N'을 따르는 차트도 다시 그려야 한다
+      document.dispatchEvent(new CustomEvent('tableview'));
     });
   });
 
-  document.querySelectorAll('.filter').forEach(function (input) {
-    var table = document.getElementById(input.dataset.for);
-    var counter = document.getElementById(input.dataset.for + '-count');
+  // 텍스트 검색과 칩 필터를 한 곳에서 합쳐 적용한다.
+  // 같은 그룹의 칩 여러 개 = OR, 서로 다른 그룹 = AND.
+  var state = {};   // tableId -> {q: '', picked: {facetIdx: Set}}
+
+  function stateOf(id) {
+    if (!state[id]) state[id] = { q: '', picked: {} };
+    return state[id];
+  }
+
+  function apply(id) {
+    var table = document.getElementById(id);
     if (!table) return;
+    var st = stateOf(id);
+    var counter = document.getElementById(id + '-count');
+    var shown = 0;
+    Array.prototype.forEach.call(table.tBodies[0].rows, function (row) {
+      if (row.classList.contains('detail-row')) { row.hidden = false; return; }
+      var hit = !st.q || row.textContent.toLowerCase().indexOf(st.q) !== -1;
+      if (hit) {
+        for (var idx in st.picked) {
+          var picked = st.picked[idx];
+          if (!picked || !picked.length) continue;
+          var have = row.getAttribute('data-f' + idx) || '';
+          var any = picked.some(function (v) { return have.indexOf('|' + v + '|') !== -1; });
+          if (!any) { hit = false; break; }
+        }
+      }
+      row.hidden = !hit;
+      if (hit) shown++;
+    });
+    if (counter) counter.textContent = shown + '행';
+    document.dispatchEvent(new CustomEvent('tableview'));
+  }
+
+  document.querySelectorAll('.filter').forEach(function (input) {
+    var id = input.dataset.for;
+    if (!document.getElementById(id)) return;
     input.addEventListener('input', function () {
-      var q = input.value.trim().toLowerCase();
-      var shown = 0;
-      Array.prototype.forEach.call(table.tBodies[0].rows, function (row) {
-        var hit = !q || row.textContent.toLowerCase().indexOf(q) !== -1;
-        row.hidden = !hit;
-        if (hit) shown++;
-      });
-      if (counter) counter.textContent = shown + '행';
+      stateOf(id).q = input.value.trim().toLowerCase();
+      apply(id);
     });
   });
+
+  var pending = {};
+  document.querySelectorAll('.facet-group').forEach(function (group) {
+    var id = group.dataset.for;
+    var idx = group.dataset.facet;
+    var all = group.querySelector('.chip-all');
+    group.addEventListener('click', function (e) {
+      var chip = e.target.closest('.chip');
+      if (!chip) return;
+      if (chip === all) {
+        group.querySelectorAll('.chip').forEach(function (c) { c.classList.remove('is-on'); });
+        all.classList.add('is-on');
+      } else {
+        chip.classList.toggle('is-on');
+        var on = group.querySelectorAll('.chip:not(.chip-all).is-on');
+        all.classList.toggle('is-on', on.length === 0);
+      }
+      var picked = [];
+      group.querySelectorAll('.chip:not(.chip-all).is-on').forEach(function (c) {
+        picked.push(c.dataset.v);
+      });
+      stateOf(id).picked[idx] = picked;
+      apply(id);
+    });
+    // 서버가 미리 켜 둔 칩(기본 필터)을 로드 시점에 실제로 적용한다.
+    var preset = [];
+    group.querySelectorAll('.chip:not(.chip-all).is-on').forEach(function (c) {
+      preset.push(c.dataset.v);
+    });
+    if (preset.length) {
+      stateOf(id).picked[idx] = preset;
+      pending[id] = true;
+    }
+  });
+  Object.keys(pending).forEach(apply);
+})();
+
+// ── 스토리3 추이 렌더 ───────────────────────────────────────────────────────
+// 계열 데이터는 문서에 한 번만 심겨 있고(#series-data) 스파크라인·추이 차트·
+// 행 펼침 상세가 그 하나를 같이 쓴다. 같은 데이터를 세 번 그리지 않는다.
+(function () {
+  var holder = document.getElementById('series-data');
+  if (!holder) return;
+  var SD;
+  try { SD = JSON.parse(holder.textContent); } catch (e) { return; }
+  var STAMPS = SD.stamps || [], PROD = SD.products || {};
+  var N = Math.max(1, STAMPS.length - 1);
+  var RMIN = SD.rankMin || 1, RMAX = SD.rankMax || 1;
+  var RSPAN = Math.max(1, RMAX - RMIN);
+  var GLYPH = SD.glyph || {};
+
+  function esc(t) {
+    return String(t == null ? '' : t).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+  function won(v) {
+    return v == null ? '-' : v.toLocaleString('ko-KR') + '원';
+  }
+  // 연속한 시점끼리만 잇는다. 순위권 밖이던 구간은 선을 끊는다 —
+  // 이어 그리면 그 구간에도 순위가 있었다고 주장하는 것이다.
+  function segments(pts) {
+    var out = [], cur = [];
+    for (var i = 0; i < pts.length; i++) {
+      if (cur.length && pts[i][0] - cur[cur.length - 1][0] > 1) { out.push(cur); cur = []; }
+      cur.push(pts[i]);
+    }
+    if (cur.length) out.push(cur);
+    return out;
+  }
+  function pathOf(seg, xf, yf) {
+    var d = '';
+    for (var i = 0; i < seg.length; i++) {
+      d += (i ? 'L' : 'M') + xf(seg[i]).toFixed(1) + ' ' + yf(seg[i]).toFixed(1);
+    }
+    return d;
+  }
+
+  // ── 스파크라인 ────────────────────────────────────────────────────────────
+  function spark(host) {
+    var d = PROD[host.dataset.pid];
+    if (!d) return;
+    var kind = host.dataset.spark, pts = d.p, W = 104, H = 24, pad = 2;
+    if (!pts.length) { host.innerHTML = ''; return; }
+    var xf = function (p) { return pad + p[0] / N * (W - pad * 2); };
+    var yf, body = '';
+    if (kind === 'rank') {
+      // 순위 축은 전 행이 같은 범위다 — 행끼리 모양을 비교할 수 있어야 한다.
+      yf = function (p) { return pad + (p[1] - RMIN) / RSPAN * (H - pad * 2); };
+    } else {
+      var vals = pts.filter(function (p) { return p[2] != null; }).map(function (p) { return p[2]; });
+      if (!vals.length) { host.innerHTML = '<svg viewBox="0 0 104 24"></svg>'; return; }
+      var lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+      if (hi === lo) {   // 값이 하나면 가운데 — 바닥에 그리면 '최저'로 오해된다
+        yf = function () { return H / 2; };
+      } else {
+        yf = function (p) { return pad + (1 - (p[2] - lo) / (hi - lo)) * (H - pad * 2); };
+      }
+      // 할인 구간을 뒤에 띠로 깐다 (가격이 내려간 구간과 겹쳐 보인다)
+      var runs = [], open = null;
+      for (var i = 0; i < pts.length; i++) {
+        var on = pts[i][3] != null && pts[i][3] > 0;
+        if (on && open === null) open = pts[i][0];
+        if (!on && open !== null) { runs.push([open, pts[i][0]]); open = null; }
+      }
+      if (open !== null) runs.push([open, pts[pts.length - 1][0]]);
+      for (var r = 0; r < runs.length; r++) {
+        var x0 = pad + runs[r][0] / N * (W - pad * 2);
+        var x1 = pad + runs[r][1] / N * (W - pad * 2);
+        body += '<rect class="spark-band" x="' + x0.toFixed(1) + '" y="0" width="' +
+                Math.max(1.5, x1 - x0).toFixed(1) + '" height="' + H + '"/>';
+      }
+    }
+    var segs = segments(pts.filter(function (p) { return kind === 'rank' || p[2] != null; }));
+    for (var s2 = 0; s2 < segs.length; s2++) {
+      if (segs[s2].length > 1) {
+        body += '<path class="spark-line" d="' + pathOf(segs[s2], xf, yf) + '"/>';
+      } else {
+        body += '<circle class="spark-dot" cx="' + xf(segs[s2][0]).toFixed(1) +
+                '" cy="' + yf(segs[s2][0]).toFixed(1) + '" r="1.8"/>';
+      }
+    }
+    host.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-hidden="true">' +
+                     body + '</svg>';
+  }
+  document.querySelectorAll('[data-spark]').forEach(spark);
+
+  // ── 상품 1개 패널 — 순위(좌축) + 가격(우축) + 할인 띠 ─────────────────────
+  function panel(pid, W, H, opts) {
+    opts = opts || {};
+    var d = PROD[pid];
+    if (!d) return '';
+    var pts = d.p;
+    var padL = 34, padR = 46, padT = 12, padB = 24;
+    var pw = W - padL - padR, ph = H - padT - padB;
+    if (!pts.length) return '<p class="empty">관측된 순위가 없다</p>';
+    var xf = function (p) { return padL + p[0] / N * pw; };
+    var ry = function (p) { return padT + (p[1] - RMIN) / RSPAN * ph; };
+    var pv = pts.filter(function (p) { return p[2] != null; }).map(function (p) { return p[2]; });
+    var lo = pv.length ? Math.min.apply(null, pv) : 0;
+    var hi = pv.length ? Math.max.apply(null, pv) : 1;
+    var py = hi === lo
+      ? function () { return padT + ph / 2; }
+      : function (p) { return padT + (1 - (p[2] - lo) / (hi - lo)) * ph; };
+    var out = '<svg class="chart" viewBox="0 0 ' + W + ' ' + H + '" role="img" ' +
+              'preserveAspectRatio="xMinYMin meet" aria-label="순위·가격 추이">';
+
+    // 할인 구간 띠
+    var runs = [], open = null;
+    for (var i = 0; i < pts.length; i++) {
+      var on = pts[i][3] != null && pts[i][3] > 0;
+      if (on && open === null) open = pts[i][0];
+      if (!on && open !== null) { runs.push([open, pts[i][0]]); open = null; }
+    }
+    if (open !== null) runs.push([open, pts[pts.length - 1][0]]);
+    for (var r = 0; r < runs.length; r++) {
+      var x0 = padL + runs[r][0] / N * pw, x1 = padL + runs[r][1] / N * pw;
+      out += '<rect class="spark-band" x="' + x0.toFixed(1) + '" y="' + padT +
+             '" width="' + Math.max(2, x1 - x0).toFixed(1) + '" height="' + ph + '"/>';
+    }
+    // 순위 축 (좌) — 3칸
+    for (var g = 0; g < 3; g++) {
+      var rv = RMIN + RSPAN * g / 2, gy = padT + (rv - RMIN) / RSPAN * ph;
+      out += '<line class="grid" x1="' + padL + '" y1="' + gy.toFixed(1) + '" x2="' +
+             (padL + pw) + '" y2="' + gy.toFixed(1) + '"/>';
+      out += '<text class="axis" x="' + (padL - 6) + '" y="' + (gy + 4).toFixed(1) +
+             '" text-anchor="end">' + Math.round(rv) + '위</text>';
+    }
+    // 가격 축 (우)
+    if (pv.length && hi !== lo) {
+      out += '<text class="axis axis-right" x="' + (padL + pw + 6) + '" y="' + (padT + 4) +
+             '">' + Math.round(hi / 1000) + '천</text>';
+      out += '<text class="axis axis-right" x="' + (padL + pw + 6) + '" y="' + (padT + ph) +
+             '">' + Math.round(lo / 1000) + '천</text>';
+    } else if (pv.length) {
+      out += '<text class="axis axis-right" x="' + (padL + pw + 6) + '" y="' + (padT + ph / 2 + 4) +
+             '">' + Math.round(hi / 1000) + '천</text>';
+    }
+    // 변화 표식
+    for (var m = 0; m < d.e.length; m++) {
+      var ev = d.e[m], gl = GLYPH[ev.k] || '◆';
+      if (ev.x) {
+        var ex = padL + ev.t / N * pw;
+        out += '<line class="event-line" x1="' + ex.toFixed(1) + '" y1="' + padT + '" x2="' +
+               ex.toFixed(1) + '" y2="' + (padT + ph) + '" style="stroke:var(--series-4)" ' +
+               'data-tip="' + esc(ev.l + ' · 시점 확정') + '"/>';
+        out += '<text class="event-tick" x="' + ex.toFixed(1) + '" y="' + (padT - 3) +
+               '" text-anchor="middle" style="fill:var(--series-4)">' + gl + '</text>';
+      } else {
+        var bx = padL + ev.f / N * pw, bw = Math.max(3, (ev.t - ev.f) / N * pw);
+        out += '<rect class="event-band" x="' + bx.toFixed(1) + '" y="' + padT + '" width="' +
+               bw.toFixed(1) + '" height="' + ph + '" style="fill:var(--series-4)" ' +
+               'data-tip="' + esc(ev.l + ' · 구간으로만 아는 변화') + '"/>';
+        out += '<text class="event-tick" x="' + (bx + bw / 2).toFixed(1) + '" y="' + (padT - 3) +
+               '" text-anchor="middle" style="fill:var(--series-4)">' + gl + '</text>';
+      }
+    }
+    // 가격 선 (우축, 점선)
+    if (hi !== lo) {
+      var pseg = segments(pts.filter(function (p) { return p[2] != null; }));
+      for (var q = 0; q < pseg.length; q++) {
+        if (pseg[q].length > 1) out += '<path class="price-line" d="' + pathOf(pseg[q], xf, py) + '"/>';
+      }
+    }
+    // 순위 선 (좌축, 실선) + 점
+    var rseg = segments(pts);
+    for (var t = 0; t < rseg.length; t++) {
+      if (rseg[t].length > 1) {
+        out += '<path class="line" d="' + pathOf(rseg[t], xf, ry) + '" style="stroke:var(--seq)"/>';
+      }
+    }
+    for (var u = 0; u < pts.length; u++) {
+      var p = pts[u];
+      var tip = STAMPS[p[0]] + ' · ' + p[1] + '위' + (p[2] != null ? ' · ' + won(p[2]) : '') +
+                (p[3] ? ' · 할인 ' + p[3] + '%' : '') +
+                (p[4] != null ? ' · 보는 중 ' + p[4] + '명' : '');
+      out += '<circle class="dot" cx="' + xf(p).toFixed(1) + '" cy="' + ry(p).toFixed(1) +
+             '" r="3" style="fill:var(--seq)" data-tip="' + esc(tip) + '"/>';
+    }
+    // x축
+    var every = Math.max(1, Math.ceil(STAMPS.length / (opts.wide ? 7 : 3)));
+    var lastDate = null;
+    for (var v = 0; v < STAMPS.length; v += every) {
+      var st = STAMPS[v] || '', dt = st.slice(5, 10), ck = st.slice(11, 16);
+      var lab = dt === lastDate ? ck : dt + ' ' + ck;
+      lastDate = dt;
+      out += '<text class="axis" x="' + (padL + v / N * pw).toFixed(1) + '" y="' +
+             (H - padB + 15) + '" text-anchor="middle">' + esc(lab) + '</text>';
+    }
+    out += '<line class="baseline" x1="' + padL + '" y1="' + (padT + ph) + '" x2="' +
+           (padL + pw) + '" y2="' + (padT + ph) + '"/></svg>';
+
+    var head = '<h4>' + (d.u ? '<a href="' + esc(d.u) + '" target="_blank" rel="noopener">' +
+               esc(d.n) + '</a>' : esc(d.n)) + '</h4>';
+    var ranks = pts.map(function (p) { return p[1]; });
+    var note = '<p class="panel-note">최고 ' + Math.min.apply(null, ranks) + '위 · 마지막 ' +
+               ranks[ranks.length - 1] + '위 · ' + pts.length + '/' + STAMPS.length + '회 관측' +
+               (pv.length ? ' · ' + won(pv[pv.length - 1]) : '') + '</p>';
+    return '<div class="panel">' + head + note + out + '</div>';
+  }
+
+  // ── 겹쳐 보기 (계열 5개까지) ──────────────────────────────────────────────
+  function overlay(pids) {
+    var W = 720, H = 300, padL = 44, padR = 20, padT = 16, padB = 30;
+    var pw = W - padL - padR, ph = H - padT - padB;
+    var out = '<svg class="chart" viewBox="0 0 ' + W + ' ' + H + '" role="img" ' +
+              'preserveAspectRatio="xMinYMin meet" aria-label="순위 추이">';
+    for (var g = 0; g < 4; g++) {
+      var rv = RMIN + RSPAN * g / 3, gy = padT + (rv - RMIN) / RSPAN * ph;
+      out += '<line class="grid" x1="' + padL + '" y1="' + gy.toFixed(1) + '" x2="' +
+             (padL + pw) + '" y2="' + gy.toFixed(1) + '"/>';
+      out += '<text class="axis" x="' + (padL - 8) + '" y="' + (gy + 4).toFixed(1) +
+             '" text-anchor="end">' + Math.round(rv) + '위</text>';
+    }
+    var every = Math.max(1, Math.ceil(STAMPS.length / 8)), lastDate = null;
+    for (var v = 0; v < STAMPS.length; v += every) {
+      var st = STAMPS[v] || '', dt = st.slice(5, 10), ck = st.slice(11, 16);
+      var lab = dt === lastDate ? ck : dt + ' ' + ck;
+      lastDate = dt;
+      out += '<text class="axis" x="' + (padL + v / N * pw).toFixed(1) + '" y="' + (H - padB + 16) +
+             '" text-anchor="middle">' + esc(lab) + '</text>';
+    }
+    var legend = '';
+    for (var i = 0; i < pids.length; i++) {
+      var d = PROD[pids[i]];
+      if (!d || !d.p.length) continue;
+      var color = 'var(--series-' + ((i % 5) + 1) + ')';
+      var xf = function (p) { return padL + p[0] / N * pw; };
+      var yf = function (p) { return padT + (p[1] - RMIN) / RSPAN * ph; };
+      for (var m = 0; m < d.e.length; m++) {
+        var ev = d.e[m], gl = GLYPH[ev.k] || '◆';
+        if (ev.x) {
+          var ex = padL + ev.t / N * pw;
+          out += '<line class="event-line" x1="' + ex.toFixed(1) + '" y1="' + padT + '" x2="' +
+                 ex.toFixed(1) + '" y2="' + (padT + ph) + '" style="stroke:' + color +
+                 '" data-tip="' + esc(d.n + ' · ' + ev.l + ' · 시점 확정') + '"/>';
+        } else {
+          var bx = padL + ev.f / N * pw, bw = Math.max(4, (ev.t - ev.f) / N * pw);
+          out += '<rect class="event-band" x="' + bx.toFixed(1) + '" y="' + padT + '" width="' +
+                 bw.toFixed(1) + '" height="' + ph + '" style="fill:' + color +
+                 '" data-tip="' + esc(d.n + ' · ' + ev.l + ' · 구간으로만 아는 변화') + '"/>';
+        }
+        out += '<text class="event-tick" x="' +
+               (ev.x ? padL + ev.t / N * pw : padL + (ev.f + (ev.t - ev.f) / 2) / N * pw).toFixed(1) +
+               '" y="' + (padT - 3) + '" text-anchor="middle" style="fill:' + color + '">' + gl + '</text>';
+      }
+      var segs = segments(d.p);
+      for (var s2 = 0; s2 < segs.length; s2++) {
+        if (segs[s2].length > 1) {
+          out += '<path class="line" d="' + pathOf(segs[s2], xf, yf) + '" style="stroke:' + color + '"/>';
+        }
+      }
+      for (var u = 0; u < d.p.length; u++) {
+        var p = d.p[u];
+        var tip = d.n + ' · ' + STAMPS[p[0]] + ' · ' + p[1] + '위' +
+                  (p[2] != null ? ' · ' + won(p[2]) : '');
+        out += '<circle class="dot" cx="' + xf(p).toFixed(1) + '" cy="' + yf(p).toFixed(1) +
+               '" r="3.5" style="fill:' + color + '" data-tip="' + esc(tip) + '"/>';
+      }
+      legend += '<span class="legend-item" style="color:' + color + '">' +
+                '<span class="legend-swatch"></span><span class="legend-name">' +
+                esc(d.n) + '</span></span>';
+    }
+    out += '<line class="baseline" x1="' + padL + '" y1="' + (padT + ph) + '" x2="' +
+           (padL + pw) + '" y2="' + (padT + ph) + '"/></svg>';
+    return '<div class="chart-solo">' + out +
+           '<p class="legend legend-series">' + legend + '</p>' +
+           '<p class="legend"><span class="legend-item"><span class="legend-swatch dashed"></span>' +
+           '시점 확정된 가격·할인 변화</span>' +
+           '<span class="legend-item"><span class="legend-swatch band"></span>' +
+           '구간으로만 아는 변화</span></p></div>';
+  }
+
+  // ── 표의 현재 정렬·필터를 따른다 ─────────────────────────────────────────
+  var table = document.getElementById('t-move');
+  var host = document.getElementById('trend-host');
+  var nInput = document.getElementById('trend-n');
+  var modeSel = document.getElementById('trend-mode');
+  var pickOnly = document.getElementById('trend-picked');
+  var status = document.getElementById('trend-status');
+  if (!table || !host) return;
+
+  function visiblePids() {
+    var rows = Array.prototype.slice.call(table.tBodies[0].rows);
+    var out = [];
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      if (r.hidden || r.classList.contains('detail-row')) continue;
+      if (pickOnly && pickOnly.checked) {
+        var box = r.querySelector('.pick');
+        if (!box || !box.checked) continue;
+      }
+      if (r.dataset.pid) out.push(r.dataset.pid);
+    }
+    return out;
+  }
+
+  function render() {
+    var want = Math.max(1, Math.min(100, parseInt(nInput.value, 10) || 1));
+    var pool = visiblePids();
+    var pids = pool.slice(0, want);
+    var mode = modeSel.value;
+    if (mode === 'auto') mode = pids.length <= 5 ? 'overlay' : 'grid';
+    if (!pids.length) {
+      host.innerHTML = '<p class="empty">' +
+        (pickOnly && pickOnly.checked ? '표에서 고른 행이 없다' : '거를 조건에 맞는 상품이 없다') +
+        '</p>';
+      status.textContent = '';
+      return;
+    }
+    if (mode === 'overlay') {
+      var shown = pids.slice(0, 5);
+      host.innerHTML = overlay(shown);
+      status.textContent = '대상 ' + pool.length + '개 중 ' + shown.length + '개 · 겹쳐 보기' +
+        (pids.length > 5 ? ' (겹쳐 보기는 5개까지 — 나머지는 나란히 보기로)' : '');
+    } else {
+      host.innerHTML = '<div class="panel-grid">' + pids.map(function (p) {
+        return panel(p, 300, 150, {});
+      }).join('') + '</div>';
+      status.textContent = '대상 ' + pool.length + '개 중 ' + pids.length + '개 · 나란히 보기' +
+        (want > pool.length ? ' (요청 ' + want + '개, 대상이 ' + pool.length + '개다)' : '');
+    }
+  }
+
+  nInput.addEventListener('input', render);
+  nInput.addEventListener('change', render);
+  modeSel.addEventListener('change', render);
+  if (pickOnly) pickOnly.addEventListener('change', render);
+  table.addEventListener('click', function (e) {
+    if (e.target.classList && e.target.classList.contains('pick')) render();
+  });
+  // 정렬·필터가 바뀌면 차트도 따라간다
+  document.addEventListener('tableview', render);
+
+  // ── 행을 누르면 그 상품의 상세를 펼친다 ──────────────────────────────────
+  table.tBodies[0].addEventListener('click', function (e) {
+    if (e.target.closest('a') || e.target.classList.contains('pick')) return;
+    var row = e.target.closest('tr');
+    if (!row || !row.dataset.pid || row.classList.contains('detail-row')) return;
+    var next = row.nextElementSibling;
+    if (next && next.classList.contains('detail-row')) {
+      next.remove();
+      row.classList.remove('is-open');
+      return;
+    }
+    var span = row.cells.length;
+    var tr = document.createElement('tr');
+    tr.className = 'detail-row';
+    var td = document.createElement('td');
+    td.colSpan = span;
+    td.innerHTML = panel(row.dataset.pid, 700, 240, { wide: true });
+    tr.appendChild(td);
+    row.parentNode.insertBefore(tr, row.nextSibling);
+    row.classList.add('is-open');
+  });
+
+  render();
 })();
 </script>
 </body>

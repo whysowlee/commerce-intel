@@ -195,36 +195,50 @@ def build_diff(snapshots):
         movers.append(record)
     movers.sort(key=lambda m: -abs(m["delta"]))
 
-    # 연속 스냅샷 쌍을 훑어 가격·할인 변화를 잡는다
+    # 가격·할인 변화 — 상품마다 **마지막으로 관측한 상태**와 비교한다 (2026-07-30 개정).
+    #
+    # 구 규칙은 연속한 스냅샷 쌍에 둘 다 있는 상품만 비교했다. 무신사 바지 top100은
+    # 30분마다 절반 가까이 교체돼서(33개 축적분 실측: 등장 상품 679개 중 전 시점 상주 7개,
+    # 연속 관측 쌍 2,621개 중 71%만 비교 대상) 순위권을 드나든 상품의 변화를 통째로
+    # 놓쳤다. 실제로 실측 2건을 0건으로 보고했다 — 미노출이 아니라 거짓이다.
+    #
+    # 두 끝값 모두 사이트가 노출한 값이므로 추정이 아니다. 잃는 것은 "언제"의 해상도뿐이라,
+    # 관측 창(from_at ~ to_at)과 결석 스냅샷 수를 사건마다 같이 담아 리포트가 밝힌다.
     price_changes = []
-    for older, newer in zip(snapshots, snapshots[1:]):
-        older_idx = index_by_id(older["items"])
-        for pid, item in index_by_id(newer["items"]).items():
-            if pid not in older_idx:
-                continue
-            kind = classify_price_change(older_idx[pid], item)
-            if not kind:
-                continue
-            price_changes.append(
-                {
-                    "product_id": pid,
-                    "name": item.get("name"),
-                    "brand": item.get("brand"),
-                    "url": item.get("url"),
-                    "image_url": item.get("image_url"),
-                    "kind": kind,
-                    "at": newer["at"].isoformat(sep=" "),
-                    "from": {
-                        "price_sale": older_idx[pid].get("price_sale"),
-                        "discount_rate": older_idx[pid].get("discount_rate"),
-                    },
-                    "to": {
-                        "price_sale": item.get("price_sale"),
-                        "discount_rate": item.get("discount_rate"),
-                    },
-                }
-            )
-    price_changes.sort(key=lambda c: c["at"])
+    last_seen = {}   # pid -> (스냅샷 인덱스, 항목)
+    for s_idx, snap in enumerate(snapshots):
+        for pid, item in index_by_id(snap["items"]).items():
+            if pid in last_seen:
+                prev_idx, prev_item = last_seen[pid]
+                kind = classify_price_change(prev_item, item)
+                if kind:
+                    gap = s_idx - prev_idx - 1   # 사이에 빠진 스냅샷 수
+                    price_changes.append(
+                        {
+                            "product_id": pid,
+                            "name": item.get("name"),
+                            "brand": item.get("brand"),
+                            "url": item.get("url"),
+                            "image_url": item.get("image_url"),
+                            "kind": kind,
+                            # at은 변화가 확인된 시점(관측 창의 끝). 하위 호환으로 남긴다.
+                            "at": snap["at"].isoformat(sep=" "),
+                            "from_at": snapshots[prev_idx]["at"].isoformat(sep=" "),
+                            "to_at": snap["at"].isoformat(sep=" "),
+                            "gap_snapshots": gap,
+                            "exact_at": gap == 0,
+                            "from": {
+                                "price_sale": prev_item.get("price_sale"),
+                                "discount_rate": prev_item.get("discount_rate"),
+                            },
+                            "to": {
+                                "price_sale": item.get("price_sale"),
+                                "discount_rate": item.get("discount_rate"),
+                            },
+                        }
+                    )
+            last_seen[pid] = (s_idx, item)
+    price_changes.sort(key=lambda c: (c["to_at"], c["product_id"]))
 
     # 상품별 순위 추이
     trends = {}
@@ -242,10 +256,16 @@ def build_diff(snapshots):
                     "name": item.get("name"),
                     "brand": item.get("brand"),
                     "url": item.get("url"),
+                    "image_url": item.get("image_url"),
                     "series": [],
                 },
             )
             entry["name"] = entry["name"] or item.get("name")
+            # 상품 단위 표에 이미지를 실으려면 trends가 들고 있어야 한다.
+            # movers/entered/exited에만 있으면 순위권을 드나든 상품이 빈칸이 된다.
+            entry["image_url"] = entry.get("image_url") or item.get("image_url")
+            entry["brand"] = entry.get("brand") or item.get("brand")
+            entry["url"] = entry.get("url") or item.get("url")
             entry["series"].append(
                 {
                     "at": stamp,
@@ -292,6 +312,9 @@ def build_diff(snapshots):
             "big_move_threshold": threshold,
             "price_change_events": len(price_changes),
             "discount_started": len([c for c in price_changes if c["kind"] == "discount_started"]),
+            # 시점이 스냅샷 1칸으로 확정된 사건 수. 나머지는 구간으로만 안다.
+            "price_change_exact": len([c for c in price_changes if c["exact_at"]]),
+            "price_change_max_gap": max([c["gap_snapshots"] for c in price_changes], default=0),
         },
         "entered": entered,
         "exited": exited,
@@ -349,7 +372,8 @@ def main():
 
     s = diff["summary"]
     print(
-        "스냅샷 %d개 (%s ~ %s): 신규 %d · 이탈 %d · 유지 %d · 급상승 %d · 급하락 %d · 가격변화 %d건"
+        "스냅샷 %d개 (%s ~ %s): 신규 %d · 이탈 %d · 유지 %d · 급상승 %d · 급하락 %d · "
+        "가격변화 %d건(시점 확정 %d · 최대 결석 %d스냅샷)"
         % (
             s["snapshot_count"],
             diff["meta"]["period"]["start"],
@@ -360,6 +384,8 @@ def main():
             s["big_risers"],
             s["big_fallers"],
             s["price_change_events"],
+            s["price_change_exact"],
+            s["price_change_max_gap"],
         )
     )
     print("저장: %s" % args.out)
