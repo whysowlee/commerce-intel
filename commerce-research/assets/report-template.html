@@ -121,6 +121,8 @@ section { background: var(--surface); border: 1px solid var(--border);
   cursor: pointer; white-space: nowrap; }
 .chip:hover { color: var(--text); border-color: var(--baseline); }
 .chip.is-on { background: var(--seq); border-color: var(--seq); color: #fff; }
+.facet-mode { margin-left: 6px; padding: 1px 6px; border-radius: 8px;
+  background: var(--line); color: var(--muted); font-size: 11px; font-weight: 600; }
 .chip em { font-style: normal; opacity: 0.65; margin-left: 4px;
   font-variant-numeric: tabular-nums; }
 .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
@@ -405,7 +407,7 @@ footer { max-width: 1180px; margin: 0 auto; color: var(--muted); font-size: 12px
   var state = {};   // tableId -> {q: '', picked: {facetIdx: Set}}
 
   function stateOf(id) {
-    if (!state[id]) state[id] = { q: '', picked: {} };
+    if (!state[id]) state[id] = { q: '', picked: {}, mode: {} };
     return state[id];
   }
 
@@ -423,8 +425,10 @@ footer { max-width: 1180px; margin: 0 auto; color: var(--muted); font-size: 12px
           var picked = st.picked[idx];
           if (!picked || !picked.length) continue;
           var have = row.getAttribute('data-f' + idx) || '';
-          var any = picked.some(function (v) { return have.indexOf('|' + v + '|') !== -1; });
-          if (!any) { hit = false; break; }
+          // 축 기본은 OR. 입점 축처럼 data-match="all"인 축만 AND다.
+          var test = function (v) { return have.indexOf('|' + v + '|') !== -1; };
+          var ok = st.mode[idx] === 'all' ? picked.every(test) : picked.some(test);
+          if (!ok) { hit = false; break; }
         }
       }
       row.hidden = !hit;
@@ -448,6 +452,7 @@ footer { max-width: 1180px; margin: 0 auto; color: var(--muted); font-size: 12px
     var id = group.dataset.for;
     var idx = group.dataset.facet;
     var all = group.querySelector('.chip-all');
+    if (group.dataset.match === 'all') stateOf(id).mode[idx] = 'all';
     group.addEventListener('click', function (e) {
       var chip = e.target.closest('.chip');
       if (!chip) return;

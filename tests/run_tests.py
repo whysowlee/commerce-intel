@@ -198,6 +198,59 @@ def main():
     check("B1t 한쪽에만 있는 칸은 미노출이 아니라 —로 구분한다",
           "그 플랫폼에 그 상품이 없다" in page and "—" in page)
 
+    # ── 플랫폼 3개 (SPEC v14 §4 스토리1) ───────────────────────────────────
+    #
+    # 규칙은 "사이트 수와 무관하게 성립해야 한다"인데, 3개가 되어야만 드러나는 버그가 있었다.
+    # 2-플랫폼 픽스처만으로는 영영 안 잡히므로 여기서 세 개를 넘긴다.
+    code, _ = run("build_report.py",
+                  fx("musinsa-brand-linesheet-good.json"),
+                  fx("29cm-brand-linesheet-good.json"),
+                  fx("insilence-brand-linesheet.json"),
+                  "--out", out("linesheet-3p.html"))
+    p3 = read(out("linesheet-3p.html"))
+
+    def coverage_sums(page):
+        """`품목별 입점 차이` 표에서 합집합 합계와 단독 합계를 읽는다."""
+        sec = page.split("품목별 입점 차이")[1].split("</section>")[0]
+        body = sec.split("<tbody>")[1].split("</tbody>")[0]
+        total = solo = 0
+        for tr in re.findall(r"<tr.*?</tr>", body, re.S):
+            cells = [re.sub(r"<[^>]+>", "", c).strip()
+                     for c in re.findall(r"<td.*?</td>", tr, re.S)]
+            if len(cells) >= 8:
+                total += int(cells[1])
+                solo += sum(int(cells[i]) for i in (5, 6, 7))
+        return total, solo
+
+    p3_total, p3_solo = coverage_sums(p3)
+    # 검산: 단독 합계 + 2곳 이상 입점 = 합집합. 구 구조는 `정확히 2곳`을 잃어 26 ≠ 28이었다.
+    check("B1v 플랫폼 3개에서 상품이 입점 표에서 사라지지 않는다",
+          code == 0 and p3_total == 28 and p3_solo == 18,
+          "합집합 %d · 단독 %d (기대 28 / 18 — 정확히 2곳 입점 4건이 빠지면 실패)"
+          % (p3_total, p3_solo))
+    check("B1w 입점 표 열이 플랫폼별 입점·단독 두 쌍이다",
+          "무신사 입점" in p3 and "29CM 입점" in p3 and "insilence.co.kr 입점" in p3
+          and "무신사 단독" in p3 and "insilence.co.kr 단독" in p3
+          and "양쪽 입점" not in p3,          # 3개일 때 '양쪽'은 틀린 말이다
+          "플랫폼별 입점/단독 열이 아니다")
+    check("B1x 3개 이상이면 '2곳 이상'과 '전 플랫폼'을 따로 센다",
+          "2곳 이상 입점" in p3 and "전 플랫폼 입점" in p3,
+          "두 값은 다른데 한 이름으로 뭉뚱그렸다")
+    check("B1y 입점 축은 플랫폼별 칩이고 AND로 동작한다",
+          'data-match="all"' in p3 and "모두 만족" in p3
+          and ">insilence.co.kr<" in p3,
+          "입점 축이 AND가 아니거나 동작을 밝히지 않았다")
+    check("B1z 자사몰은 반응 지표가 null이라 비교 축에서 빠진다",
+          "insilence.co.kr 좋아요" not in p3 and "insilence.co.kr 후기" not in p3
+          and "insilence.co.kr 평점" not in p3
+          # 조용히 빼면 그 플랫폼이 애초에 없었다고 읽는다 — 빠진 사실을 밝혀야 한다
+          and "노출하지 않아 수집하지 않았다" in p3,
+          "수집하지 않은 지표로 열을 만들었거나, 빠진 사실을 밝히지 않았다")
+    # 둘 다 지표를 내는 2-플랫폼 리포트에는 제외 각주가 붙으면 안 된다 (오탐 방지)
+    check("B1z2 지표를 내는 플랫폼만 있으면 제외 각주를 붙이지 않는다",
+          "노출하지 않아 수집하지 않았다" not in page,
+          "빠진 플랫폼이 없는데 제외 각주가 붙었다")
+
     # 플랫폼이 1개면 비교 섹션을 만들지 않는다 — 빈 섹션을 내지 않는 것이 규칙이다.
     code, log = run("build_report.py", fx("musinsa-brand-linesheet-good.json"),
                     "--out", out("linesheet-solo.html"))

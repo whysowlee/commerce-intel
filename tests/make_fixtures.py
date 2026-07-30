@@ -130,6 +130,53 @@ def build(out_dir):
         )
     )
 
+    # F1-6 자사몰(Cafe24) — 세 번째 플랫폼 (SPEC v14 §4 스토리1)
+    #
+    # 플랫폼이 3개가 되어야만 드러나는 것들을 시험하기 위한 픽스처다:
+    #   ① `정확히 2곳에만 입점`한 상품이 표에서 사라지지 않는가 (구 구조의 버그)
+    #   ② 자사몰은 반응 지표(후기·평점·좋아요·조회수·누적판매)가 전부 null이다
+    # 그래서 무신사 상품 중 **앞 6개만** 자사몰에 입점시킨다 —
+    # 나머지 4개(무신사∩29CM)가 `정확히 2곳` 사례가 된다.
+    own = []
+    for src in items[:6]:
+        it = product(int(src["product_id"].split("-")[1]), "insilence.co.kr", expose_views=False)
+        it["name"] = src["name"]
+        it["price_original"] = src["price_original"]
+        it["price_sale"] = round(src["price_sale"] * 0.95)   # 자사몰이 조금 싸다
+        it["discount_rate"] = round(
+            (it["price_original"] - it["price_sale"]) / it["price_original"] * 100)
+        # 자사몰은 반응 지표를 수집하지 않는다 — 0이 아니라 null이다
+        for key in ("review_count", "rating", "like_count", "view_count",
+                    "purchase_count", "viewers_now", "buyers_now"):
+            it[key] = None
+        for key in ("view_count_display", "like_count_display", "purchase_count_display"):
+            it.pop(key, None)
+        own.append(it)
+
+    made.append(
+        write(
+            os.path.join(out_dir, "insilence-brand-linesheet.json"),
+            {
+                "meta": {
+                    "site": "insilence.co.kr",
+                    "story": "brand-linesheet",
+                    "target": "인사일런스",
+                    "collected_at": "2026-07-30 16:00:00",
+                    "item_count": len(own),
+                    # 자사몰은 화면 총계가 없다 — 수집 건수를 넣으면 순환 검증이 된다
+                    "source_total": None,
+                    "incomplete": False,
+                    "notes": [
+                        "자사몰(Cafe24). 화면 총계가 없어 source_total은 null이다.",
+                        "완전성 근거: 네비게이션 상품 카테고리 전부 소진 + btnNext=#none 도달.",
+                        "후기·평점·좋아요·조회수·누적판매는 수집하지 않는다(robots.txt).",
+                    ],
+                },
+                "items": own,
+            },
+        )
+    )
+
     # R3 레이아웃 변경 모사 — 필수 필드를 대량으로 비운다
     broken = [product(i, "musinsa") for i in range(1, 21)]
     for item in broken[:14]:

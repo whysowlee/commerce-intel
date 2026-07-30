@@ -623,6 +623,9 @@ def kpi_tiles(tiles):
 def facet_block(items, facets, table_id):
     """열 값으로 거르는 다중 선택 칩. 한 그룹 안에서는 OR, 그룹끼리는 AND다.
 
+    **예외: `match: "all"`인 축은 그룹 안에서도 AND다** (입점 축 — presence_facet 참조).
+    그 축은 칩에 `모두 만족` 표시를 달아 독자가 동작을 알 수 있게 한다.
+
     값이 1종뿐인 축은 거를 게 없으니 그룹을 만들지 않는다.
     """
     groups = []
@@ -648,10 +651,17 @@ def facet_block(items, facets, table_id):
             % (" is-on" if key in default else "", esc(key), esc(key), format(tally[key], ","))
             for key in keys
         ]
+        match = facet.get("match") or "any"
+        # 동작이 다른 축이므로 화면에 그 사실을 적는다 — 안 적으면 OR로 읽는다.
+        # 배지는 `facet-label` **밖**에 둔다. 안에 넣으면 라벨 텍스트가 오염된다.
+        mode_badge = (
+            '<span class="facet-mode" title="여러 개를 켜면 그 플랫폼에 모두 있는 상품만 남는다">모두 만족</span>'
+            if match == "all" else ""
+        )
         groups.append(
-            '<div class="facet-group" data-for="%s" data-facet="%d">'
-            '<span class="facet-label">%s</span>%s</div>'
-            % (table_id, f_idx, esc(facet["label"]), "".join(chips))
+            '<div class="facet-group" data-for="%s" data-facet="%d" data-match="%s">'
+            '<span class="facet-label">%s</span>%s%s</div>'
+            % (table_id, f_idx, match, esc(facet["label"]), mode_badge, "".join(chips))
         )
     if not groups:
         return ""
@@ -928,9 +938,12 @@ def header_block(datasets, validations, title, union=None):
         meta_rows.append(("수집 항목", "%s (단순 합 %s건)" % (per_site, format(total, ","))))
         if union is not None and union["rows"]:
             matched = len(matched_rows(union))
+            # `matched_rows`는 **2곳 이상**이다. 플랫폼이 2개면 그것이 곧 '양쪽'이지만
+            # 3개 이상이면 아니므로 이름을 갈라 쓴다 — 안 그러면 표의 열과 값이 어긋난다.
             meta_rows.append((
                 "합집합 상품",
-                "%s건 — 양쪽 입점 %s · 단독 %s"
+                ("%s건 — 양쪽 입점 %s · 단독 %s" if len(sites) == 2
+                 else "%s건 — 2곳 이상 입점 %s · 단독 %s")
                 % (
                     format(len(union["rows"]), ","),
                     format(matched, ","),
@@ -1301,7 +1314,7 @@ def presence_label(row, sites):
     return " · ".join("%s 단독" % site_name(s) for s in present)
 
 
-def union_columns(sites, axis):
+def union_columns(sites, axis, union=None):
     """합집합 표의 열. 매칭된 상품은 1행이고 사이트별 값이 나란히 들어간다."""
     columns = [
         {"label": "이미지", "type": "none", "cls": "col-img",
@@ -1344,30 +1357,25 @@ def union_columns(sites, axis):
                              format(abs(int(gap)), ","))))(union_price_gap(r, s2)),
                  sort_key(union_price_gap(r, s2)))}
         )
-    for site in sites:
-        label = site_name(site)
-        columns.append(
-            {"label": "%s 후기" % label, "type": "num", "cls": "col-num",
-             "render": lambda r, s=site: (
-                 (num(r["by_site"][s].get("review_count")), sort_key(r["by_site"][s].get("review_count")))
-                 if s in r["by_site"] else ("<span class=\"na\">—</span>", ""))}
-        )
-    for site in sites:
-        label = site_name(site)
-        columns.append(
-            {"label": "%s 평점" % label, "type": "num", "cls": "col-num",
-             "render": lambda r, s=site: (
-                 (rating_fmt(r["by_site"][s].get("rating")), sort_key(r["by_site"][s].get("rating")))
-                 if s in r["by_site"] else ("<span class=\"na\">—</span>", ""))}
-        )
-    for site in sites:
-        label = site_name(site)
-        columns.append(
-            {"label": "%s 좋아요" % label, "type": "num", "cls": "col-num",
-             "render": lambda r, s=site: (
-                 (num(r["by_site"][s].get("like_count")), sort_key(r["by_site"][s].get("like_count")))
-                 if s in r["by_site"] else ("<span class=\"na\">—</span>", ""))}
-        )
+    # 후기·평점·좋아요도 **그 사이트가 실제로 노출한 지표일 때만** 열을 만든다
+    # (2026-07-30). 자사몰은 이 셋을 수집하지 않으므로 열이 통째로 비는데, 빈 열을 그리면
+    # "반응이 없는 플랫폼"으로 읽힌다 — 미수집과 0은 다르다(E-DQ-9). 조회수·누적판매는
+    # union_metric_columns가 같은 규칙을 이미 쓰고 있었다.
+    for metric, metric_label, fmt in (
+        ("review_count", "후기", lambda v: num(v)),
+        ("rating", "평점", lambda v: rating_fmt(v)),
+        ("like_count", "좋아요", lambda v: num(v)),
+    ):
+        display_key = "%s_display" % metric
+        for site in sites:
+            if not site_exposes(union, site, metric, display_key):
+                continue
+            columns.append(
+                {"label": "%s %s" % (site_name(site), metric_label), "type": "num", "cls": "col-num",
+                 "render": lambda r, s=site, m=metric, f=fmt: (
+                     (f(r["by_site"][s].get(m)), sort_key(r["by_site"][s].get(m)))
+                     if s in r["by_site"] else ("<span class=\"na\">—</span>", ""))}
+            )
     # 조회수·누적판매처럼 한쪽만 노출하는 지표의 열은 union_metric_columns가 붙인다
     # (노출 여부를 실제 데이터로 판정해야 해서 union 전체가 필요하다).
     return columns
@@ -1381,19 +1389,30 @@ def union_repr(row, sites):
     return {}
 
 
+def site_exposes(union, site, metric, display_key=None):
+    """그 사이트가 이 지표를 하나라도 노출했는가.
+
+    `union`이 없으면(구 호출 형태) 판정할 자료가 없으므로 노출된 것으로 본다 —
+    열을 잘못 지우는 쪽이 잘못 그리는 쪽보다 나쁘다.
+    """
+    if union is None:
+        return True
+    display_key = display_key or "%s_display" % metric
+    return any(
+        row["by_site"][site].get(metric) is not None
+        or row["by_site"][site].get(display_key) is not None
+        for row in union["rows"]
+        if site in row["by_site"]
+    )
+
+
 def union_metric_columns(union, sites):
     """조회수·누적판매처럼 **한쪽만 노출하는 지표**의 열. 노출된 사이트만 열을 만든다."""
     columns = []
     for metric, metric_label, _unit in (("view_count", "조회수", "회"), ("purchase_count", "누적판매", "")):
         display_key = "%s_display" % metric
         for site in sites:
-            exposed = any(
-                row["by_site"][site].get(metric) is not None
-                or row["by_site"][site].get(display_key) is not None
-                for row in union["rows"]
-                if site in row["by_site"]
-            )
-            if not exposed:
+            if not site_exposes(union, site, metric, display_key):
                 continue
             columns.append(
                 {"label": "%s %s" % (site_name(site), metric_label), "type": "num", "cls": "col-num",
@@ -1405,9 +1424,19 @@ def union_metric_columns(union, sites):
 
 
 def presence_facet(sites):
+    """입점 축은 **플랫폼별 칩이고 여러 개를 켜면 AND**다 (2026-07-30 개정).
+
+    다른 축은 한 축 안에서 OR이지만(§4 리포트 공통) 이 축만 예외다. 이유는 이 축을
+    쓰는 목적 자체가 **"무신사와 29CM 둘 다에 있는 상품"**을 골라보는 것이기 때문이다 —
+    OR로 두면 "무신사에 있거나 29CM에 있는 것"이 되어 거의 전 행이 남아 쓸모가 없다.
+
+    구 구조는 값이 `양쪽 입점`·`무신사 단독`처럼 조합을 미리 나열한 문자열 하나였다.
+    플랫폼이 3개가 되면 조합이 폭발하고 "정확히 2곳"을 고를 방법이 없었다.
+    """
     return {
         "label": "입점",
-        "values": lambda r, s=sites: [presence_label(r, s)],
+        "match": "all",
+        "values": lambda r, s=sites: [site_name(x) for x in s if x in r["by_site"]],
     }
 
 
@@ -1420,17 +1449,35 @@ def union_category_facet(sites, axis):
 
 # ── 고도화 4개 축 (SPEC v6 §4 스토리1) ──────────────────────────────────────
 
+def overlap_ratio(row):
+    """2곳 이상에 입점한 상품의 비율. 합집합 − 단독 합계가 곧 '2곳 이상'이다."""
+    if not row["total"]:
+        return 0.0
+    return (row["total"] - sum(row["solo"].values())) / row["total"]
+
+
 def coverage_gap_block(union, sites, axis, table_id):
     """① 품목별 입점 커버리지 갭 — 어느 품목을 어느 플랫폼에 몰아줬는가."""
+    # 열은 **플랫폼별 `입점`과 플랫폼별 `단독` 두 쌍**이다 (2026-07-30 개정).
+    #
+    # 구 구조는 `모든 플랫폼에 있음`(both) + 플랫폼별 `단독` 뿐이었다. 플랫폼이 2개일 때는
+    # 이 둘이 모든 경우를 덮지만 **3개가 되면 "정확히 2곳에만 입점"이 어느 열에도 안 들어가
+    # 상품이 표에서 사라진다** (실측: 합집합 28인데 열 합계 26). 게다가 헤더의 `양쪽 입점`은
+    # `2곳 이상`(matched_rows)이라 같은 이름이 다른 값을 말하고 있었다.
+    #
+    # 플랫폼별 `입점` 열은 **그 플랫폼에 있으면 센다** — 여러 플랫폼에 있는 상품은 여러 열에
+    # 잡히므로 열 합계가 합집합보다 클 수 있다(정상). 대신 **사라지는 상품이 없고**
+    # 열 수가 플랫폼 수에 선형으로만 늘어난다.
     agg = {}
     for row in union["rows"]:
         cat = row_category(row, sites, axis)
-        entry = agg.setdefault(cat, {"total": 0, "both": 0, "solo": {s: 0 for s in sites}})
+        entry = agg.setdefault(
+            cat, {"total": 0, "on": {s: 0 for s in sites}, "solo": {s: 0 for s in sites}})
         entry["total"] += 1
         present = [s for s in sites if s in row["by_site"]]
-        if len(present) == len(sites):
-            entry["both"] += 1
-        elif len(present) == 1:
+        for s in present:
+            entry["on"][s] += 1
+        if len(present) == 1:
             entry["solo"][present[0]] += 1
     if not agg:
         return None
@@ -1441,20 +1488,26 @@ def coverage_gap_block(union, sites, axis, table_id):
         {"label": "품목", "type": "none", "render": lambda r: (esc(r["cat"]), r["cat"])},
         {"label": "합집합", "type": "num", "cls": "col-num",
          "render": lambda r: (num(r["total"]), r["total"])},
-        {"label": "양쪽 입점", "type": "num", "cls": "col-num",
-         "render": lambda r: (num(r["both"]), r["both"])},
     ]
     for site in sites:
         columns.append(
+            {"label": "%s 입점" % site_name(site), "type": "num", "cls": "col-num",
+             "tip": "그 플랫폼에 있는 상품 수. 여러 플랫폼에 있는 상품은 각 열에 모두 잡히므로 "
+                    "열을 더하면 합집합보다 클 수 있다",
+             "render": lambda r, s=site: (num(r["on"][s]), r["on"][s])}
+        )
+    for site in sites:
+        columns.append(
             {"label": "%s 단독" % site_name(site), "type": "num", "cls": "col-num",
+             "tip": "그 플랫폼에만 있는 상품 수. 단독 열들의 합 + 2곳 이상 입점 = 합집합이다",
              "render": lambda r, s=site: (num(r["solo"][s]), r["solo"][s])}
         )
     columns.append(
-        {"label": "양쪽 비율", "type": "num", "cls": "col-num",
-         "tip": "양쪽 입점 ÷ 그 품목 합집합. 낮을수록 플랫폼별로 다른 상품을 내놓은 품목이다",
+        {"label": "겹침 비율", "type": "num", "cls": "col-num",
+         "tip": "2곳 이상에 입점한 상품 ÷ 그 품목 합집합. 낮을수록 플랫폼별로 다른 상품을 내놓은 품목이다",
          "render": lambda r: (
-             '<span class="idx">%.0f%%</span>' % (r["both"] / r["total"] * 100) if r["total"] else MISSING,
-             r["both"] / r["total"] if r["total"] else "")}
+             '<span class="idx">%.0f%%</span>' % (overlap_ratio(r) * 100) if r["total"] else MISSING,
+             overlap_ratio(r) if r["total"] else "")}
     )
 
     # 구 `단독 입점 상품 성격` 블록을 여기로 합쳤다 (2026-07-30).
@@ -1488,6 +1541,22 @@ def coverage_gap_block(union, sites, axis, table_id):
     return head + chart + product_table(rows, columns, table_id, placeholder="품목명으로 거르기")
 
 
+def response_excluded_note(union, sites):
+    """반응 비교에서 빠진 플랫폼을 각주로 밝힌다 (자사몰 등 — SPEC v14).
+
+    조용히 빼면 독자는 그 플랫폼이 애초에 없었다고 읽는다.
+    """
+    dropped = [s for s in sites
+               if not any(site_exposes(union, s, m) for m, _ in COMPARE_METRICS)]
+    if not dropped:
+        return ""
+    return (
+        " <strong>%s은(는) 이 비교에서 빠진다</strong> — 그 플랫폼이 좋아요·후기를 "
+        "노출하지 않아 수집하지 않았다. <em>반응이 없다는 뜻이 아니라 값이 없다는 뜻이다.</em>"
+        % esc(" · ".join(site_name(s) for s in dropped))
+    )
+
+
 def response_strength_block(union, sites, axis, table_id):
     """② 같은 상품 반응 강도 비교 — 매칭된 상품만.
 
@@ -1495,6 +1564,10 @@ def response_strength_block(union, sites, axis, table_id):
     두 사이트가 모두 노출하는 지표(하트·후기)만 쓴다.
     """
     pairs = matched_rows(union)
+    # 지표를 아예 수집하지 않는 플랫폼은 이 비교에서 뺀다 (SPEC v14 — 자사몰).
+    # 빈 열을 그리면 "반응이 없는 플랫폼"으로 읽힌다. 미수집과 0은 다르다.
+    sites = [s for s in sites
+             if any(site_exposes(union, s, m) for m, _ in COMPARE_METRICS)]
     if not pairs or len(sites) < 2:
         return None
     agg = {}
@@ -1727,11 +1800,19 @@ def platform_compare_body(union, sites, axis):
     for site in sites:
         n = len([r for r in union["rows"] if site in r["by_site"]])
         tiles.append((site_name(site), format(n, ","), "단독 %s개" % format(len(solo_rows(union, site)), ",")))
+    # `matched`는 2곳 이상이다. 플랫폼이 3개 이상이면 `전 플랫폼 입점`이라고 쓰면 안 된다 —
+    # 2곳에만 있는 상품이 그 값에 들어 있기 때문이다(구 라벨의 오류).
     tiles.append((
-        "양쪽 입점" if len(sites) == 2 else "전 플랫폼 입점",
+        "양쪽 입점" if len(sites) == 2 else "2곳 이상 입점",
         format(len(matched), ","),
         "합집합의 %.0f%%" % (len(matched) / len(union["rows"]) * 100) if union["rows"] else None,
     ))
+    if len(sites) > 2:
+        every = len([r for r in union["rows"] if len(r["by_site"]) == len(sites)])
+        tiles.append((
+            "전 플랫폼 입점", format(every, ","),
+            "합집합의 %.0f%%" % (every / len(union["rows"]) * 100) if union["rows"] else None,
+        ))
     out.append(kpi_tiles(tiles))
 
     if union["collisions"]:
@@ -1742,11 +1823,17 @@ def platform_compare_body(union, sites, axis):
             % union["collisions"],
         ))
 
+    # 설명문의 '양쪽'은 플랫폼 2개 가정이다. 3개 이상이면 '2곳 이상'으로 바꿔 쓴다.
+    both_word = "양쪽에 다 있는 상품" if len(sites) == 2 else "2곳 이상에 있는 상품"
+
     blocks = [
         ("품목별 입점 차이",
          coverage_gap_block(union, sites, axis, "t-coverage"),
-         "품목마다 <strong>양쪽에 다 있는 상품</strong>과 <strong>한쪽에만 있는 상품</strong>을 센다. "
+         "품목마다 <strong>플랫폼별 입점 수</strong>와 <strong>그 플랫폼에만 있는 수</strong>를 센다. "
          "브랜드가 어느 품목을 어느 플랫폼에 몰아줬는지가 보인다. "
+         "<code>입점</code> 열은 여러 플랫폼에 있는 상품을 각 열에 모두 세므로 "
+         "<strong>열을 더하면 합집합보다 클 수 있다</strong>(정상). "
+         "<code>단독</code> 열들의 합 + 2곳 이상 입점 = 합집합이다. "
          "구 <code>단독 입점 상품 성격</code> 섹션을 이 블록에 합쳤다(2026-07-30) — "
          "그 섹션의 품목 분포 막대는 아래 표의 <code>단독</code> 열과 같은 값이었다. "
          "단독 입점의 고유한 정보는 <strong>가격대</strong>뿐이라 KPI와 판매가 분포로 남겼다. "
@@ -1755,13 +1842,14 @@ def platform_compare_body(union, sites, axis):
          "그것이 실제 유통 차이인지 표기 차이인지는 상품명을 눌러 원본을 확인하라."),
         ("같은 상품 반응 강도 비교",
          response_strength_block(union, sites, axis, "t-response"),
-         "<strong>양쪽에 다 있는 상품만</strong> 센다. 같은 상품을 비교하므로 "
+         "<strong>%s만</strong> 센다. 같은 상품을 비교하므로 " % both_word +
          "<em>상품 구성 차이가 통제된 비교</em>가 된다 — 한쪽에 상품이 더 많아서 생기는 차이가 아니다. "
          "두 사이트가 모두 정수로 노출하는 지표(좋아요·후기)만 쓴다. "
-         "<strong>단독 입점 상품은 이 비교에서 빠진다.</strong>"),
+         "<strong>단독 입점 상품은 이 비교에서 빠진다.</strong>"
+         + response_excluded_note(union, sites)),
         ("가격·할인 포지셔닝 차이",
          price_gap_summary(union, sites, axis),
-         "양쪽에 다 있는 상품의 판매가·할인율을 <strong>품목 단위로 집계</strong>한다. "
+         "%s의 판매가·할인율을 <strong>품목 단위로 집계</strong>한다. " % both_word +
          "정가가 같은데 판매가만 다르면 그것이 플랫폼별 할인 정책 차이다. "
          "<strong>상품별 대조는 '전 상품' 표에 합쳤다</strong>(2026-07-30) — "
          "구 구조는 매칭 상품 전 건을 여기서 또 실어서 같은 상품이 리포트에 두 번 나왔다."),
@@ -1833,7 +1921,7 @@ def linesheet_body(datasets):
 
     if multi:
         # 합집합 표 — 매칭된 상품은 1행이고 `입점` 칼럼에 어느 플랫폼에 있는지가 찍힌다.
-        columns = union_columns(sites, axis) + union_metric_columns(union, sites)
+        columns = union_columns(sites, axis, union) + union_metric_columns(union, sites)
         out.append(
             section(
                 "전 상품 (플랫폼 합집합)",
@@ -2731,6 +2819,8 @@ section { background: var(--surface); border: 1px solid var(--border);
   cursor: pointer; white-space: nowrap; }
 .chip:hover { color: var(--text); border-color: var(--baseline); }
 .chip.is-on { background: var(--seq); border-color: var(--seq); color: #fff; }
+.facet-mode { margin-left: 6px; padding: 1px 6px; border-radius: 8px;
+  background: var(--line); color: var(--muted); font-size: 11px; font-weight: 600; }
 .chip em { font-style: normal; opacity: 0.65; margin-left: 4px;
   font-variant-numeric: tabular-nums; }
 .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
@@ -2927,7 +3017,7 @@ JS = """
   var state = {};   // tableId -> {q: '', picked: {facetIdx: Set}}
 
   function stateOf(id) {
-    if (!state[id]) state[id] = { q: '', picked: {} };
+    if (!state[id]) state[id] = { q: '', picked: {}, mode: {} };
     return state[id];
   }
 
@@ -2945,8 +3035,10 @@ JS = """
           var picked = st.picked[idx];
           if (!picked || !picked.length) continue;
           var have = row.getAttribute('data-f' + idx) || '';
-          var any = picked.some(function (v) { return have.indexOf('|' + v + '|') !== -1; });
-          if (!any) { hit = false; break; }
+          // 축 기본은 OR. 입점 축처럼 data-match="all"인 축만 AND다.
+          var test = function (v) { return have.indexOf('|' + v + '|') !== -1; };
+          var ok = st.mode[idx] === 'all' ? picked.every(test) : picked.some(test);
+          if (!ok) { hit = false; break; }
         }
       }
       row.hidden = !hit;
@@ -2970,6 +3062,7 @@ JS = """
     var id = group.dataset.for;
     var idx = group.dataset.facet;
     var all = group.querySelector('.chip-all');
+    if (group.dataset.match === 'all') stateOf(id).mode[idx] = 'all';
     group.addEventListener('click', function (e) {
       var chip = e.target.closest('.chip');
       if (!chip) return;
