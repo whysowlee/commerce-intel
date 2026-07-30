@@ -401,6 +401,7 @@ def main():
         },
         "items": records,
     }
+    os.makedirs(os.path.dirname(path), exist_ok=True)   # 클론 직후엔 data/가 비어 있다
     with open(path, "w", encoding="utf-8") as f:
         json.dump(doc, f, ensure_ascii=False, indent=1)
     print("저장: %s (%d건)" % (path, len(records)))

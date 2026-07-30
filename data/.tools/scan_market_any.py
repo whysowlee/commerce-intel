@@ -470,6 +470,7 @@ def main():
         },
         "items": records,
     }
+    os.makedirs(os.path.dirname(out), exist_ok=True)   # 클론 직후엔 data/가 비어 있다
     with open(out, "w", encoding="utf-8") as f:
         json.dump(doc, f, ensure_ascii=False, indent=1)
     print("저장: %s (%d건, %.1f분)" % (out, len(records), (datetime.now() - started).seconds / 60))
