@@ -278,7 +278,11 @@ GET https://api.musinsa.com/api2/hm/web/v5/pans/ranking/sections/{sectionId}
 
 숫자로 옮길 때: `천` = ×1000, `만` = ×10000 (`"1.2천명"` → `1200`).
 **이건 사이트가 반올림해 보여준 값이다.** 그대로 담되 정밀한 수치인 양 다루지 마라.
-**이 지표들은 랭킹 목록에만 있고 상품 상세에는 없다.**(확인 — PDP에서 0건)
+
+**2026-07-30 갱신 — 이 지표들의 원시값 엔드포인트를 찾았다(§4-1).** "보는 중"은
+`page-view` API로 **랭킹 밖 상품도** 정수로 조회된다(랭킹 top20 문구와 100% 일치 검증).
+누적 판매 배지의 원시값은 `stat` API의 `purchaseTotal`이다("판매 2.2천개" = 2181 확인).
+랭킹 응답의 문자열 파싱은 랭킹 스냅샷을 한 요청으로 뜰 때만 쓰고, 개별 상품 조회는 §4-1로 간다.
 
 ## 4. 상품 상세
 
@@ -295,14 +299,14 @@ GET https://api.musinsa.com/api2/hm/web/v5/pans/ranking/sections/{sectionId}
 | 카테고리 경로 | 나온다 | `baseCategoryFullPath` |
 | 핏·촉감·신축성 | **안 나온다 (2026-07-30 정정)** | `goodsMaterial.materials`가 **빈 배열**이다 — 아래 |
 | **상품 좋아요(하트)** | **나온다** | 구매하기 버튼 옆 숫자 (예: `84`) — **수집은 아래 배치 API로 한다** |
-| **조회수** | **나온다 — 단 구간 표기** | 정보 탭 표: `조회수  300회 이상 (최근 1개월)` |
-| 브랜드 좋아요 | 나온다 | 브랜드명 옆 (예: `8.9만`) — **상품 지표가 아니다** |
-| 누적 판매량 | 플래그만 확인 | `isCumulativePurchaseShow: true`. 숫자 출처 미검증 |
+| **조회수** | **나온다 — 화면은 구간 표기** | 정보 탭 표: `조회수  300회 이상 (최근 1개월)` — **원시값은 §4-1 `stat`** |
+| 브랜드 좋아요 | 나온다 | 브랜드명 옆 (예: `8.9만`) — **상품 지표가 아니다.** 원시값은 §4-1 |
+| 누적 판매량 | **나온다 (2026-07-30 해결)** | §4-1 `stat`의 `purchaseTotal` — 랭킹 배지와 대응 확인 |
 
 이 값들은 **서버 렌더 HTML에 없고 화면에서 따로 불러온다.** 원본 HTML만 훑고
 "미노출"이라고 판정하면 안 된다(1차 조사가 실제로 그 실수를 했다).
-**하트는 아래 배치 API로 해결됐고(2026-07-29), 조회수 구간 표기의 엔드포인트만
-미발견이다** — 조회수는 브라우저로 화면을 읽는 환경에서만 수집한다.
+**하트는 아래 배치 API로(2026-07-29), 조회수·누적판매·"보는 중"은 §4-1의
+`goods-detail` API로(2026-07-30) 전부 해결됐다** — 화면을 열 필요가 없다.
 
 ### 상품 하트 배치 API (2026-07-29 확인)
 
@@ -319,6 +323,48 @@ Content-Type: application/json
 - 같은 호스트의 `/like/api/v2/members/liketypes/...`(등록/해제)는 상태를 바꾸는
   조작이므로 **쓰지 않는다**(스킬 비범위)
 
+## 4-1. 실시간 지표 원시값 API (확인, 2026-07-30)
+
+화면이 반올림("3만")·구간("300회 이상")으로 보여주는 값들의 **원시 정수**를 주는
+엔드포인트. PDP가 실제로 부르는 요청을 네트워크 캡처와 JS 번들에서 확인했다.
+전부 비로그인 200.
+
+```
+GET https://goods-detail.musinsa.com/api2/goods/{goodsNo}/page-view
+→ data.goodsPageViewCount            "N명이 보는 중" 원시값 (viewers_now)
+
+GET https://goods-detail.musinsa.com/api2/goods/{goodsNo}/stat
+→ data.pageViewTotal                 조회수 원시값 — 화면 "300회 이상 (최근 1개월)"의 원천
+→ data.purchaseTotal                 누적판매 원시값 — 랭킹 배지 "판매 N개"의 원천
+
+POST https://like.musinsa.com/like/api/v2/liketypes/brand/counts
+{"relationIds": ["mixxo", "musinsastandard"]}      ← slug 문자열, 배치 지원
+→ data.contents.items[]: {likeType: "BRAND", relationId, count}
+```
+
+검증(2026-07-30 실측):
+- `page-view` — 실시간 랭킹 top20의 "N명이 보는 중" 문구와 **20건 전부 정확히 일치**
+  (313/495/61/…). **랭킹에 없는 상품도 goodsNo만 있으면 조회된다** — PDP의
+  "N명이 보고 있어요" UI가 이 값이다
+- `stat.purchaseTotal` — 랭킹 배지 "판매 2.2천개"=2181, "판매 1.5천개"=1531 대응 확인
+- 브랜드 하트 — 화면 "3만" = 30,139. likeType은 **`brand` 단수**(`brands`는 에러)
+
+**갱신 주기 (실측):**
+- **"보는 중"(`page-view`)은 실시간 랭킹과 같은 30분 배치다.** 10초 간격 10분 폴링에서
+  완전 고정 → 랭킹 `updatedAt` 18:12:59→18:43:31 경계에서 [495,313,183]→[537,387,209]로
+  일제 갱신. 30분에 1번 넘게 찍을 이유가 없다 (§랭킹의 시간 특성과 동일)
+- **하트(상품·브랜드)는 라이브 카운터다** — 10분 새 +1씩 수시 증가 관측. 아무 때나 정확값
+- `stat.purchaseTotal`은 준실시간(10분 새 2181→2183), `pageViewTotal`은 같은 구간 고정 — 배치 추정
+
+**함정 셋:**
+1. **존재하지 않는 브랜드 slug도 에러 없이 `count: 0`이 온다** (`misso`→0, 진짜 slug는
+   `mixxo`→87,710). 0이 나오면 값이 아니라 slug부터 의심해라 — `caller=BRAND`
+   `totalCount=0` 함정과 같은 계열이다
+2. `stat.pageViewTotal`은 "보는 중"이 **아니다** — 495명이 보는 중인 상품의
+   `pageViewTotal`은 88,315였다. viewers_now는 반드시 `page-view` 쪽을 써라
+3. 랭킹 문구가 없는 상품은 `page-view`도 0이다. 다만 관측된 최솟값이 13이라
+   **낮은 값(≤12)이 0으로 마스킹되는지는 미검증** — 0을 "아무도 안 본다"로 단정하지 마라
+
 ### 함정 1 — 조회수를 정수로 담지 마라
 
 무신사 조회수는 **`"300회 이상 (최근 1개월)"`처럼 구간으로 표기된다.**
@@ -328,6 +374,11 @@ Content-Type: application/json
 **`view_count`는 `null`로 두고, 원문을 `view_count_display`에 문자열 그대로 담는다.**
 `build_report.py`가 문구 그대로 싣고 순위 차트에서는 뺀다.
 둘 다 채우면 `validate_data.py`가 경고한다.
+
+> 2026-07-30 부기: 구간 표기의 **원시 정수를 주는 API를 찾았다**(§4-1 `stat.pageViewTotal`,
+> 404 실측 → 화면 "300회 이상"). 구간을 정수로 만들어내지 말라는 원칙은 그대로지만,
+> 원시값을 직접 조회하는 것은 그 문제가 없다. **`view_count`를 이 값으로 채울지는
+> SPEC 소관이라 지시 전까지 `null` 유지.**
 
 ### 함정 2 — 하트가 세 종류다
 
@@ -471,9 +522,9 @@ GET https://goods.musinsa.com/api2/review/v1/view/list/count?goodsNo={no}   # �
 | `price_sale` / `discount_rate` | `info.finalPrice` / `info.discountRatio` |
 | `price_original` | **랭킹 목록 미노출** — `info.strikethrough`는 가격이 아니라 **불리언**이다(2026-07-29 실측, 이전 매핑은 오류). 노출된 `finalPrice`·`discountRatio`에서 산술 복원해 담고 그 사실을 `meta.notes`에 남긴다. 할인 0이면 `finalPrice`와 같다 |
 | `url` | `onClick.url` |
-| `viewers_now` | `info.additionalInformation`의 `"N명이 보는 중"` |
+| `viewers_now` | `info.additionalInformation`의 `"N명이 보는 중"` — 개별 상품은 §4-1 `page-view`로도 조회 가능(랭킹 밖 상품 포함, 값 동일 검증) |
 | `buyers_now` | `info.additionalInformation`의 `"N명이 구매 중"` |
-| `purchase_count` | `image.labels`의 `"판매 N개"` 배지가 있을 때만 |
+| `purchase_count` | `image.labels`의 `"판매 N개"` 배지가 있을 때만 — 원시값은 §4-1 `stat.purchaseTotal`(배지 없는 상품도 나온다) |
 
 ### 스케일 주의
 
@@ -486,12 +537,12 @@ GET https://goods.musinsa.com/api2/review/v1/view/list/count?goodsNo={no}   # �
 이 문서가 답을 못 주는 것들이다. 필요해지면 그때 화면에서 확인해라.
 
 1. ~~상품 좋아요를 주는 엔드포인트~~ — **해결(2026-07-29)**: §상품 하트 배치 API.
-   **조회수** 엔드포인트만 여전히 미발견 — 브라우저로 상세 화면을 읽는 환경에서만 수집한다
-2. **조회수 구간의 계단** — `300회 이상` 말고 어떤 값들이 나오는지(100/500/1000…),
-   "최근 1개월"이 고정인지. 여러 상품을 비교해 확인해라
+   ~~조회수 엔드포인트~~도 **해결(2026-07-30)**: §4-1 `stat.pageViewTotal`
+2. ~~조회수 구간의 계단~~ — **사실상 무의미(2026-07-30)**: 원시값이 §4-1로 나오므로
+   구간 계단을 역산할 이유가 없다. "최근 1개월" 윈도우가 고정인지만 미검증으로 남는다
 3. ~~상품 좋아요가 목록(PLP) 응답에도 있는지~~ — **해결(2026-07-29)**: 배치 API가 있어
    목록·상세 어느 쪽도 열 필요 없다
-4. 상품 상세의 **누적 판매량 표시** — 플래그는 켜져 있는데 숫자 출처를 못 찾았다
+4. ~~상품 상세의 누적 판매량 표시~~ — **해결(2026-07-30)**: §4-1 `stat.purchaseTotal`
 2. 정렬 드롭다운의 라벨과 `sortCode` 매핑 — 잘못된 값이 조용히 폴백되므로 응답만으론 검증 불가
 3. 6자리 카테고리 코드 — `003000`(바지 전체)·`003002`(데님 팬츠)·`003004`는
    **화면 랭킹에서 확인(2026-07-30)**. 그 밖의 코드는 미검증이고, 대분류 3자리는
