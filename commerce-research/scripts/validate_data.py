@@ -13,6 +13,7 @@ exit code:
 
 import argparse
 import json
+import re
 import sys
 
 STORIES = ("brand-linesheet", "market-scan", "ranking-snapshot")
@@ -45,19 +46,28 @@ OPTIONAL_METRICS = (
     "buyers_now",
 )
 
-# 사이트가 정확한 수 대신 구간으로만 보여줄 때("300회 이상 (최근 1개월)") 원문을 담는 칸.
-# 짝이 되는 수치 필드는 null로 둔다 — 문구를 정수로 바꾸면 없는 정밀도를 만드는 것이다.
+# 사이트가 정확한 수 대신 문구로 보여줄 때 원문을 담는 칸.
 DISPLAY_FIELDS = {
     "view_count_display": "view_count",
     "purchase_count_display": "purchase_count",
+    "like_count_display": "like_count",
 }
+
+# 표기 두 종류를 가른다 (SPEC v15).
+#   구간("300회 이상") — 참값 상한이 없다. 정수로 바꾸면 없는 정밀도를 만드는 것이라
+#                        짝이 되는 수치 필드는 null이어야 한다
+#   축약("1.2천", "판매 9만개") — 반올림이라 오차가 ±4% 안으로 유계다. 정수 파싱을
+#                        허용하므로 원문과 정수가 같이 있어도 경고하지 않는다
+RANGE_MARKS = re.compile(r"이상|이하|미만|초과|~|＋|\+$")
+ABBREV_MARKS = re.compile(r"\d\s*(천|만|억)|\d\s*[kKmM]\b")
 
 MISSING_WARN = 5.0     # % — 이 위로는 WARN
 MISSING_FAIL = 30.0    # % — 이 위로는 FAIL(사이트 구조 변경 의심)
 TOTAL_TOLERANCE = 5.0  # % — 사이트 노출 총계 대비 허용 오차
 
 # 사람이 읽는 문자열 — 인코딩이 깨지면 리포트가 통째로 못 읽게 되는 칸들
-TEXT_FIELDS = ("name", "brand", "category", "view_count_display", "purchase_count_display")
+TEXT_FIELDS = ("name", "brand", "category",
+               "view_count_display", "purchase_count_display", "like_count_display")
 
 
 def looks_mojibake(text):
@@ -200,10 +210,13 @@ def validate_items(items, story, rep):
             if not isinstance(shown, str):
                 rep.warn("%s.%s는 사이트 표기 문자열이어야 한다: %r" % (where, display_field, shown))
             elif is_number(item.get(exact_field)):
-                rep.warn(
-                    "%s에 %s와 %s가 같이 있다 — 구간 표기를 정수로 바꿔 담았는지 확인할 것"
-                    % (where, exact_field, display_field)
-                )
+                # 축약 표기는 파싱이 허용돼 병기가 정상이다 (SPEC v15).
+                # 구간 표기일 때만 경고한다 — 참값 상한이 없어 정수로 바꾸면 조용히 틀린다.
+                if RANGE_MARKS.search(shown) or not ABBREV_MARKS.search(shown):
+                    rep.warn(
+                        "%s에 %s와 %s가 같이 있다 — 구간 표기를 정수로 바꿔 담았는지 확인할 것"
+                        % (where, exact_field, display_field)
+                    )
 
         if story == "ranking-snapshot":
             rank = item.get("rank")

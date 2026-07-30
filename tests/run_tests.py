@@ -56,6 +56,11 @@ def read(path):
         return handle.read()
 
 
+def write(path, text):
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(text)
+
+
 def main():
     if os.path.isdir(WORK):
         shutil.rmtree(WORK)
@@ -95,6 +100,25 @@ def main():
     check("V4b 총계 오차와 중단을 짚는다",
           "incomplete" in log and "노출 총계" in log, log[-400:])
     check("V4c 구간 표기를 정수로 바꿔 담으면 잡아낸다",
+          "구간 표기를 정수로" in log, log[-400:])
+
+    # SPEC v15 — 축약 표기(`1.2천`)는 정수 파싱이 허용되므로 원문과 병기해도 경고하지 않는다.
+    # 구간 표기(`300회 이상`)만 여전히 경고 대상이다. 둘을 한 픽스처에 같이 넣어 가른다.
+    abbrev_doc = json.loads(read(fx("musinsa-market-scan.json")))
+    abbrev_doc["items"][0]["purchase_count"] = 90000
+    abbrev_doc["items"][0]["purchase_count_display"] = "판매 9만개"
+    abbrev_doc["items"][1]["like_count"] = 1200
+    abbrev_doc["items"][1]["like_count_display"] = "1.2천"
+    write(out("scan-abbrev.json"), json.dumps(abbrev_doc, ensure_ascii=False))
+    code, log = run("validate_data.py", out("scan-abbrev.json"))
+    check("V4d 축약 표기는 정수와 원문을 같이 담아도 경고하지 않는다",
+          "구간 표기를 정수로" not in log, log[-400:])
+
+    abbrev_doc["items"][2]["view_count"] = 300
+    abbrev_doc["items"][2]["view_count_display"] = "300회 이상 (최근 1개월)"
+    write(out("scan-abbrev.json"), json.dumps(abbrev_doc, ensure_ascii=False))
+    code, log = run("validate_data.py", out("scan-abbrev.json"))
+    check("V4e 같은 파일이어도 구간 표기는 여전히 경고한다",
           "구간 표기를 정수로" in log, log[-400:])
 
     code, log = run("validate_data.py", fx("musinsa-market-scan.json"),
