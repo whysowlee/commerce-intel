@@ -5,7 +5,11 @@ node_modules/
 dist/
 build/
 tests/.work/
-data/
+# 수집 데이터는 추적하지 않지만 data/.tools의 수집기·카탈로그는 인프라라 추적한다
+# (`data/`로 통째로 제외하면 git이 폴더 안으로 내려가지 않아 예외가 안 먹는다 → `data/*`)
+data/*
+!data/.tools/
+data/.tools/*.log
 output/
 description.md
 __pycache__/
