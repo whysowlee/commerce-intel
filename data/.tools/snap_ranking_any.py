@@ -54,8 +54,20 @@ CATALOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ranking_targ
 TOP_N = 100
 
 MUSINSA_URL = ("https://api.musinsa.com/api2/hm/web/v5/pans/ranking/sections/199"
-               "?storeCode=musinsa&gf=A&ageBand=AGE_BAND_ALL&period=REALTIME"
+               "?storeCode=musinsa&gf=A&ageBand=AGE_BAND_ALL&period={period}"
                "&categoryCode={code}&page=1")
+# 원시값 보강 엔드포인트 — references/musinsa.md §4·§4-1 실측 확정 (전부 비로그인 200)
+MUSINSA_DETAIL = "https://goods-detail.musinsa.com/api2/goods/{no}"           # 성별·시즌·리뷰·정가
+MUSINSA_STAT = "https://goods-detail.musinsa.com/api2/goods/{no}/stat"        # 누적판매·조회수 원시
+MUSINSA_PAGEVIEW = "https://goods-detail.musinsa.com/api2/goods/{no}/page-view"  # "보는 중" 원시
+MUSINSA_LIKE = "https://like.musinsa.com/like/api/v2/liketypes/{kind}/counts"    # goods·brand 배치
+MUSINSA_PERIODS = ("DAILY", "WEEKLY", "MONTHLY")  # REALTIME 외 기간별 순위도 기록한다
+# 후기 목록(최신순). pageSize를 바꾸면 다른 시점의 캐시가 온다(2026-07-30 실측:
+# ps=20은 7/13까지, ps=5는 7/25까지) — 반드시 같은 형태의 URL만 쓴다
+MUSINSA_REVIEW = ("https://goods.musinsa.com/api2/review/v1/view/list"
+                  "?goodsNo={no}&page={page}&pageSize=20&sort=new")
+REVIEW_MAX_PAGES = 5          # 증분 판정용 상한 — 30분에 100건 넘게 달리면 초과분은 노트로 남긴다
+REVIEW_NEGATIVE_MAX = 3       # 2026-07-30 사용자 기준: 0~3점 부정, 3점 초과~5점 긍정
 CM_API = "https://display-bff-api.29cm.co.kr/api/v1/plp/best/items"
 
 
@@ -134,8 +146,9 @@ def resolve_target(catalog, site, query):
 
 # ---------------------------------------------------------------- 무신사
 
-def collect_musinsa(entry):
-    data = curl([MUSINSA_URL.format(code=entry["code"])])
+def musinsa_ranking(code, period):
+    """sections/199 랭킹 한 기간 조회 → (순위순 items, updatedAt epoch ms)."""
+    data = curl([MUSINSA_URL.format(code=code, period=period)])
     found = []
 
     def walk(obj):
@@ -154,29 +167,187 @@ def collect_musinsa(entry):
              if isinstance(i.get("image"), dict) and i["image"].get("rank")
              and i.get("type", "PRODUCT_COLUMN") == "PRODUCT_COLUMN"]
     items.sort(key=lambda x: x["image"]["rank"])
-    items = items[:TOP_N]
-    if not items:
-        raise RuntimeError("랭킹 항목 0건 — categoryCode·응답 구조를 의심할 것")
 
     updated_at = None
     for m in (data.get("data") or {}).get("modules") or []:
         if m.get("type") == "QUERY_UPDATEDAT":
             updated_at = (m.get("information") or {}).get("updatedAt")
+    return items, updated_at
+
+
+def prev_review_watermarks(site, target):
+    """직전 스냅샷에서 상품별 후기 워터마크(본 것 중 최대 createDate)를 읽는다.
+
+    스냅샷 파일이 곧 상태 저장소다 — 별도 상태 파일을 두면 스냅샷과 어긋날 수 있다.
+    직전 파일이 없거나(첫 실행) 워터마크 필드가 없으면(구형 스냅샷) 빈 dict를 준다.
+    """
+    import glob
+    safe = target.replace("/", "·")
+    files = sorted(glob.glob("%s/data/snapshots/%s-ranking-%s-*.json" % (REPO, site, safe)))
+    if not files:
+        return {}
+    try:
+        with open(files[-1], encoding="utf-8") as f:
+            items = json.load(f).get("items") or []
+        return {i["product_id"]: i["review_watermark"] for i in items
+                if i.get("review_watermark")}
+    except (json.JSONDecodeError, KeyError, OSError):
+        return {}
+
+
+def musinsa_new_reviews(goods_no, watermark):
+    """최신순 후기에서 워터마크(createDate) 이후 신규만 긍/부정으로 센다.
+
+    반환: (positive, negative, new_watermark, truncated, list_total)
+    워터마크가 없으면(첫 관측) 세지 않고 기준선만 잡는다 — 처음부터 전량을 훑지 않는다
+    (2026-07-30 사용자 지시). 후기 no는 날짜와 단조가 아니라서(실측) 날짜로만 판정한다.
+    같은 초에 걸린 후기는 중복 집계 방지(strict >)를 위해 다음 주기로 넘어갈 수 있다.
+    """
+    positive = negative = 0
+    newest = watermark
+    truncated = False
+    list_total = None
+    for page in range(1, REVIEW_MAX_PAGES + 1):
+        data = (curl([MUSINSA_REVIEW.format(no=goods_no, page=page)]) or {}).get("data") or {}
+        if list_total is None:
+            list_total = data.get("total")
+        rows = data.get("list") or []
+        if not rows:
+            if newest is None:
+                # 후기 0건 상품: 날짜 워터마크를 잡을 후기가 없다. 수집 시각을 합성
+                # 워터마크로 둬야 첫 후기가 달렸을 때 다음 주기가 셀 수 있다
+                newest = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+            break
+        dates = [r.get("createDate") or "" for r in rows]
+        if dates != sorted(dates, reverse=True):  # sort=new 폴백 의심 — 판정 불가로 처리
+            raise RuntimeError("후기 목록이 최신순이 아니다 — sort 폴백 의심")
+        if newest is None or dates[0] > newest:
+            newest = dates[0]
+        if watermark is None:  # 첫 관측: 기준선만
+            return None, None, newest, False, list_total
+        older_reached = False
+        for r in rows:
+            if (r.get("createDate") or "") > watermark:
+                # 목록은 색상 변형 패밀리 합산이다(2026-07-30 실측: 변형별 상세
+                # totalCount 합 = 목록 total 1017 정확 일치). 자기 상품 행만 센다 —
+                # 안 거르면 다른 색상 후기가 섞이고 변형 동시 랭크인 시 이중 집계된다
+                if str((r.get("goods") or {}).get("goodsNo")) != str(goods_no):
+                    continue
+                if int(r.get("grade") or 0) <= REVIEW_NEGATIVE_MAX:
+                    negative += 1
+                else:
+                    positive += 1
+            else:
+                older_reached = True
+        if older_reached:
+            break
+    else:
+        truncated = True  # 상한 페이지까지 전부 신규 — 그 아래는 못 셌다
+    if watermark is None:  # 첫 관측(후기 0건 포함): 규약대로 기준선만 — 0/0과 구분한다
+        return None, None, newest, False, list_total
+    return positive, negative, newest, truncated, list_total
+
+
+def musinsa_like_counts(kind, relation_ids):
+    """하트 배치 조회 → {relationId(str): count}. kind는 goods/brand 단수형."""
+    data = curl(["-H", "Content-Type: application/json", "-X", "POST",
+                 MUSINSA_LIKE.format(kind=kind),
+                 "-d", json.dumps({"relationIds": relation_ids})])
+    return {str(i["relationId"]): i.get("count")
+            for i in ((data.get("data") or {}).get("contents") or {}).get("items") or []}
+
+
+def collect_musinsa(entry):
+    items, updated_at = musinsa_ranking(entry["code"], "REALTIME")
+    items = items[:TOP_N]
+    if not items:
+        raise RuntimeError("랭킹 항목 0건 — categoryCode·응답 구조를 의심할 것")
+
+    ids = [str(it["id"]) for it in items]
+    enrich_fail = {"period": [], "detail": 0, "stat": 0, "page-view": 0,
+                   "goods-like": False, "brand-like": False, "review": 0}
+    watermarks = prev_review_watermarks("musinsa", entry["target"])
+
+    # ① 기간별 순위 — DAILY/WEEKLY/MONTHLY는 하루 1회(04:4x) 배치라 요청 3번으로 끝난다
+    period_rank, period_updated = {}, {}
+    for period in MUSINSA_PERIODS:
+        try:
+            p_items, p_up = musinsa_ranking(entry["code"], period)
+            period_rank[period] = {str(i["id"]): i["image"]["rank"] for i in p_items}
+            period_updated[period] = p_up
+        except Exception:
+            enrich_fail["period"].append(period)
+            period_rank[period] = {}
+
+    # ② 상품 하트 배치 (100개 한 요청 실측 확인)
+    goods_like = {}
+    try:
+        goods_like = musinsa_like_counts("goods", [int(i) for i in ids])
+    except Exception:
+        enrich_fail["goods-like"] = True
+
+    # ③ 상품별 원시값 — 상세(성별·시즌·리뷰·정가) + stat(누적판매·조회수) + page-view(보는 중)
+    #    + 후기 증분(직전 스냅샷 워터마크 이후 신규만 긍/부정 분류)
+    detail_map, stat_map, pv_map, review_map = {}, {}, {}, {}
+    review_truncated = []
+    for gid in ids:
+        for name, url, store in (("detail", MUSINSA_DETAIL, detail_map),
+                                 ("stat", MUSINSA_STAT, stat_map),
+                                 ("page-view", MUSINSA_PAGEVIEW, pv_map)):
+            try:
+                store[gid] = (curl([url.format(no=gid)]) or {}).get("data") or {}
+            except Exception:
+                enrich_fail[name] += 1
+        try:
+            pos, neg, wm, truncated, list_total = musinsa_new_reviews(gid, watermarks.get(gid))
+            review_map[gid] = {"pos": pos, "neg": neg, "wm": wm, "total": list_total}
+            if truncated:
+                review_truncated.append(gid)
+        except Exception:
+            enrich_fail["review"] += 1
+            # 판정 실패 시 워터마크를 이월해 다음 주기가 이어서 셀 수 있게 한다
+            review_map[gid] = {"pos": None, "neg": None,
+                               "wm": watermarks.get(gid), "total": None}
+        time.sleep(0.1)  # 400여 요청이라 간격을 둔다 (30분 창 대비 충분히 짧다)
+
+    # ④ 브랜드 하트 배치 — slug는 랭킹 항목의 onClickBrandName.url에서 얻는다
+    brand_like = {}
+    slug_of = {}
+    for it in items:
+        url = ((it["info"].get("onClickBrandName") or {}).get("url")) or ""
+        m = re.search(r"/brand/([^/?#]+)", url)
+        if m:
+            slug_of[str(it["id"])] = m.group(1)
+    try:
+        slugs = sorted(set(slug_of.values()))
+        if slugs:
+            brand_like = musinsa_like_counts("brand", slugs)
+    except Exception:
+        enrich_fail["brand-like"] = True
 
     records = []
     for it in items:
+        gid = str(it["id"])
         info, image = it["info"], it["image"]
+        det = detail_map.get(gid) or {}
+        stat = stat_map.get(gid) or {}
         final = info.get("finalPrice")
         ratio = info.get("discountRatio") or 0
-        # 랭킹 목록은 정가 미노출 — 노출된 판매가·할인율에서 산술 복원
-        original = round(final / (1 - ratio / 100)) if (final and ratio) else final
-        viewers = buyers = None
+        # 정가는 상세 원시값(goodsPrice.normalPrice) 우선, 실패 시 산술 복원 폴백
+        original = (det.get("goodsPrice") or {}).get("normalPrice")
+        if original is None:
+            original = round(final / (1 - ratio / 100)) if (final and ratio) else final
+        viewers_text = buyers = None
         for ai in info.get("additionalInformation") or []:
             text = ai.get("text", "")
             if "보는 중" in text:
-                viewers = parse_korean_number(text)
+                viewers_text = parse_korean_number(text)
             elif "구매 중" in text:
                 buyers = parse_korean_number(text)
+        # "보는 중"은 page-view 원시값 우선(문구와 정확 일치 검증됨). 어댑터 함정:
+        # 원시 0은 저값 마스킹일 수 있어 문구 파싱으로 폴백한다
+        viewers_raw = pv_map.get(gid, {}).get("goodsPageViewCount")
+        viewers = viewers_raw if viewers_raw else viewers_text
         # 축약 표기는 정수로 파싱해 담되(SPEC v15) 원문도 남긴다 — 반올림 노출값이라는
         # 사실이 리포트 각주와 검증에서 살아 있어야 한다.
         purchase = purchase_display = None
@@ -184,32 +355,70 @@ def collect_musinsa(entry):
             if lb.get("text", "").startswith("판매"):
                 purchase_display = lb["text"]
                 purchase = parse_korean_number(lb["text"])
+        review = det.get("goodsReview") or {}
+        category = det.get("baseCategoryFullPath") or entry["path"][-1]
+        slug = slug_of.get(gid)
         records.append({
-            "product_id": str(it["id"]),
+            "product_id": gid,
             "name": info.get("productName"),
             "url": (it.get("onClick") or {}).get("url"),
             "image_url": image.get("url"),
             "brand": info.get("brandName"),
-            "category": entry["path"][-1],
+            "category": category,
             "price_original": original,
             "price_sale": final,
             "discount_rate": ratio,
-            "review_count": None, "rating": None,
-            "view_count": None, "view_count_display": None,
+            "review_count": review.get("totalCount"),
+            "rating": review.get("satisfactionScore"),   # 상세는 0~5 스케일이다
+            "view_count": None, "view_count_display": None,  # SPEC 소관 — 원시는 page_view_total
             "purchase_count": purchase, "purchase_count_display": purchase_display,
-            "like_count": None,
+            "like_count": goods_like.get(gid),
             "viewers_now": viewers, "buyers_now": buyers,
             "sold_out": bool(info.get("isSoldOut", False)),
             "rank": image["rank"],
+            # ---- 계약 외 보강 필드 (2026-07-30 사용자 지시: 판매 추이 해석용 원시값 전부) ----
+            "purchase_total": stat.get("purchaseTotal"),      # 누적판매 원시(배지의 원천)
+            "page_view_total": stat.get("pageViewTotal"),     # 조회수 원시(최근 1개월 추정 윈도우)
+            "brand_slug": slug,
+            "brand_like_count": brand_like.get(slug),
+            "sex": det.get("sex"),                            # 예: ["남성","여성"]
+            "season": det.get("season"), "season_year": det.get("seasonYear"),
+            "rank_daily": period_rank["DAILY"].get(gid),
+            "rank_weekly": period_rank["WEEKLY"].get(gid),
+            "rank_monthly": period_rank["MONTHLY"].get(gid),
+            # 후기 증분(2026-07-30 지시): 직전 스냅샷 이후 신규 후기만 분류.
+            # 0~3점 부정 / 3점 초과 긍정. null = 첫 관측이라 기준선만 잡은 것(0과 다르다)
+            "review_new_positive": (review_map.get(gid) or {}).get("pos"),
+            "review_new_negative": (review_map.get(gid) or {}).get("neg"),
+            "review_watermark": (review_map.get(gid) or {}).get("wm"),
+            "review_list_total": (review_map.get(gid) or {}).get("total"),
         })
+    fails = {k: v for k, v in enrich_fail.items() if v}
     notes = [
         "updatedAt(원본 갱신 시각, epoch ms): %s" % updated_at,
-        "경로 A: sections/199 + categoryCode=%s, period=REALTIME (요청 1회, top %d)"
+        "기간별 랭킹 updatedAt: %s" % json.dumps(period_updated),
+        "경로 A: sections/199 + categoryCode=%s, period=REALTIME top %d"
         % (entry["code"], TOP_N),
-        "price_original은 랭킹 목록 미노출 — 노출된 finalPrice·discountRatio에서 산술 복원",
-        "purchase_count는 '판매 N개' 배지의 반올림 노출값(천/만 변환)",
-        "review_count·rating·like_count는 랭킹 목록 미노출 → null",
+        "보강 수집(2026-07-30 지시): 상품별 detail·stat·page-view + 하트 배치(goods·brand) "
+        "+ DAILY/WEEKLY/MONTHLY 순위 — 계약 외 필드 purchase_total·page_view_total·"
+        "brand_slug·brand_like_count·sex·season·season_year·rank_daily/weekly/monthly",
+        "price_original은 상세 goodsPrice.normalPrice 원시값(실패 시 finalPrice·discountRatio 산술 복원)",
+        "like_count는 하트 배치 API 원시값, viewers_now는 page-view 원시값(0이면 문구 파싱 폴백)",
+        "purchase_count는 '판매 N개' 배지 반올림 파싱 유지 — 원시는 purchase_total",
+        "view_count는 SPEC 지시 전까지 null 유지 — 원시는 page_view_total(stat.pageViewTotal)",
+        "rank_daily/weekly/monthly는 해당 기간 top102 밖이면 null (하루 1회 04:4x 배치 값)",
+        "review_new_positive/negative는 직전 스냅샷 워터마크(createDate) 이후 신규 후기만 "
+        "센 증분값 — 0~3점 부정, 3점 초과 긍정(2026-07-30 기준). null은 첫 관측(기준선만). "
+        "후기 목록 캐시가 pageSize별로 시점이 달라 반영이 한 주기 늦을 수 있다",
+        "review_list_total은 후기 목록 API 총계 = 색상 변형 패밀리 합산값(2026-07-30 원인 확정: "
+        "변형별 상세 totalCount 합과 정확 일치). 상품 단독 총계는 review_count(상세) 쪽이다. "
+        "증분 집계는 goods.goodsNo 필터로 자기 상품 후기만 센다",
     ]
+    if review_truncated:
+        notes.append("후기 증분 페이지 상한(%d) 도달 %d건(%s) — 그 아래 신규는 다음 주기로"
+                     % (REVIEW_MAX_PAGES, len(review_truncated), ",".join(review_truncated)))
+    if fails:
+        notes.append("보강 실패 카운트: %s — 해당 필드는 null" % json.dumps(fails, ensure_ascii=False))
     return records, notes
 
 
