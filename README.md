@@ -65,7 +65,7 @@ commerce-research/
 ```
 
 수집은 에이전트가 API·브라우저로, **검증·집계·리포트 생성은 코드가** 한다. 둘 사이는
-[데이터 계약](docs/SPEC.md#6-데이터-계약-수집-json-스키마)(JSON 스키마)으로만 이어져 있어서,
+데이터 계약(JSON 스키마 — [docs/SPEC-INTEL.md](docs/SPEC-INTEL.md) 참조)으로만 이어져 있어서,
 사이트 구조가 바뀌어 수집 방법이 달라져도 리포트 쪽은 그대로다.
 
 ## 스크립트 직접 쓰기
@@ -137,6 +137,7 @@ python3 tests/run_tests.py
 
 | 문서 | 내용 |
 |---|---|
-| [docs/SPEC.md](docs/SPEC.md) | 범위/비범위, 스토리별 스펙, 데이터 계약, 강건성 정책 |
+| [docs/SPEC-INTEL.md](docs/SPEC-INTEL.md) | intel의 유일한 스펙·판단 기준 (결정 기록 D1~D11) |
+| [docs/EVIDENCE.md](docs/EVIDENCE.md) | 실측 근거 아카이브 — 구 SPEC.md(v16, 삭제)에서 추출 |
 | [docs/TEST-CASES.md](docs/TEST-CASES.md) | 트리거링·기능·회귀 테스트 케이스 |
 | [description.md](description.md) | 프로젝트 배경과 목표 (스킬에는 포함되지 않는다) |

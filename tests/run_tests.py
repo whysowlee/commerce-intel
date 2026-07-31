@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""commerce-research 스크립트 회귀 테스트.
+"""commerce-intel 스킬 스크립트 회귀 테스트.
 
 실제 사이트에 붙지 않고 픽스처로 scripts/의 동작만 검증한다.
 사이트를 실제로 도는 트리거/기능 테스트는 docs/TEST-CASES.md에 있다.
@@ -15,7 +15,7 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCRIPTS = os.path.join(ROOT, "commerce-research", "scripts")
+SCRIPTS = os.path.join(ROOT, "skills", "commerce-intel", "scripts")
 TESTS = os.path.join(ROOT, "tests")
 WORK = os.path.join(TESTS, ".work")
 FIX = os.path.join(WORK, "fixtures")
@@ -348,11 +348,11 @@ def main():
           code == 0 and "리포트 구조 템플릿" in template, "exit=%d\n%s" % (code, log[-300:]))
     check("B8b 템플릿이 노출값 원칙과 미노출 규칙을 안내한다",
           "노출된 평점" in template and "미노출" in template and "approx" in template)
-    shipped = os.path.join(ROOT, "commerce-research", "assets", "report-template.html")
+    shipped = os.path.join(ROOT, "skills", "commerce-intel", "assets", "report-template.html")
     check("B8c 배포된 템플릿이 생성기와 어긋나지 않는다",
           os.path.exists(shipped) and read(shipped) == template,
           "assets/report-template.html이 낡았다. "
-          "build_report.py --emit-template --out commerce-research/assets/report-template.html 로 다시 뽑을 것")
+          "build_report.py --emit-template --out skills/commerce-intel/assets/report-template.html 로 다시 뽑을 것")
 
     code, _ = run("build_report.py", "--out", out("noinput.html"))
     check("B9 입력 없이 리포트를 만들려 하면 거부한다", code == 2, "exit=%d" % code)

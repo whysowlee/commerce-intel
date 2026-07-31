@@ -1,0 +1,200 @@
+---
+name: commerce-intel
+description: 커머스 시장 조사·가격 분석 오케스트레이터. 무신사, 29CM, 브랜드 자사몰 등에서
+  상품·랭킹 데이터를 모아 로컬 DB에 축적하고, 구글 시트로 미러하고, 가설 도출용 interactive
+  리포트를 만든다. 브랜드 라인시트(멀티 플랫폼 비교), 카테고리 시장 전수조사, 랭킹 모니터링,
+  가격-반응 관계 탐색(가격 탄력성 가설), 입점처 리서치("이 브랜드 어디에 입점해 있어?")에
+  쓴다. "시장 조사", "전수조사", "라인시트", "랭킹 모니터링", "추적", "가격 분석",
+  "가격 탄력성", "입점처", "상품 다 모아서 정리해줘" 같은 수집·분석 요청에 트리거된다.
+  플랫폼 이름이 명시되면 그 플랫폼만 다루고, 입점처 리서치 요청은 플랫폼 이름 없이도
+  트리거된다. 상품 구매 대행, 개인 쇼핑 추천에는 쓰지 않는다.
+compatibility: 웹 요청(JSON API)을 보낼 수 있는 도구가 필요하다. 브라우저 제어 도구는
+  백업 경로용. 코드 실행이 되면 scripts/로 DB·검증·리포트를 만들고, 안 되면
+  assets/report-template.html 구조를 따라 직접 작성한다(DB·시트 미러는 코드 실행 필수).
+metadata:
+  version: 2.0.0
+---
+
+# commerce-intel
+
+커머스 사이트에서 **화면에 노출된 값만** 모아 정본 DB에 축적하고, 시트로 미러하고,
+사용자가 스스로 가설을 세울 수 있는 리포트를 만든다. 판단 기준은 `docs/SPEC-INTEL.md`다.
+
+## 원칙 (전부 계승)
+
+1. **추정하지 않는다.** 미노출 값은 `null`이고 리포트에 "미노출"로 찍힌다.
+   리뷰 수로 판매량을 역산하는 식의 추정은 사용자가 요청해도 하지 않는다.
+2. **수집과 처리를 나눈다.** 수집 결과는 §데이터 계약 JSON에 담고, 검증·적재·집계·리포트는
+   `scripts/`가 한다. 수집 방식이 바뀌어도 하류는 그대로다.
+3. **막히면 멈추고 보고한다.** 차단(403/429/캡차)을 우회하지 않는다.
+4. **수집 전에 DB에 먼저 묻는다.** 이미 있는 것을 다시 조사하지 않는다(§재사용 판정).
+
+## 아키텍처 — 이 스킬이 지휘하는 것
+
+```
+요청 해석 → 재사용 판정(DB) → 수집(플랫폼 스킬에 위임) → 검증 → DB 적재
+                                                          → 시트 미러 → 리포트
+```
+
+- **수집 방법은 이 스킬이 모른다.** 사이트별 방법은 플랫폼 스킬이 갖는다:
+  무신사 → `platform-musinsa` · 29CM → `platform-29cm` · 자사몰 → `platform-ownmall` ·
+  처음 보는 플랫폼 → `platform-generic`. 플랫폼 스킬의 산출물은 언제나
+  §데이터 계약 JSON이고, 그 뒤는 전부 이 스킬의 일이다.
+- **입점처 리서치**는 `channel-scout` 서브 에이전트를 스폰한다(있으면). **스폰 전에
+  `platforms` 테이블에서 기존 정찰을 꺼내 프롬프트에 넘긴다** — 90일(D7 준용) 이내
+  정찰이 있는 플랫폼은 재정찰하지 않고, 이번에 새로 볼 것은 그 브랜드의 입점 여부뿐이다:
+  ```bash
+  python3 scripts/intel_db.py export --table platforms --format json
+  ```
+  결과 보고서는 `platforms`에 적재하고(`updated_at`이 정찰 신선도 기준),
+  어떤 플랫폼 정찰을 재사용했는지 사용자 보고에 포함한다.
+  반복 수집할 새 플랫폼이면 `platform-skill-maker`로 스킬 초안을 만든다.
+- **에이전트 산출물은 검수 후 수용한다** (evaluator 패턴): 산출물을 받으면 기준표로
+  항목별 PASS/FAIL을 매긴다 — channel-scout 보고서라면 ① 모든 입점처에 확인 근거·
+  신뢰도가 붙었는가 ② 미검증이 「미검증」으로 구분됐는가 ③ 불일치 섹션이 있는가.
+  FAIL 항목은 그 항목만 짚어 **1회 재요청**하고, 그래도 미달이면 미달 사실과 함께
+  사용자에게 그대로 전달한다(억지로 고쳐 쓰지 않는다). 검수 결과는 조용히 버리지
+  말고 무엇을 왜 반려했는지 남긴다.
+- 유저 스토리는 고정이 아니다 — 검증된 절차(라인시트·전수조사·랭킹 모니터링,
+  `references/story-catalog.md`)는 그대로 쓰고, 그 밖의 요구는 위 원칙 안에서 조합해
+  수행한다. 같은 조합이 3회 이상 반복되면 스토리 승격을 사용자에게 제안한다.
+
+## 시작하기 전에 확정할 것
+
+요청에서 뽑아낸다. **추론하지 말고, 빠진 게 있으면 한 번 물어본다.**
+
+| 항목 | 설명 |
+|---|---|
+| 무엇을 | 브랜드명 / 카테고리명 / "입점처" 자체 |
+| 사이트 | 요청에 명시된 것만 수집한다(기본값 없음). **플랫폼 없이 카테고리만 오면** 임의로 고르지 않는다 — `channel-scout` **카테고리 모드**를 스폰한다: 누적 카탈로그 재사용 + **그 상품군 특화 채널 탐색(매 요청)** → 플랫폼별 규모와 함께 제시 → 사용자가 고른다. 범용 카탈로그 전면 재검은 첫 실행·90일 주기에만. 입점처 리서치 요청은 사이트가 없어도 된다 |
+| 기간 | 변화 분석에서만, 그리고 필수. 절대 날짜로 바꿔 기록한다(`date +%Y-%m-%d`로 확인) |
+| 재수집 여부 | "새로 받아"·"다시 조사해"가 있으면 재사용 판정을 건너뛴다 |
+
+## 재사용 판정 — 수집 전에 반드시
+
+정책은 SPEC-INTEL §2-2다: **정적 속성 TTL 90일 · 시변 값 스킵 창 = 사이트 갱신 주기**
+(플랫폼 스킬 frontmatter의 `refresh-cycle`, 미상이면 24시간).
+
+```bash
+# 1) 시변 값: 신선한 관측이 있으면 수집 자체를 생략할 수 있다 (exit 0 = 스킵 가능)
+python3 scripts/intel_db.py check --site musinsa --context "ranking:바지" --cycle-minutes 30
+
+# 2) 수집했다면: 비싼 정적 판단(핏 분류 등)은 DB에서 재사용한다
+python3 scripts/intel_db.py reuse-attrs data/raw/<수집>.json
+```
+
+- 스킵했으면 **스킵 사실과 마지막 관측 시각을 사용자에게 보고한다.** 옛 데이터를
+  새것처럼 조용히 내지 않는다.
+- `context`는 `ranking:바지` · `brand:인사일런스` · `market:데님팬츠(남성)` 형식이다.
+  랭킹에서 온 실시간 지표를 다른 문맥에 섞지 않는다.
+- TTL이 만료된 정적 속성은 `stale-static`으로 뽑아 다음 수집에서 재확인한다.
+
+## 공통 워크플로우
+
+### 1단계 — 플랫폼 스킬을 따라 수집한다
+
+작업할 사이트의 플랫폼 스킬을 읽고 그 절차대로 **데이터 계약 JSON**을 만든다.
+플랫폼 스킬이 없는 사이트는 `platform-generic`으로 정찰부터 한다.
+수집하면서 **페이지 단위로** `data/raw/`에 저장한다(중단 시 이어서).
+
+### 2단계 — 검증한다
+
+```bash
+python3 scripts/validate_data.py data/raw/<파일>.json --json data/validation.json
+```
+
+- `0` 진행 · `1` 진행하되 경고를 사용자에게 전달 · `2` **적재·리포트 금지, 원인부터.**
+  결측 30% 초과는 사이트 구조 변경 신호다 — 플랫폼 스킬의 어댑터 매핑을 확인한다.
+
+### 3단계 — DB에 적재한다
+
+```bash
+python3 scripts/intel_db.py load data/raw/<파일>.json
+```
+
+관측은 append only다 — 같은 (site, product_id, observed_at, context)는 중복으로 스킵된다.
+검증이 `2`인 파일은 적재하지 않는다.
+
+### 4단계 — 구글 시트로 미러한다
+
+```bash
+python3 scripts/sync_sheets.py          # data/sheets_config.json + 서비스 계정 키 사용
+```
+
+- 방향은 **로컬 → 시트 단방향**이다. 시트는 보는 창구이고 정본은 `data/intel.db`다.
+- **인증이 없거나 실패해도 수집·적재는 유효하다.** 미러만 밀린 것이고 다음 성공 때
+  `sync_state`부터 따라잡는다. 실패 사실을 사용자에게 보고한다.
+- 최초 설정(서비스 계정 발급)은 `docs/SHEETS-SETUP.md` — 사용자가 1회 수행한다.
+
+### 5단계 — 리포트를 만든다
+
+두 종류다. 요청 성격으로 가른다.
+
+| 리포트 | 언제 | 명령 |
+|---|---|---|
+| **스토리 리포트** | 라인시트·전수조사·랭킹 diff 등 정형 산출물 | `python3 scripts/build_report.py data/raw/<파일>.json --validation data/validation.json --out output/<스토리>-<대상>-<ts>.html` |
+| **분석 리포트** | 가격-반응 탐색, "왜 팔리지?", 가설 도출 요청 | `python3 scripts/build_analysis_report.py --db data/intel.db --context "<context>" --out output/analysis-<대상>-<ts>.html` |
+
+분석 리포트의 요구 스펙(변인통제 패널·축 선택·정직성 규칙)은
+`references/analysis-report.md`에 있다. **요약 수치만 있는 리포트는 스펙 미달이다.**
+멀티 플랫폼 비교는 JSON을 여러 개 넘긴다(사이트당 하나). 코드 실행이 안 되는 환경이면
+`assets/report-template.html` 구조를 따라 직접 쓰되 그 사실을 리포트와 대화에 명시한다.
+
+## 지켜야 할 규칙
+
+- **요청 속도** — 페이지 사이 0.5~1.5초. 병렬로 몰아치지 않는다.
+- **순회 상한** — 상품 수 하나뿐(라인시트 3,000/플랫폼 · 전수조사 5,000 · 랭킹 top 100).
+  초과 시 수집을 시작하지 않고 좁힐 축의 실제 개수를 조회해 제시한다. **임의 샘플링 금지.**
+- **재시도** — 2회(간격 증가), 3연속 실패면 건너뛰고 `meta.notes`에 기록.
+- **차단** — 403/429/캡차는 즉시 중단. `meta.incomplete: true` + 부분 리포트.
+  User-Agent 위장 금지.
+- **로그인** — 비로그인으로 보이는 것만.
+- **상태 변경** (D18) — 정보 획득에 필요한 상태 변경은 **실제 결제 실행만 빼고
+  허용**된다(결제 페이지 진입은 허용, 주문 완료·결제수단 제출은 절대 금지).
+  순서는 비용 순서다: L1 무료 → L2 읽기 전용 → L3 상태 변경(`references/variant-collection.md`).
+  상태를 바꿨으면 **가역 조치(장바구니 비우기 등)를 하고 무엇을 했는지 보고한다** —
+  승인은 불요하지만 조용히 하지 않는다. 비로그인 원칙은 유지 — 로그인이 필요하면 묻는다.
+- **하지 않는 것** — 판매량 추정(리뷰 수 역산 등), 유사도·가격 기반 상품 매칭
+  (완전일치만 — 근거는 `docs/EVIDENCE.md` §5), 이미지 재배포.
+
+## 파일 규약
+
+```
+<작업 폴더>/
+├── data/
+│   ├── intel.db                                  정본 DB (INTEL_DB로 경로 변경 가능)
+│   ├── raw/<site>-<story>-<대상>-<YYYYMMDD-HHmm>.json
+│   ├── snapshots/<site>-ranking-<카테고리>-<YYYYMMDD-HHmm>.json
+│   ├── images/                                   속성 분류용 임시
+│   ├── sheets_config.json                        스프레드시트 ID
+│   └── validation.json / diff.json
+└── output/<종류>-<대상>-<YYYYMMDD-HHmm>.html
+```
+
+## 데이터 계약 (요약)
+
+플랫폼 스킬의 산출 JSON은 `meta`(site·story·target·collected_at·item_count·source_total·
+incomplete·notes[])와 `items[]`로 구성된다. 필드 정의·필수 기준·축약/구간 표기 규칙·
+쿠폰적용가 정의는 `references/db-contract.md`가 정본이다. 핵심만:
+
+- 필수: `product_id` `name` `url` `image_url` `brand` `category` `price_original`
+  `price_sale` `discount_rate` `sold_out` (결측 5% 경고 / 30% 실패)
+- 노출 시만: `review_count` `rating` `view_count` `purchase_count` `like_count`
+  `viewers_now` `buyers_now` — **안 보이면 `null`**
+- `price_sale`은 **전 회원 공통 쿠폰적용가**, `rating`은 5점 만점 통일
+- 축약(`1.2천`)은 정수 파싱 허용, 구간(`300회 이상`)은 `null` + `*_display`만
+- `source_total`에 수집 건수를 넣지 않는다(순환 검증 금지) — 독립 총계가 없으면 `null`
+
+## 참고 파일
+
+| 파일 | 언제 읽는가 |
+|---|---|
+| `references/db-contract.md` | DB 스키마·데이터 계약 상세·재사용 정책 |
+| `references/story-catalog.md` | 라인시트·전수조사·랭킹 모니터링의 검증된 절차 |
+| `references/analysis-report.md` | 분석 리포트(변인통제·축 선택) 요구 스펙 |
+| `references/proxy-extraction.md` | 파생 프록시 — 정의·판정 캐시·대시보드 주입 (D19) |
+| `references/variant-collection.md` | 옵션·재고 수집 — 프로브 계층·판매수량 계산 |
+| `references/sheets-sync.md` | 시트 미러 절차·장애 시 동작 |
+| `references/report-spec.md` | 스토리 리포트 섹션 구성 |
+| `../platform-*/SKILL.md` | 그 사이트 작업을 시작할 때 |
+| `docs/EVIDENCE.md` (레포) | "왜 이렇게 정했지?"가 궁금할 때 — 실측 근거 아카이브 |
