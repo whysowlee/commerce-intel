@@ -111,6 +111,43 @@ def collect(db_path, contexts):
                         "numeric": space == "numeric",
                         "judged": judged, "unjudged": len(items) - judged})
 
+    # 시계열 — 축적 관측이 있는 상품의 시점별 지표. 시점이 2개 이상인 상품만.
+    ts_rows = conn.execute(f"""
+        SELECT site, product_id, observed_at, rank, price_sale, like_count, review_count
+        FROM observations o WHERE 1=1{ctx_where} ORDER BY observed_at
+    """, params).fetchall()
+    stamps_set, per = set(), {}
+    for r in ts_rows:
+        key = (r["site"], r["product_id"])
+        stamps_set.add(r["observed_at"])
+        per.setdefault(key, {})[r["observed_at"]] = r
+    stamps = sorted(stamps_set)
+    # 시점 48개 초과면 균등 구간 대표 시점만 그린다(평균 금지 — 기존 규칙, 첫·끝 포함)
+    MAXP = 48
+    if len(stamps) > MAXP:
+        idx = [round(i * (len(stamps) - 1) / (MAXP - 1)) for i in range(MAXP)]
+        stamps = [stamps[i] for i in sorted(set(idx))]
+    series = []
+    for key, byt in per.items():
+        pts = [byt.get(s) for s in stamps]
+        if sum(1 for p in pts if p is not None) < 2:
+            continue   # 시계열이 성립하려면 2시점 이상
+        it0 = next((i for i in items if (i["site"], i["product_id"]) == key), None)
+        series.append({
+            "site": key[0], "product_id": key[1],
+            "name": (it0 or {}).get("name") or key[1],
+            "rank": [p["rank"] if p else None for p in pts],
+            "price": [p["price_sale"] if p else None for p in pts],
+            "like": [p["like_count"] if p else None for p in pts],
+            "review": [p["review_count"] if p else None for p in pts],
+        })
+    # 페이로드 상한: 관측 시점 많은 순 120계열 (초과분은 리포트에 건수 명시)
+    series.sort(key=lambda s: -sum(1 for v in s["rank"] if v is not None))
+    ts_capped = len(series)
+    series = series[:120]
+    time_series = {"stamps": stamps, "series": series, "total_series": ts_capped,
+                   "shown": len(series)} if series else None
+
     times = [i["observed_at"] for i in items if i["observed_at"]]
     meta = {
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -119,7 +156,8 @@ def collect(db_path, contexts):
         "sites": sorted({i["site"] for i in items}),
         "proxies": proxies,
     }
-    return {"meta": meta, "items": items, "price_events": events}
+    return {"meta": meta, "items": items, "price_events": events,
+            "time_series": time_series}
 
 
 SAMPLE = {  # --emit-template 용 — 실데이터가 아님을 화면에 명시한다
@@ -135,6 +173,7 @@ SAMPLE = {  # --emit-template 용 — 실데이터가 아님을 화면에 명시
          "viewers_now": None, "sold_out": i % 7 == 0, "rank": None} for i in range(1, 25)
     ],
     "price_events": [],
+    "time_series": None,
 }
 
 
@@ -149,6 +188,8 @@ def main():
     ap.add_argument("--context", action="append", help="관측 문맥 필터 (반복 지정 가능)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--emit-template", action="store_true")
+    ap.add_argument("--emit-json", action="store_true",
+                    help="HTML 대신 데이터 JSON을 낸다 — AI 자유 생성 리포트의 결정적 데이터 소스")
     args = ap.parse_args()
 
     if args.emit_template:
@@ -162,6 +203,11 @@ def main():
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
+    if args.emit_json:
+        out.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        print(f"완료(JSON): {out} (상품 {len(data['items'])}개 — "
+              f"AI 생성 리포트는 이 파일을 그대로 임베드한다, 손으로 옮겨 적지 않는다)")
+        return
     out.write_text(render(data), encoding="utf-8")
     n = len(data["items"])
     print(f"완료: {out} (상품 {n}개, 가격 변경 사건 {len(data['price_events'])}건)")
@@ -191,11 +237,20 @@ h1{font-size:19px;margin:0 0 4px}h2{font-size:15px;margin:22px 0 8px}
 .notice{background:var(--surface-2);border:1px solid var(--border);border-radius:8px;
   padding:10px 14px;margin:12px 0;font-size:12.5px;color:var(--text-secondary)}
 .notice b{color:var(--text-primary)}
-.filters{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin:14px 0;
+details.notice>summary{cursor:pointer;list-style:none;color:var(--text-secondary)}
+details.notice>summary::-webkit-details-marker{display:none}
+details.notice .more{font-size:11px;color:var(--text-muted);font-weight:400}
+details.notice[open] .more{display:none}
+.filters{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start;margin:14px 0;
   padding:12px;background:var(--surface-2);border-radius:8px}
-.filters label{display:block;font-size:11.5px;color:var(--text-secondary);margin-bottom:2px}
+.filters label{display:block;font-size:11.5px;color:var(--text-secondary);margin-bottom:4px}
 .filters select,.filters input{font:inherit;font-size:13px;background:var(--surface-1);
   color:var(--text-primary);border:1px solid var(--border);border-radius:6px;padding:4px 6px}
+.faxis{max-width:340px}
+.chips{display:flex;flex-wrap:wrap;gap:4px;max-height:96px;overflow:auto}
+.chip{font:inherit;font-size:11.5px;cursor:pointer;background:var(--surface-1);
+  color:var(--text-secondary);border:1px solid var(--border);border-radius:12px;padding:2px 9px}
+.chip.on{background:var(--series-1);color:#fff;border-color:var(--series-1)}
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:14px 0}
 .kpi{background:var(--surface-2);border-radius:8px;padding:10px 14px}
 .kpi .v{font-size:21px;font-weight:700}.kpi .l{font-size:11.5px;color:var(--text-secondary)}
@@ -221,11 +276,11 @@ a{color:var(--series-1)}
 </style></head><body><div class="viz-root">
 <h1>가격-반응 탐색 대시보드</h1>
 <div class="sub" id="range"></div>
-<div class="notice"><b>이 도구는 가격-반응의 상관 탐색이지 엄밀한 가격 탄력성 추정이 아니다. 상관은 인과가 아니다.</b><br>
+<details class="notice"><summary><b>이 도구는 가격-반응의 상관 탐색이지 엄밀한 가격 탄력성 추정이 아니다. 상관은 인과가 아니다.</b> <span class="more">주의사항 펼치기 ▾</span></summary>
 · 여기 없는 것: 판매 종료된 상품, 순위권 밖 미관측 구간, 필터에 따라 품절 상품 (생존편향)<br>
 · 축 조합을 훑다 발견한 패턴은 가설이지 결론이 아니다 — 다음 관측으로 재확인하라 (다중비교)<br>
 · 전체 집합의 상관은 세그먼트(카테고리·핏·브랜드)로 나누면 사라지거나 뒤집힐 수 있다 — 아래 필터가 그 확인 장치다 (심슨의 역설)<br>
-· *누적판매·하트는 누적값이라 출시 오래된 상품이 유리하다 · 축약 표기 파싱값은 ±4% 오차</div>
+· *누적판매·하트는 누적값이라 출시 오래된 상품이 유리하다 · 축약 표기 파싱값은 ±4% 오차</details>
 <div class="filters" id="filters"></div>
 <div class="smalln" id="smalln">⚠ 표본이 작다 (n &lt; 30) — 이 조건의 패턴은 우연일 가능성이 크다</div>
 <div class="kpis" id="kpis"></div>
@@ -239,10 +294,24 @@ a{color:var(--series-1)}
 <div class="panel"><h2 style="margin-top:0">분포</h2>
 <div class="axes"><select id="hx"></select> <span class="excl" id="hexcl"></span></div>
 <svg id="hist" width="100%" height="240" viewBox="0 0 920 240"></svg></div>
+<div class="panel"><h2 style="margin-top:0">상품 표</h2><div class="tablewrap" id="table"></div></div>
+<div class="panel" id="tspanel" style="display:none"><h2 style="margin-top:0">시계열 추이 (축적 관측)</h2>
+<div class="sub">같은 상품의 시점별 지표. <b>순위권 밖 구간은 선을 끊는다</b>(관측 없음 — 이어 그으면 없는 순위를 주장하는 것이다). 이동평균은 노이즈를 줄인 것이지 새 데이터가 아니다. 현재 필터가 적용된 상품 중 상위만 그린다.</div>
+<div class="axes">지표 <select id="ts_metric"><option value="rank">순위</option><option value="price">판매가</option><option value="like">하트</option><option value="review">후기 수</option></select>
+ · 계열 <input type="number" id="ts_n" value="8" min="1" max="40" style="width:56px">개
+ <label style="display:inline"><input type="checkbox" id="ts_ma"> 이동평균</label>
+ <span class="sub" id="ts_info"></span></div>
+<svg id="ts" width="100%" height="360" viewBox="0 0 1040 360"></svg>
+<div class="leg" id="ts_leg"></div></div>
 <div class="panel" id="eventspanel"><h2 style="margin-top:0">가격 변경 사건 (관측 간 증분)</h2>
 <div class="sub">같은 상품의 연속 관측에서 판매가가 바뀐 사건. 증분은 그 관측 창의 순변화다 — 창 안의 왕복은 잡히지 않는다.</div>
+<div class="axes"><span>방향</span>
+ <button type="button" class="chip on" id="ev_dir_down">인하</button>
+ <button type="button" class="chip on" id="ev_dir_up">인상</button>
+ <span style="margin-left:8px">하트 증분</span>
+ <button type="button" class="chip" id="ev_like_pos">증가만</button>
+ <span class="sub" id="ev_n"></span></div>
 <div class="tablewrap" id="events"></div></div>
-<div class="panel"><h2 style="margin-top:0">상품 표</h2><div class="tablewrap" id="table"></div></div>
 <div id="tip"></div>
 <script type="application/json" id="data">__PAYLOAD__</script>
 <script>
@@ -256,21 +325,34 @@ const fmt=v=>v==null?"—":(typeof v==="number"?v.toLocaleString("ko-KR"):v);
 const css=n=>getComputedStyle(document.querySelector('.viz-root')).getPropertyValue(n).trim();
 const S={f:{}};
 function uniq(field){return [...new Set(DATA.items.map(d=>d[field]).filter(v=>v!=null&&v!==""))].sort();}
-function mkFilter(id,label,vals){
-  const wrap=document.createElement('div');
+const SEL={};   // 축id -> 켜진 값 Set (비어 있으면 전체 통과)
+function countBy(field){const m={};DATA.items.forEach(d=>{const v=d[field];if(v!=null&&v!=="")m[v]=(m[v]||0)+1;});return m;}
+// 다중 선택 칩 필터 — 한 축 안에서 여러 값을 켜면 OR, 축끼리는 AND (§4 리포트 공통)
+function mkFilter(id,label,vals,counts){
+  SEL[id]=new Set();
+  const wrap=document.createElement('div');wrap.className='faxis';
   wrap.innerHTML=`<label>${label}</label>`;
-  const sel=document.createElement('select');sel.id='f_'+id;
-  sel.innerHTML=`<option value="">전체</option>`+vals.map(v=>`<option>${v}</option>`).join("");
-  sel.onchange=apply;wrap.appendChild(sel);document.getElementById('filters').appendChild(wrap);
+  const box=document.createElement('div');box.className='chips';
+  vals.forEach(v=>{
+    const c=counts?(counts[v]||0):null;
+    const chip=document.createElement('button');chip.type='button';chip.className='chip';
+    chip.textContent=c!=null?`${v} ${c}`:v;
+    chip.onclick=()=>{chip.classList.toggle('on');
+      if(chip.classList.contains('on'))SEL[id].add(v);else SEL[id].delete(v);apply();};
+    box.appendChild(chip);
+  });
+  wrap.appendChild(box);document.getElementById('filters').appendChild(wrap);
 }
 function initFilters(){
-  mkFilter('site','플랫폼',DATA.meta.sites);
-  mkFilter('category','카테고리',uniq('category'));
-  if(uniq('fit').length)mkFilter('fit','핏',uniq('fit'));
-  mkFilter('brand','브랜드',uniq('brand'));
+  const sc=countBy('site'),cc=countBy('category'),bc=countBy('brand'),fc=countBy('fit');
+  mkFilter('site','플랫폼',DATA.meta.sites,sc);
+  mkFilter('category','카테고리',uniq('category'),cc);
+  if(uniq('fit').length)mkFilter('fit','핏',uniq('fit'),fc);
+  mkFilter('brand','브랜드',uniq('brand'),bc);
   (DATA.meta.proxies||[]).filter(p=>!p.numeric).forEach(p=>{
-    const key='px_'+p.name, vals=uniq(key);
-    if(vals.length)mkFilter(key,p.name+' (AI 판정)',vals.concat(['(미판정)']));
+    const key='px_'+p.name, vals=uniq(key), pc=countBy(key);
+    if(vals.length)mkFilter(key,p.name+' (AI 판정)',vals.concat(['(미판정)']),
+      {...pc,'(미판정)':DATA.items.filter(d=>d[key]==null).length});
   });
   const prices=DATA.items.map(d=>d.price_sale).filter(v=>v!=null);
   const w=document.createElement('div');
@@ -285,13 +367,11 @@ function initFilters(){
 function filtered(){
   const g=id=>{const e=document.getElementById(id);return e?e.value:"";};
   const pmin=+g('f_pmin')||null,pmax=+g('f_pmax')||null,so=g('f_so');
-  const pxOK=d=>(DATA.meta.proxies||[]).every(p=>{
-    const key='px_'+p.name, v=g('f_'+key);
-    if(!v)return true;
-    return v==='(미판정)' ? d[key]==null : d[key]===v;});
+  const axisOK=(id,val)=>{const s=SEL[id];return !s||s.size===0||s.has(val==null?'(미판정)':val);};
+  const pxOK=d=>(DATA.meta.proxies||[]).every(p=>axisOK('px_'+p.name,d['px_'+p.name]));
   return DATA.items.filter(d=>
-    (!g('f_site')||d.site===g('f_site'))&&(!g('f_category')||d.category===g('f_category'))&&
-    (!g('f_fit')||d.fit===g('f_fit'))&&(!g('f_brand')||d.brand===g('f_brand'))&&
+    axisOK('site',d.site)&&axisOK('category',d.category)&&
+    axisOK('fit',d.fit)&&axisOK('brand',d.brand)&&
     (pmin==null||d.price_sale>=pmin)&&(pmax==null||d.price_sale<=pmax)&&
     (so===""||(so==="1")===!!d.sold_out)&&pxOK(d));
 }
@@ -299,8 +379,64 @@ function median(a){if(!a.length)return null;const s=[...a].sort((x,y)=>x-y);retu
 function apply(){
   S.data=filtered();
   document.getElementById('smalln').style.display=S.data.length<30?'block':'none';
-  renderKPIs();renderScatter();renderHist();renderTable();
+  renderKPIs();renderScatter();renderHist();renderTable();renderTimeSeries();
 }
+const TS=DATA.time_series;
+const TSMETA={rank:{label:"순위",invert:true},price:{label:"판매가",invert:false},
+  like:{label:"하트",invert:false},review:{label:"후기 수",invert:false}};
+function movavg(arr,w){ // null 유지하며 관측된 값만 창 평균
+  return arr.map((v,i)=>{if(v==null)return null;let s=0,c=0;
+    for(let j=Math.max(0,i-w+1);j<=i;j++){if(arr[j]!=null){s+=arr[j];c++;}}
+    return c?s/c:null;});
+}
+function renderTimeSeries(){
+  const panel=document.getElementById('tspanel');
+  if(!TS||!TS.series||!TS.series.length){panel.style.display='none';return;}
+  panel.style.display='';
+  const metric=document.getElementById('ts_metric').value;
+  const N=Math.max(1,Math.min(40,+document.getElementById('ts_n').value||8));
+  const ma=document.getElementById('ts_ma').checked;
+  const meta=TSMETA[metric], stamps=TS.stamps;
+  // 현재 필터에 든 상품만 (site+product_id 매칭)
+  const keep=new Set(S.data.map(d=>d.site+'/'+d.product_id));
+  let ser=TS.series.filter(s=>keep.has(s.site+'/'+s.product_id))
+    .filter(s=>s[metric].some(v=>v!=null));
+  // 관측 시점 많은 순 → 상위 N
+  ser=ser.slice().sort((a,b)=>b[metric].filter(v=>v!=null).length-a[metric].filter(v=>v!=null).length).slice(0,N);
+  document.getElementById('ts_info').textContent=
+    `· 표시 ${ser.length}계열 (필터 내 축적 상품 중 상위, 전체 축적 ${TS.total_series}) · 시점 ${stamps.length}`;
+  const svg=document.getElementById('ts');svg.innerHTML="";
+  if(!ser.length){document.getElementById('ts_leg').innerHTML="";return;}
+  const P={l:56,r:16,t:14,b:40},W=1040,H=360;
+  const vals=[];ser.forEach(s=>{(ma?movavg(s[metric],3):s[metric]).forEach(v=>{if(v!=null)vals.push(v);});});
+  let mn=Math.min(...vals),mx=Math.max(...vals);if(mn===mx){mn-=1;mx+=1;}
+  const sx=i=>P.l+(stamps.length<=1?0.5:i/(stamps.length-1))*(W-P.l-P.r);
+  const sy=v=>{const t=(v-mn)/(mx-mn);return meta.invert? P.t+t*(H-P.t-P.b) : H-P.b-t*(H-P.t-P.b);};
+  let g="";
+  for(let k=0;k<=4;k++){const vv=mn+(mx-mn)*k/4,y=sy(vv);
+    g+=`<line class="grid" x1="${P.l}" x2="${W-P.r}" y1="${y}" y2="${y}"/><text x="${P.l-8}" y="${y+4}" text-anchor="end">${fmt(Math.round(vv))}</text>`;}
+  // 시간축 라벨 (5개)
+  [0,Math.floor(stamps.length/4),Math.floor(stamps.length/2),Math.floor(stamps.length*3/4),stamps.length-1]
+    .filter((v,i,a)=>a.indexOf(v)===i).forEach(i=>{
+      g+=`<text x="${sx(i)}" y="${H-P.b+16}" text-anchor="middle">${(stamps[i]||'').slice(5,16)}</text>`;});
+  g+=`<text x="${P.l}" y="${P.t-2}" font-size="10">${meta.label}${meta.invert?' (위=1위)':''}${ma?' · 이동평균':''}</text>`;
+  const COL=["--series-1","--series-2","--series-3"];
+  ser.forEach((s,si)=>{
+    const arr=ma?movavg(s[metric],3):s[metric];
+    const col=si<5?css(COL[si%3]):css('--text-muted');
+    // 연속 관측 구간만 선으로 잇는다(순위권 밖 = null은 끊는다)
+    let d="",pen=false;
+    arr.forEach((v,i)=>{if(v==null){pen=false;return;}
+      d+=(pen?"L":"M")+sx(i)+" "+sy(v)+" ";pen=true;});
+    g+=`<path d="${d}" fill="none" stroke="${col}" stroke-width="${si<5?2:1}" stroke-opacity="${si<5?0.9:0.4}"/>`;
+  });
+  svg.innerHTML=g;
+  document.getElementById('ts_leg').innerHTML=ser.slice(0,5).map((s,i)=>
+    `<span><i style="background:${css(COL[i%3])}"></i>${(s.name||s.product_id).slice(0,20)}</span>`).join("")
+    +(ser.length>5?`<span class="sub">외 ${ser.length-5}계열(회색)</span>`:"");
+}
+['ts_metric','ts_n','ts_ma'].forEach(id=>{const e=document.getElementById(id);
+  if(e)e.addEventListener('input',renderTimeSeries);});
 function renderKPIs(){
   const d=S.data,ps=d.map(x=>x.price_sale).filter(v=>v!=null);
   const dr=d.map(x=>x.discount_rate).filter(v=>v!=null);
@@ -405,17 +541,41 @@ function renderTable(){
   document.getElementById('table').innerHTML=h+"</tbody></table>";
 }
 function sortBy(f){if(sortCol===f)sortDir*=-1;else{sortCol=f;sortDir=-1;}renderTable();}
+let evSortCol="like_delta",evSortDir=-1;
+const EV_COLS=[["name","상품"],["site","사이트"],["pct","변동"],["price_to","판매가"],
+  ["window","관측 창"],["like_delta","하트 증분"],["review_delta","후기 증분"]];
+function evFilters(){
+  const down=document.getElementById('ev_dir_down').classList.contains('on');
+  const up=document.getElementById('ev_dir_up').classList.contains('on');
+  const posOnly=document.getElementById('ev_like_pos').classList.contains('on');
+  return DATA.price_events.map(e=>({...e,
+      pct:e.price_from?(e.price_to-e.price_from)/e.price_from*100:0,
+      window:`${e.from_at} ~ ${e.to_at}`})).filter(e=>{
+    const dir=e.pct<0?down:e.pct>0?up:(down||up);
+    return dir && (!posOnly || (e.like_delta!=null&&e.like_delta>0));});
+}
 function renderEvents(){
-  const ev=DATA.price_events;
-  if(!ev.length){document.getElementById('eventspanel').style.display='none';return;}
-  let h=`<table><thead><tr><th>상품</th><th>사이트</th><th class="num">가격</th>
-    <th>관측 창</th><th class="num">하트 증분</th><th class="num">후기 증분</th></tr></thead><tbody>`;
-  ev.forEach(e=>{h+=`<tr><td>${e.name||e.product_id}</td><td>${e.site}</td>
-    <td class="num">${fmt(e.price_from)} → ${fmt(e.price_to)}</td>
-    <td>${e.from_at} ~ ${e.to_at}</td>
-    <td class="num">${fmt(e.like_delta)}</td><td class="num">${fmt(e.review_delta)}</td></tr>`;});
+  if(!DATA.price_events.length){document.getElementById('eventspanel').style.display='none';return;}
+  const rows=evFilters().sort((a,b)=>{
+    let av=a[evSortCol],bv=b[evSortCol];
+    if(av==null)return 1;if(bv==null)return -1;
+    return (av<bv?-1:av>bv?1:0)*evSortDir;});
+  document.getElementById('ev_n').textContent=`· ${rows.length}건`;
+  let h="<table><thead><tr>"+EV_COLS.map(([f,l])=>{
+    const num=["pct","price_to","like_delta","review_delta"].includes(f);
+    return `<th class="${num?'num':''}" onclick="evSort('${f}')" style="cursor:pointer">${l} ${evSortCol===f?(evSortDir>0?"▲":"▼"):"↕"}</th>`;}).join("")+"</tr></thead><tbody>";
+  rows.forEach(e=>{h+=`<tr><td>${(e.name||e.product_id).slice(0,36)}</td><td>${e.site}</td>
+    <td class="num" style="color:${e.pct<0?'var(--series-2)':'var(--series-1)'}">${e.pct.toFixed(1)}%</td>
+    <td class="num">${fmt(e.price_from)}→${fmt(e.price_to)}</td>
+    <td style="font-size:11px">${e.window}</td>
+    <td class="num">${e.like_delta>0?'+':''}${fmt(e.like_delta)}</td>
+    <td class="num">${e.review_delta==null?'—':(e.review_delta>0?'+':'')+e.review_delta}</td></tr>`;});
   document.getElementById('events').innerHTML=h+"</tbody></table>";
 }
+function evSort(f){if(evSortCol===f)evSortDir*=-1;else{evSortCol=f;evSortDir=-1;}renderEvents();}
+['ev_dir_down','ev_dir_up','ev_like_pos'].forEach(id=>{
+  const el=document.getElementById(id);
+  if(el)el.onclick=()=>{el.classList.toggle('on');renderEvents();};});
 function init(){
   const m=DATA.meta;
   const pxsum=(m.proxies||[]).map(p=>`${p.name}: 판정 ${p.judged}·미판정 ${p.unjudged}`).join(" / ");

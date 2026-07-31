@@ -185,7 +185,47 @@ def main():
     check("px_ 열이 주입된다", '"px_name_lang"' in html)
     check("AI 판정 표기·미판정 구분이 있다", "AI 판정" in html and "(미판정)" in html)
 
-    print("[7] 템플릿 산출 (--emit-template)")
+    print("[7] AI 생성 모드 도구 (--emit-json · 린터)")
+    ej = work / "analysis.json"
+    r = run([SCRIPTS / "build_analysis_report.py", "--db", db, "--emit-json",
+             "--out", str(ej)], work, db)
+    check("--emit-json 산출", r.returncode == 0 and ej.exists(), r.stderr)
+    d = json.loads(ej.read_text(encoding="utf-8"))
+    check("JSON에 meta·items·price_events", set(d) >= {"meta", "items", "price_events"})
+    r = run([SCRIPTS / "lint_analysis_html.py", str(px_html)], work, db)
+    check("생성 대시보드는 린터 통과", r.returncode == 0, r.stdout)
+    bad = work / "bad.html"
+    bad.write_text('<html><script src="https://cdn.x/c.js"></script></html>', encoding="utf-8")
+    r = run([SCRIPTS / "lint_analysis_html.py", str(bad)], work, db)
+    check("결격 HTML은 린터 FAIL", r.returncode == 1, r.stdout)
+
+    print("[8] 표본 계획 (plan_sample)")
+    plan_f = work / "plan.json"
+    r = run([SCRIPTS / "plan_sample.py", "plan", "--population", "24673",
+             "--per-stratum", "32", "--out", str(plan_f)], work, db)
+    check("계획 생성", r.returncode == 0, r.stderr)
+    plan = json.loads(plan_f.read_text(encoding="utf-8"))
+    check("로그 층이 여러 개다", len(plan["strata"]) >= 5, str(len(plan["strata"])))
+    idx0 = {i for st in plan["strata"] for i in st["indices"]}
+    exp_f = work / "plan2.json"
+    r = run([SCRIPTS / "plan_sample.py", "expand", str(plan_f), "--out", str(exp_f)], work, db)
+    check("확장 성공", r.returncode == 0, r.stderr)
+    plan2 = json.loads(exp_f.read_text(encoding="utf-8"))
+    idx1 = {i for st in plan2["strata"] for i in st["indices"]}
+    check("확장이 기존 표본을 전부 포함(중첩)", idx0 <= idx1)
+    check("확장으로 표본이 늘었다", len(idx1) > len(idx0), f"{len(idx0)}→{len(idx1)}")
+
+    print("[9] 검증기 표본 분기 (meta.sampling)")
+    sm = json.loads(fixture.read_text())
+    sm["meta"]["sampling"] = {"design": "log-rank-strata", "planned": len(sm["items"])}
+    sm["meta"]["source_total"] = 99999   # 모집단 총계 — 표본 모드에선 대조 대상이 아니다
+    sm_f = work / "sampled.json"
+    sm_f.write_text(json.dumps(sm, ensure_ascii=False), encoding="utf-8")
+    r = run([SCRIPTS / "validate_data.py", str(sm_f)], work, db)
+    check("표본 모드: 총계 불일치가 경고가 아니다(계획 완주로 판정)",
+          "계획" in r.stdout and "오차" not in r.stdout.split("계획")[0][-200:], r.stdout[-500:])
+
+    print("[10] 템플릿 산출 (--emit-template)")
     tpl = work / "tpl.html"
     r = run([SCRIPTS / "build_analysis_report.py", "--emit-template",
              "--out", str(tpl)], work, db)

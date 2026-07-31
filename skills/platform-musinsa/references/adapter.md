@@ -96,6 +96,22 @@ PLP 카드 원문:
   대조는 정상 통과한다. **총계를 읽을 때 어떤 필터 상태인지 함께 기록해라.**
 - **함정: `soldOut=true`는 조용히 무시된다** (563이 온다). 먹는 이름은 `isSoldOut=true`다.
   목록 API에도 같은 이름으로 먹는다(`caller=BRAND&isSoldOut=true` → `totalCount=2022`)
+
+##### 총계가 같게 나와도 파라미터 실패가 아니다 — 브랜드 운영 차이다 (2026-07-31 실측)
+
+| 브랜드 | 기본 | `&isSoldOut=true` | 카탈로그 내 품절 |
+|---|---|---|---|
+| `insilence` | 562 | **2,022** | 1,459건 (아카이브로 남긴다) |
+| `matinkim` | 750 | **750 (동일)** | **0건** (8페이지 전량 순회 확인) |
+
+마뗑킴은 파라미터가 무시된 것이 아니라 **품절 상품을 숍에 남기지 않는 브랜드**여서 더할
+것이 없었던 것이다. **두 총계가 같다고 "파라미터가 죽었다·스킴이 바뀌었다"로 진단하고
+경로 B로 폴백하지 마라** — 오진이다. 구분법: `isSoldOut=true` 응답 안에 `isSoldOut: true`
+항목이 하나라도 있는지 본다. 하나도 없으면 그 브랜드에 품절 재고가 없는 것이고, 있는데도
+총계가 안 늘었다면 그때가 진짜 이상이다.
+
+**`isSoldOut=true`는 브랜드와 무관하게 항상 붙인다** — 붙여서 손해가 없고, 안 붙이면
+인사일런스 같은 브랜드에서 72%를 잃는다.
 - **29CM은 반대로 기본이 품절 포함이다**(필터 이름이 `품절상품 제외`). 플랫폼을 비교할 때
   필터를 맞추지 않으면 단독 입점 수치가 통째로 틀어진다 — 실측으로 "29CM 단독 83건"이
   필터를 맞추자 0건이 됐다
@@ -555,3 +571,27 @@ GET https://goods.musinsa.com/api2/review/v1/view/list/count?goodsNo={no}   # �
 4. 목록 화면의 페이지네이션 UX(무한스크롤인지 더보기인지) — 경로 B로 내려갈 때만 필요
 5. 부티크/아울렛/키즈 랭킹의 `contentsId` 파라미터 체계
 6. 깊게 스크롤할 때 로그인 모달이 뜨는지 (조사 범위에선 안 떴다)
+
+## 6. 옵션·재고 — L1 GET 확정 / L2 수량은 POST (2026-07-31 실측)
+
+옵션 정교화(SPEC-INTEL §6)의 무신사 실측이다. **L1 구성·L2 수량 모두 비로그인으로 확정됐다**
+(2026-07-31 L2 프로브). **L3(장바구니)는 불필요하다.**
+
+**L1 옵션 구성 (실측 2026-07-31, 비로그인 200):**
+- `GET https://goods-detail.musinsa.com/api2/goods/{no}/options`
+  → `data.basic[].optionValues[]` 옵션 축·값 · `data.optionItems[]` SKU
+  (`no`·`managedCode`·`optionValueNos`·`isDeleted`). 실측 축: 6832635 SIZE S/M/L/XL ·
+  6768209 허리^기장 2축(10 SKU) · 3098405 SIZE 28~36
+- **⚠️ `activated`로 품절을 판정하지 마라 — 실재고를 반영하지 않는다** (L2 프로브 실측:
+  `activated:true`인데 실제 품절인 SKU 다수, 예 5136923). **품절은 아래 L2 `outOfStock`으로 판정.**
+
+**L2 재고 (실측 확정 2026-07-31, 비로그인 POST, 상태 변경 없음):**
+- **정본 엔드포인트: `POST https://goods-detail.musinsa.com/api2/goods/{no}/options/v2/prioritized-inventories`**
+  body `{"optionValueNos":[…]}` (GET /options의 `optionItems[].optionValueNos`). 비로그인 200, curl 직접 가능.
+  응답 `data[]`: `productVariantId`(=optionItem `no`) · **`remainQuantity`** · **`outOfStock`**.
+- **`outOfStock`이 진짜 옵션별 품절 신호다.** variant `sold_out`은 이 필드로 정한다.
+- **`remainQuantity`는 저재고 꼬리에서만 정수**(실측 2~5, "N개 남음"). 그 이상은 `null`(충분).
+  **정확 수량은 ≤5 구간만 얻히고, 상한 이진탐색은 불가**(높은 수량을 노출 안 함 — SPEC의 N=100/`100+` 전제가 무신사엔 해당 없음).
+- **`check-stock`은 세션 없이는 no-op** — 빈 배열·허구 ID·qty 99999·품절 상품 전부 `SUCCESS`/`data:null`.
+  `check-available-stock`은 위 body에 400. **둘 다 쓰지 않는다.**
+- 로우클래식 실측(하트 상위 80, 249 SKU): 품절 79 · 저재고 정수 34(전부 2~5) · 충분(null) 136.

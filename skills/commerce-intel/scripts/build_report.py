@@ -640,6 +640,27 @@ def facet_block(items, facets, table_id):
     """
     groups = []
     for f_idx, facet in enumerate(facets):
+        # 입점 수식 축 — 칩 대신 불리언 수식 입력 UI를 낸다. data-f는 values로 채워진다(행별 입점 집합).
+        if facet.get("expr") is not None:
+            plats = facet["expr"]
+            if len(plats) < 2:
+                continue
+            ins = "".join(
+                '<button type="button" class="chip expr-ins" data-ins="%s">%s</button>' % (esc(p), esc(p))
+                for p in plats)
+            ops = "".join(
+                '<button type="button" class="chip expr-op" data-ins="%s">%s</button>' % (o, o)
+                for o in (" AND ", " OR ", " NOT ", "(", ")"))
+            groups.append(
+                '<div class="facet-group facet-expr" data-for="%s" data-facet="%d">'
+                '<span class="facet-label">입점 수식</span>'
+                '<span class="expr-hint" title="플랫폼을 AND·OR·NOT·괄호로 조합한다. 예: (A AND B) OR C · A AND NOT B">?</span>'
+                '<span class="expr-chips">%s%s'
+                '<button type="button" class="chip expr-clear" data-ins="">지우기</button></span>'
+                '<input type="text" class="expr-input" placeholder="예: %s AND %s" spellcheck="false">'
+                '<span class="expr-status"></span></div>'
+                % (table_id, f_idx, ins, ops, esc(plats[0]), esc(plats[1])))
+            continue
         tally = {}
         for item in items:
             for value in facet["values"](item):
@@ -654,13 +675,20 @@ def facet_block(items, facets, table_id):
         # 기본으로 켜 둘 값이 있으면 '전체'를 끄고 그 칩만 켠다.
         # 기본 필터를 걸더라도 건수는 항상 보이게 둔다 — 조용히 숨기지 않는다.
         default = set(facet.get("default") or [])
+        chip_data = facet.get("chip_data")
         chips = ['<button type="button" class="chip chip-all%s" data-v="">전체</button>'
                  % ("" if default else " is-on")]
-        chips += [
-            '<button type="button" class="chip%s" data-v="%s">%s<em>%s</em></button>'
-            % (" is-on" if key in default else "", esc(key), esc(key), format(tally[key], ","))
-            for key in keys
-        ]
+        for key in keys:
+            extra = ""
+            if chip_data:
+                extra = "".join(' data-%s="%s"' % (k, esc(str(v)))
+                                for k, v in chip_data(key).items())
+            label_fn = facet.get("chip_label")
+            shown = label_fn(key) if label_fn else key
+            chips.append(
+                '<button type="button" class="chip%s" data-v="%s"%s>%s<em>%s</em></button>'
+                % (" is-on" if key in default else "", esc(key), extra,
+                   esc(shown), format(tally[key], ",")))
         match = facet.get("match") or "any"
         # 동작이 다른 축이므로 화면에 그 사실을 적는다 — 안 적으면 OR로 읽는다.
         # 배지는 `facet-label` **밖**에 둔다. 안에 넣으면 라벨 텍스트가 오염된다.
@@ -668,10 +696,12 @@ def facet_block(items, facets, table_id):
             '<span class="facet-mode" title="여러 개를 켜면 그 플랫폼에 모두 있는 상품만 남는다">모두 만족</span>'
             if match == "all" else ""
         )
+        casc = facet.get("cascade")   # (level:int, key:str) — 계층 캐스케이드 축
+        casc_attr = ' data-ckey="%s" data-clevel="%d"' % (esc(casc[1]), casc[0]) if casc else ""
         groups.append(
-            '<div class="facet-group" data-for="%s" data-facet="%d" data-match="%s">'
+            '<div class="facet-group" data-for="%s" data-facet="%d" data-match="%s"%s>'
             '<span class="facet-label">%s</span>%s%s</div>'
-            % (table_id, f_idx, match, esc(facet["label"]), mode_badge, "".join(chips))
+            % (table_id, f_idx, match, casc_attr, esc(facet["label"]), mode_badge, "".join(chips))
         )
     if not groups:
         return ""
@@ -736,11 +766,35 @@ def product_table(items, columns, table_id, facets=None, placeholder="상품명�
     )
 
 
+def _cat_prefix(v, depth):
+    """'대 > 중 > 소'에서 앞 depth단계 접두. depth=1→'대', 2→'대 > 중'.
+    단계가 모자라면 있는 만큼만 반환한다(1~2단계 카테고리도 안전)."""
+    parts = [p.strip() for p in (v or "(없음)").split(" > ")]
+    return " > ".join(parts[:depth])
+
+
+def hierarchical_category_facets(value_fn, label="카테고리", key="cat"):
+    """대분류 → 중분류 → 소분류 3단계 캐스케이드. 상위를 골라야 하위 칩이 나온다
+    (칩 폭발 방지). 각 단계는 접두 경로로 필터하며 단계끼리는 AND로 좁혀진다.
+    하위 칩의 data-parent = 바로 위 단계의 값이라, 부모가 켜져야 보인다."""
+    levels = [("대분류", 1), ("중분류", 2), ("소분류", 3)]
+    facets = []
+    for lvl, (name, depth) in enumerate(levels):
+        d = depth
+        facet = {
+            "label": "%s · %s" % (label, name),
+            "values": (lambda x, dd=d: [_cat_prefix(value_fn(x), dd)]),
+            "cascade": (lvl, key),
+        }
+        if lvl > 0:   # 부모 = 한 단계 얕은 접두 · 칩은 마지막 단계만 표시(장황함 제거)
+            facet["chip_data"] = lambda v, dd=d: {"parent": _cat_prefix(v, dd - 1)}
+            facet["chip_label"] = lambda v: v.split(" > ")[-1] if " > " in v else v
+        facets.append(facet)
+    return facets
+
+
 def category_facet(items):
-    return {
-        "label": "카테고리",
-        "values": lambda i: [i.get("category") or "(카테고리 없음)"],
-    }
+    return hierarchical_category_facets(lambda i: i.get("category"), "카테고리")
 
 
 SALE_ON = "판매 중"
@@ -881,7 +935,9 @@ def attr_column(items):
 # ── 섹션 ────────────────────────────────────────────────────────────────────
 
 def section(title, body, note=None):
-    note_html = '<p class="section-note">%s</p>' % note if note else ""
+    # 각주는 기본으로 접는다 — 정보 과부하를 줄이되 텍스트는 DOM에 남긴다(클릭하면 펼침).
+    note_html = ('<details class="section-note"><summary>설명·주의 ▾</summary>%s</details>'
+                 % note) if note else ""
     return '<section><h2>%s</h2>%s%s</section>' % (esc(title), note_html, body)
 
 
@@ -1317,11 +1373,18 @@ def row_category(row, sites, axis):
 
 
 def presence_label(row, sites):
-    """입점 칼럼 값. 사이트 수와 무관하게 성립해야 한다(플랫폼은 확장 축이다)."""
+    """입점 칼럼 값. 사이트 수와 무관하게 성립해야 한다(플랫폼은 확장 축이다).
+
+    **`단독`은 정확히 1곳에 있을 때만이다.** 2곳 이상이면(전부는 아니어도) 단독이 아니라
+    `N곳 입점`이다 — 이전엔 present한 사이트마다 `단독`을 이어붙여 "A 단독 · B 단독"처럼
+    두 곳에 있는데도 각각 단독이라는 모순된 라벨을 냈다.
+    """
     present = [s for s in sites if s in row["by_site"]]
+    if len(present) == 1:
+        return "%s 단독" % site_name(present[0])
     if len(present) == len(sites) and len(sites) > 1:
         return "양쪽 입점" if len(sites) == 2 else "전 플랫폼 입점"
-    return " · ".join("%s 단독" % site_name(s) for s in present)
+    return "%d곳 입점 (%s)" % (len(present), " · ".join(site_name(s) for s in present))
 
 
 def union_columns(sites, axis, union=None):
@@ -1350,6 +1413,18 @@ def union_columns(sites, axis, union=None):
             {"label": "%s 가격" % label, "type": "num", "cls": "col-num",
              "render": lambda r, s=site: (
                  price_cell(r["by_site"][s]) if s in r["by_site"] else ("<span class=\"na\">—</span>", ""))}
+        )
+    # 옵션(사이즈) — 그 플랫폼이 옵션을 수집한 경우에만 열을 만든다(미수집 열을 빈 채 그리지 않는다).
+    for site in sites:
+        if not site_has_variants(union, site):
+            continue
+        columns.append(
+            {"label": "%s 옵션" % site_name(site), "type": "num", "cls": "col-variant",
+             "tip": "옵션(사이즈)별 상태. 취소선=품절, 아래첨자=재고 수량(있을 때). "
+                    "정렬 키는 판매 중 옵션 수다",
+             "render": lambda r, s=site: (
+                 variant_cell(r["by_site"][s]) if s in r["by_site"]
+                 else ("<span class=\"na\">—</span>", ""))}
         )
     if len(sites) == 2:
         a, b = sites
@@ -1434,27 +1509,53 @@ def union_metric_columns(union, sites):
 
 
 def presence_facet(sites):
-    """입점 축은 **플랫폼별 칩이고 여러 개를 켜면 AND**다 (2026-07-30 개정).
+    """입점 축은 **불리언 수식**이다 (2026-07-31 개정 — 사용자 지시).
 
-    다른 축은 한 축 안에서 OR이지만(§4 리포트 공통) 이 축만 예외다. 이유는 이 축을
-    쓰는 목적 자체가 **"무신사와 29CM 둘 다에 있는 상품"**을 골라보는 것이기 때문이다 —
-    OR로 두면 "무신사에 있거나 29CM에 있는 것"이 되어 거의 전 행이 남아 쓸모가 없다.
+    플랫폼 이름을 `AND`·`OR`·`NOT`·괄호로 조합해 원하는 논리식을 그대로 건다 —
+    예: `(A AND B) OR C`, `A AND NOT B`. 행마다 그 상품이 입점한 플랫폼 집합에 대해
+    식을 평가한다. 칩 다중선택(구 AND 고정)으로는 "정확히 2곳"·"A 있고 B 없음" 같은
+    조합을 표현할 수 없었다 — 수식이면 임의 조합이 가능하다.
 
-    구 구조는 값이 `양쪽 입점`·`무신사 단독`처럼 조합을 미리 나열한 문자열 하나였다.
-    플랫폼이 3개가 되면 조합이 폭발하고 "정확히 2곳"을 고를 방법이 없었다.
+    `values`는 그대로 둔다(행의 data-f에 입점 플랫폼 집합이 담겨 수식 평가의 입력이 된다).
+    `expr`의 값은 삽입 칩으로 쓸 플랫폼 라벨 목록이다.
     """
     return {
         "label": "입점",
-        "match": "all",
+        "expr": [site_name(x) for x in sites],
         "values": lambda r, s=sites: [site_name(x) for x in s if x in r["by_site"]],
     }
 
 
 def union_category_facet(sites, axis):
-    return {
-        "label": "품목",
-        "values": lambda r, s=sites, a=axis: [row_category(r, s, a)],
-    }
+    return hierarchical_category_facets(
+        lambda r, s=sites, a=axis: row_category(r, s, a), "품목", key="item")
+
+
+def variant_cell(item):
+    """옵션(사이즈) 셀 — 품절은 취소선, 재고 수량이 있으면 아래첨자로. variant-collection §5.
+    variants 없음(None)=미수집, 빈 배열=옵션 없는 단일 상품 — 둘을 구분한다."""
+    vs = item.get("variants") if item else None
+    if not vs:
+        return (MISSING if vs is None else '<span class="na">단일</span>',
+                "" if vs is None else "0")
+    parts = []
+    for v in vs:
+        lbl = v.get("size") or v.get("option_name") or "?"
+        q = ""
+        if v.get("stock_qty") is not None:
+            q = "<sub>%s</sub>" % format(v["stock_qty"], ",")
+        elif v.get("stock_display"):
+            q = "<sub>%s</sub>" % esc(v["stock_display"])
+        parts.append('<span class="vopt%s">%s%s</span>'
+                     % (" vopt-out" if v.get("sold_out") else "", esc(str(lbl)), q))
+    live = sum(1 for v in vs if not v.get("sold_out"))
+    return ('<span class="vopts">%s</span>' % "".join(parts), str(live))
+
+
+def site_has_variants(union, site):
+    if not union:
+        return False
+    return any((r["by_site"].get(site) or {}).get("variants") for r in union["rows"])
 
 
 # ── 고도화 4개 축 (SPEC v6 §4 스토리1) ──────────────────────────────────────
@@ -1939,7 +2040,7 @@ def linesheet_body(datasets):
                     union["rows"], columns, "t-linesheet",
                     facets=[sold_out_facet(union["rows"], lambda r, s=sites: union_sold_out(r, s)),
                             price_gap_facet(union["rows"], sites),
-                            presence_facet(sites), union_category_facet(sites, axis)],
+                            presence_facet(sites)] + union_category_facet(sites, axis),
                 ),
                 note="<strong>%s개 행</strong> = 플랫폼 합집합이다. 양쪽에 있는 상품은 1행이고 "
                 "플랫폼별 값이 나란히 들어간다. 한쪽에만 있는 칸은 <span class=\"na\">—</span>다 "
@@ -1959,7 +2060,7 @@ def linesheet_body(datasets):
                 "전 상품",
                 product_table(
                     all_items, CORE_COLUMNS, "t-linesheet",
-                    facets=[sold_out_facet(all_items), category_facet(all_items)],
+                    facets=[sold_out_facet(all_items)] + category_facet(all_items),
                 ),
                 note="<strong>기본은 판매 중만</strong> 보여준다 — 품절을 함께 수집하면 표가 두 배로 길어져 "
                 "훑기 어렵다. <code>판매</code> 칩으로 품절을 켜면 된다(건수는 칩에 찍힌다). "
@@ -2036,7 +2137,7 @@ def market_scan_body(datasets):
         )
     )
 
-    facets = [sold_out_facet(all_items)] + attribute_facets(all_items) + [category_facet(all_items)]
+    facets = [sold_out_facet(all_items)] + attribute_facets(all_items) + category_facet(all_items)
     out.append(
         section(
             "전 상품",
@@ -2788,6 +2889,10 @@ header { background: var(--surface); border: 1px solid var(--border);
 section { background: var(--surface); border: 1px solid var(--border);
   border-radius: 12px; padding: 20px 22px; margin-bottom: 20px; }
 .section-note { font-size: 13px; color: var(--muted); margin: -6px 0 14px; }
+details.section-note > summary { cursor: pointer; list-style: none; font-size: 12px;
+  color: var(--muted); width: fit-content; }
+details.section-note > summary::-webkit-details-marker { display: none; }
+details.section-note[open] > summary { margin-bottom: 6px; }
 .empty { color: var(--muted); font-size: 14px; margin: 4px 0; }
 
 /* auto-fill이어야 블록이 1개일 때 트랙이 합쳐지지 않는다.
@@ -2823,6 +2928,20 @@ section { background: var(--surface); border: 1px solid var(--border);
 /* 다중 선택 필터 — 여러 개를 켜면 OR, 서로 다른 그룹끼리는 AND로 걸린다. */
 .facets { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
 .facet-group { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.facet-expr { align-items: center; }
+.facet-expr .expr-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.chip.expr-op { font-weight: 600; color: var(--accent); }
+.chip.expr-ins { background: color-mix(in srgb, var(--accent) 10%%, transparent); }
+.expr-input { flex: 1; min-width: 240px; font: inherit; font-size: 13px; padding: 4px 8px;
+  border: 1px solid var(--grid); border-radius: 6px; background: var(--surface); color: var(--text); }
+.expr-status { font-size: 12px; color: var(--muted); }
+.expr-status.err { color: var(--down); }
+.expr-hint { display: inline-flex; width: 15px; height: 15px; align-items: center;
+  justify-content: center; border-radius: 50%%; background: var(--grid); color: var(--muted);
+  font-size: 10px; cursor: help; }
+.facet-group.cascade-collapsed .chip:not(.chip-all) { display: none; }
+.facet-group.cascade-collapsed::after {
+  content: "상위를 고르면 나옵니다"; font-size: 11px; color: var(--muted); }
 .facet-label { font-size: 12px; color: var(--muted); margin-right: 4px;
   flex: 0 0 auto; min-width: 52px; }
 .chip { font: inherit; font-size: 12px; padding: 3px 9px; border-radius: 999px;
@@ -2901,6 +3020,12 @@ table.grid tbody tr:hover { background: var(--page); }
 .thumb-missing { background: repeating-linear-gradient(45deg, var(--grid),
   var(--grid) 4px, var(--surface) 4px, var(--surface) 8px); }
 .na { color: var(--muted); font-size: 12px; }
+.col-variant { text-align: left; white-space: normal; min-width: 150px; }
+.vopts { display: flex; flex-wrap: wrap; gap: 3px; }
+.vopt { font-size: 11px; padding: 1px 6px; border-radius: 5px; background: var(--grid);
+  color: var(--text-1); white-space: nowrap; }
+.vopt sub { color: var(--muted); font-size: 9px; margin-left: 2px; vertical-align: baseline; }
+.vopt-out { text-decoration: line-through; color: var(--muted); opacity: 0.7; }
 .approx { color: var(--text-2); font-size: 12px; }
 .price-sale { font-weight: 600; }
 .price-was { color: var(--muted); text-decoration: line-through; font-size: 12px; }
@@ -3028,8 +3153,62 @@ JS = """
   var state = {};   // tableId -> {q: '', picked: {facetIdx: Set}}
 
   function stateOf(id) {
-    if (!state[id]) state[id] = { q: '', picked: {}, mode: {} };
+    if (!state[id]) state[id] = { q: '', picked: {}, mode: {}, expr: {} };
     return state[id];
+  }
+
+  // 입점 수식 — 플랫폼 이름을 AND·OR·NOT·괄호로 조합. 행의 입점 집합에 대해 평가한다.
+  // shunting-yard로 RPN을 만들고 행마다 평가한다(NOT>AND>OR, 괄호). 오류면 null(필터 미적용).
+  function compileExpr(src, plats) {
+    if (!src.trim()) return { rpn: null };
+    var names = plats.slice().sort(function (a, b) { return b.length - a.length; });
+    var s = src, i = 0, toks = [];
+    while (i < s.length) {
+      var c = s[i];
+      if (/\s/.test(c)) { i++; continue; }
+      if (c === '(' || c === ')') { toks.push(c); i++; continue; }
+      var rest = s.slice(i);
+      var op = /^(AND|OR|NOT)\\b/i.exec(rest) || /^(&&|\|\||&|\||!)/.exec(rest);
+      if (op) {
+        var o = op[0].toUpperCase();
+        o = (o === '&&' || o === '&') ? 'AND' : (o === '||' || o === '|') ? 'OR' : (o === '!') ? 'NOT' : o;
+        toks.push(o); i += op[0].length; continue;
+      }
+      var found = null;
+      for (var k = 0; k < names.length; k++) {
+        if (rest.slice(0, names[k].length).toLowerCase() === names[k].toLowerCase()) { found = names[k]; break; }
+      }
+      if (found) { toks.push({ p: found }); i += found.length; continue; }
+      return { error: '알 수 없는 항목: "' + rest.slice(0, 14) + '"' };
+    }
+    var prec = { NOT: 3, AND: 2, OR: 1 }, out = [], ops = [];
+    for (var t = 0; t < toks.length; t++) {
+      var tk = toks[t];
+      if (typeof tk === 'object') out.push(tk);
+      else if (tk === '(') ops.push(tk);
+      else if (tk === ')') {
+        while (ops.length && ops[ops.length - 1] !== '(') out.push(ops.pop());
+        if (!ops.length) return { error: '괄호가 안 맞습니다' };
+        ops.pop();
+      } else {
+        while (ops.length && ops[ops.length - 1] !== '(' &&
+               prec[ops[ops.length - 1]] >= prec[tk] && tk !== 'NOT') out.push(ops.pop());
+        ops.push(tk);
+      }
+    }
+    while (ops.length) { var op2 = ops.pop(); if (op2 === '(') return { error: '괄호가 안 맞습니다' }; out.push(op2); }
+    return { rpn: out };
+  }
+  function evalRpn(rpn, present) {
+    var st = [];
+    for (var i = 0; i < rpn.length; i++) {
+      var t = rpn[i];
+      if (typeof t === 'object') st.push(present.has(t.p));
+      else if (t === 'NOT') st.push(!st.pop());
+      else if (t === 'AND') { var b = st.pop(), a = st.pop(); st.push(a && b); }
+      else if (t === 'OR') { var b2 = st.pop(), a2 = st.pop(); st.push(a2 || b2); }
+    }
+    return st.length === 1 ? !!st[0] : true;
   }
 
   function apply(id) {
@@ -3052,6 +3231,15 @@ JS = """
           if (!ok) { hit = false; break; }
         }
       }
+      if (hit) {   // 입점 수식 축
+        for (var eidx in st.expr) {
+          var rpn = st.expr[eidx];
+          if (!rpn) continue;
+          var raw = row.getAttribute('data-f' + eidx) || '';
+          var present = new Set(raw.split('|').filter(Boolean));
+          if (!evalRpn(rpn, present)) { hit = false; break; }
+        }
+      }
       row.hidden = !hit;
       if (hit) shown++;
     });
@@ -3068,8 +3256,37 @@ JS = """
     });
   });
 
+  // 입점 수식 축 — 삽입 칩·연산자 버튼·텍스트 입력을 잇는다.
+  document.querySelectorAll('.facet-group.facet-expr').forEach(function (group) {
+    var id = group.dataset.for, idx = group.dataset.facet;
+    var input = group.querySelector('.expr-input');
+    var status = group.querySelector('.expr-status');
+    var plats = Array.prototype.map.call(group.querySelectorAll('.expr-ins'),
+      function (b) { return b.dataset.ins; });
+    function recompile() {
+      var res = compileExpr(input.value, plats);
+      if (res.error) { status.textContent = '⚠ ' + res.error; status.className = 'expr-status err';
+        stateOf(id).expr[idx] = null; }
+      else { stateOf(id).expr[idx] = res.rpn;
+        status.textContent = res.rpn ? '유효' : ''; status.className = 'expr-status'; }
+      apply(id);
+    }
+    group.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-ins]');
+      if (!b) return;
+      if (b.classList.contains('expr-clear')) { input.value = ''; }
+      else {
+        var v = b.dataset.ins, pos = input.selectionStart || input.value.length;
+        input.value = input.value.slice(0, pos) + v + input.value.slice(input.selectionEnd || pos);
+        input.focus();
+      }
+      recompile();
+    });
+    input.addEventListener('input', recompile);
+  });
+
   var pending = {};
-  document.querySelectorAll('.facet-group').forEach(function (group) {
+  document.querySelectorAll('.facet-group:not(.facet-expr)').forEach(function (group) {
     var id = group.dataset.for;
     var idx = group.dataset.facet;
     var all = group.querySelector('.chip-all');
@@ -3103,6 +3320,42 @@ JS = """
     }
   });
   Object.keys(pending).forEach(apply);
+
+  // 계층 카테고리 캐스케이드: 대분류 → 중분류 → 소분류. 상위를 골라야 하위 칩이 나온다.
+  // 하위 칩은 data-parent가 바로 위 단계의 선택값과 맞을 때만 보인다. 체인으로 전파한다.
+  (function () {
+    var chains = {};   // (for|ckey) → { level: groupEl }
+    document.querySelectorAll('.facet-group[data-ckey]').forEach(function (g) {
+      var k = g.dataset.for + '|' + g.dataset.ckey;
+      (chains[k] = chains[k] || {})[+g.dataset.clevel] = g;
+    });
+    Object.keys(chains).forEach(function (k) {
+      var byLevel = chains[k];
+      var levels = Object.keys(byLevel).map(Number).sort(function (a, b) { return a - b; });
+      function selVals(g) {
+        var out = [];
+        g.querySelectorAll('.chip:not(.chip-all).is-on').forEach(function (c) { out.push(c.dataset.v); });
+        return out;
+      }
+      function sync() {
+        for (var i = 1; i < levels.length; i++) {
+          var parent = byLevel[levels[i - 1]], child = byLevel[levels[i]];
+          var sel = selVals(parent);
+          var anyParent = sel.length > 0;
+          child.classList.toggle('cascade-collapsed', !anyParent);
+          child.querySelectorAll('.chip:not(.chip-all)').forEach(function (c) {
+            var show = anyParent && sel.indexOf(c.dataset.parent) >= 0;
+            c.style.display = show ? '' : 'none';
+            if (!show && c.classList.contains('is-on')) c.click();  // 끄며 상태·필터 갱신
+          });
+        }
+      }
+      levels.forEach(function (L) {
+        byLevel[L].addEventListener('click', function () { setTimeout(sync, 0); });
+      });
+      sync();
+    });
+  })();
 })();
 
 // ── 스토리3 추이 렌더 ───────────────────────────────────────────────────────

@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>commerce-intel 데모</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Apple SD Gothic Neo", sans-serif; margin: 0;
+         background: #f4f5f7; color: #1c1e21; }
+  header { background: #1c2333; color: #fff; padding: 14px 24px; }
+  header h1 { margin: 0; font-size: 17px; font-weight: 600; }
+  header small { color: #9aa4bd; }
+  main { max-width: 860px; margin: 20px auto 60px; padding: 0 16px; }
+  section { background: #fff; border: 1px solid #e2e5ea; border-radius: 10px;
+            padding: 16px 18px; margin-bottom: 16px; }
+  h2 { margin: 0 0 10px; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+  .num { display: inline-flex; width: 22px; height: 22px; border-radius: 50%;
+         background: #2b56d9; color: #fff; font-size: 12px; align-items: center;
+         justify-content: center; flex: none; }
+  .badge { margin-left: auto; font-size: 12px; padding: 2px 10px; border-radius: 10px;
+           background: #eceef2; color: #667; }
+  .badge.running { background: #fff3d6; color: #8a6100; }
+  .badge.done { background: #dcf3e3; color: #146c2e; }
+  .badge.error { background: #fde2e2; color: #a12626; }
+  textarea, input[type=text] { width: 100%; border: 1px solid #cfd4dd; border-radius: 6px;
+    padding: 8px 10px; font: inherit; font-size: 14px; resize: vertical; }
+  textarea { min-height: 44px; }
+  .row { display: flex; gap: 10px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+  button { border: 0; border-radius: 6px; padding: 8px 16px; font: inherit; font-size: 14px;
+           background: #2b56d9; color: #fff; cursor: pointer; }
+  button:disabled { background: #b9c2d6; cursor: default; }
+  button.ghost { background: #eceef2; color: #444; }
+  pre.log { background: #14171e; color: #cfd6e4; border-radius: 8px; padding: 10px 12px;
+            font-size: 12px; line-height: 1.55; max-height: 260px; overflow: auto;
+            white-space: pre-wrap; word-break: break-all; display: none; margin: 10px 0 0; }
+  .hint { font-size: 12px; color: #778; margin: 6px 0 0; }
+  table.mon { border-collapse: collapse; width: 100%; font-size: 13px; margin-top: 4px; }
+  table.mon th, table.mon td { border-bottom: 1px solid #eceef2; padding: 5px 8px; text-align: left; }
+  table.mon th { color: #667; font-weight: 600; font-size: 12px; }
+  table.mon input[type=datetime-local] { border: 1px solid #cfd4dd; border-radius: 5px;
+    padding: 2px 6px; font: inherit; font-size: 12px; }
+  button.mini { padding: 3px 9px; font-size: 12px; }
+  a.report { display: inline-block; margin-top: 10px; font-weight: 600; color: #2b56d9; }
+</style>
+</head>
+<body>
+<header>
+  <h1>commerce-intel 데모 <small>— 수집 요청 → DB 업데이트 → 분석 요청 → 레포트</small>
+    <small id="sidtag" style="float:right" title="이 탭의 세션 ID — 탭마다 단계 간 전달값이 분리됩니다"></small></h1>
+</header>
+<main>
+
+<section id="s1">
+  <h2><span class="num">1</span> 수집 요청 <span class="badge">대기</span></h2>
+  <textarea id="q1" placeholder="예: 로우클래식 라인시트 수집해줘 / 무신사 남성 데님팬츠 전수조사 해줘 / 29CM 여성슈즈 랭킹 지금 수집해줘"></textarea>
+  <div class="row">
+    <button id="b1">요청 실행</button>
+    <button id="c1" class="ghost" style="display:none">취소</button>
+  </div>
+  <p class="hint">자연어 요청을 Claude 헤드리스가 해석합니다 — 재사용 판정(TTL·스킵 창)이 먼저고,
+    스킵 창을 벗어났을 때만 실제로 수집합니다. 랭킹 스냅샷·브랜드 라인시트를 지원합니다(전수조사는 대기 상태).</p>
+  <pre class="log" id="l1"></pre>
+</section>
+
+<section id="mon">
+  <h2>⏱ 진행 중인 모니터링 <span class="badge" id="monbadge">—</span></h2>
+  <div id="montbl" class="hint">불러오는 중…</div>
+  <p class="hint">기간이 있는 수집 요청("오후 11시까지 계속")은 ①이 crontab에 주기 등록하고 잡은 바로 완료됩니다
+    — 축적은 여기서 이어집니다. 마감을 바꾸거나(비우면 무기한) 중단할 수 있고, 마감이 지난 잡은
+    목록에서 사라집니다(크론 줄도 다음 실행에 스스로 지워집니다).</p>
+</section>
+
+<section id="s2">
+  <h2><span class="num">2</span> DB 업데이트 <span class="badge">대기</span></h2>
+  <div class="row"><button id="b2">① 정본 DB 적재</button>
+    <button id="b2s" disabled title="정본 DB 적재를 먼저 실행하세요">② 구글 시트 업로드</button>
+    <button id="c2" class="ghost" style="display:none">취소</button></div>
+  <p class="hint">data/snapshots 전체를 정본 DB(intel.db)에 적재합니다. 이미 적재된 관측은 자동 스킵됩니다(멱등).
+    <b>구글 시트 업로드는 정본 적재를 마쳐야 열립니다</b> — 시트는 정본의 단방향 거울이라 순서가 뒤집히면 안 됩니다.
+    미러가 실패해도 정본은 유효하고 다음 업로드가 따라잡습니다.</p>
+  <pre class="log" id="l2"></pre>
+</section>
+
+<section id="s3">
+  <h2><span class="num">3</span> 분석 요청 <span class="badge">대기</span></h2>
+  <textarea id="q3" placeholder="예: 모자 랭킹에서 가격대별 분포가 어떤지 분석해줘"></textarea>
+  <div class="row"><button id="b3">요청 실행</button>
+    <button id="c3" class="ghost" style="display:none">취소</button></div>
+  <p class="hint">Claude 헤드리스가 DB의 관측 문맥을 골라 데이터를 뽑고 핵심 소견을 요약합니다.
+    분석 대상을 생략하면 ①의 수집 요청 주제를 승계해 해석합니다.</p>
+  <pre class="log" id="l3"></pre>
+</section>
+
+<section id="s4">
+  <h2><span class="num">4</span> 레포트 생성 <span class="badge">대기</span></h2>
+  <input type="text" id="q4" placeholder="분석 문맥 (쉼표 구분, 비우면 가장 최근 수집 문맥) — 3단계 완료 시 자동 입력">
+  <div class="row"><button id="b4">리포트 생성</button></div>
+  <p class="hint">③을 건너뛰어 문맥이 비면 <b>가장 최근 수집 문맥</b>으로 좁혀 만듭니다
+    (문맥을 섞으면 변인통제가 성립하지 않습니다).
+    build_analysis_report.py의 분석 대시보드(변인통제 패널·산점도)는 항상 만들고,
+    브랜드 문맥(<code>brand:…</code>)이면 build_report.py의 플랫폼 비교 라인시트를 함께 만듭니다
+    — 둘 다 나오면 링크가 둘입니다. 라인시트는 <code>data/raw/</code>의 수집 원본이 있어야 만들 수 있어
+    없으면 대시보드만 나옵니다.</p>
+  <div id="r4"></div>
+  <pre class="log" id="l4"></pre>
+</section>
+
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+
+// 탭마다 다른 세션 ID. sessionStorage라 새로고침엔 유지되고 새 탭에선 새로 생긴다 —
+// ①의 수집 결과가 ②·③으로 넘어갈 때 다른 탭 것과 섞이지 않게 하는 열쇠다.
+const SID = (() => {
+  let v = sessionStorage.getItem("demo-sid");
+  if (!v) {
+    v = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2)).slice(0, 8);
+    sessionStorage.setItem("demo-sid", v);
+  }
+  return v;
+})();
+$("sidtag").textContent = "탭 " + SID;
+
+function setBadge(step, status, text) {
+  const b = $("s" + step).querySelector(".badge");
+  b.className = "badge " + (status || "");
+  b.textContent = text;
+}
+
+async function poll(step, jobId, onDone) {
+  const logEl = $("l" + step), cancel = $("c" + step);
+  logEl.style.display = "block";
+  if (cancel) { cancel.style.display = "inline-block";
+    cancel.onclick = () => fetch(`/api/job/${jobId}/cancel`, {method: "POST"}); }
+  while (true) {
+    const r = await (await fetch(`/api/job/${jobId}`)).json();
+    logEl.textContent = r.log.join("\n");
+    logEl.scrollTop = logEl.scrollHeight;
+    if (r.status !== "running") {
+      if (cancel) cancel.style.display = "none";
+      setBadge(step, r.status, r.status === "done" ? "완료" : "실패");
+      if (r.status === "done" && onDone) onDone(r.result);
+      return;
+    }
+    await new Promise(res => setTimeout(res, 1000));
+  }
+}
+
+async function start(step, url, body, onDone, btnId) {
+  const btn = $(btnId || ("b" + step));   // ②는 버튼이 둘이라 id를 따로 받는다
+  btn.disabled = true;
+  setBadge(step, "running", "실행 중…");
+  try {
+    const r = await (await fetch(url, {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({...(body || {}), sid: SID})})).json();   // 모든 단계에 탭 ID 동봉
+    if (r.error) { setBadge(step, "error", r.error); return; }
+    await poll(step, r.job, onDone);
+  } catch (e) {
+    setBadge(step, "error", "요청 실패: " + e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function loadMonitors() {
+  // 마감을 입력하는 중이면 다시 그리지 않는다 (20초 갱신이 입력을 지우지 않게)
+  const act = document.activeElement;
+  if (act && act.tagName === "INPUT" && $("montbl").contains(act)) return;
+  try {
+    const ms = (await (await fetch("/api/monitors")).json()).monitors || [];
+    $("monbadge").textContent = ms.length ? ms.length + "건" : "없음";
+    if (!ms.length) { $("montbl").textContent = "진행 중인 모니터링이 없습니다."; return; }
+    $("montbl").innerHTML =
+      '<table class="mon"><tr><th>사이트</th><th>대상</th><th>주기</th>'
+      + "<th>마감 (비우면 무기한)</th><th>축적</th><th>최근 수집</th><th></th></tr>"
+      + ms.map((m, i) => "<tr>"
+          + `<td>${m.site}</td><td>${m.target}</td><td>${m.cycle}</td>`
+          + `<td><input type="datetime-local" class="until" data-i="${i}"`
+          + ` value="${m.until ? m.until.replace(" ", "T") : ""}"></td>`
+          + `<td>${m.count}회</td><td>${m.last || "—"}</td>`
+          + `<td><button class="mini" data-act="until" data-i="${i}">적용</button> `
+          + `<button class="mini ghost" data-act="stop" data-i="${i}">중단</button></td></tr>`).join("")
+      + "</table>";
+    $("montbl").querySelectorAll("button[data-act]").forEach(b => {
+      b.onclick = async () => {
+        const m = ms[+b.dataset.i];
+        let url = "/api/monitor/stop", payload = {tag: m.tag};
+        if (b.dataset.act === "until") {
+          const v = $("montbl").querySelector(`input.until[data-i="${b.dataset.i}"]`).value;
+          url = "/api/monitor/until";
+          payload.until = v ? v.replace("T", " ").slice(0, 16) : "";
+        } else if (!confirm(`${m.site} ${m.target} 모니터링을 중단할까요? (crontab에서 지웁니다)`)) {
+          return;
+        }
+        b.disabled = true;
+        const r = await (await fetch(url, {method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(payload)})).json();
+        if (r.error) alert(r.error);
+        else if (!r.ok) alert("해당 crontab 줄을 찾지 못했습니다 (이미 정리됐을 수 있습니다)");
+        loadMonitors();
+      };
+    });
+  } catch (e) { $("montbl").textContent = "모니터링 조회 실패: " + e; }
+}
+loadMonitors();
+setInterval(loadMonitors, 20000);
+
+$("b1").onclick = () => start(1, "/api/step1", {text: $("q1").value}, loadMonitors);
+
+// 정본 적재가 끝나야 시트 업로드 버튼이 열린다 (서버에서도 같은 조건을 검사한다)
+$("b2").onclick = () => start(2, "/api/step2", null, () => {
+  const up = $("b2s");
+  up.disabled = false;
+  up.title = "";
+});
+$("b2s").onclick = () => start(2, "/api/step2-sheets", null, null, "b2s");
+
+$("b3").onclick = () => start(3, "/api/step3", {text: $("q3").value},
+  (res) => { if (res && res.contexts) $("q4").value = res.contexts.join(", "); });
+
+$("b4").onclick = () => start(4, "/api/step4", {
+  contexts: $("q4").value.split(",").map(s => s.trim()).filter(Boolean),
+}, (res) => {
+  if (res && res.reports)
+    $("r4").innerHTML = res.reports.map(r =>
+      `<a class="report" href="${encodeURI(r.url)}" target="_blank">📊 ${r.label} 열기 — ${r.url.split("/").pop()}</a>`
+    ).join("<br>");
+});
+</script>
+</body>
+</html>

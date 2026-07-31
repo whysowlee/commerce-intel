@@ -184,11 +184,15 @@ def main():
     # 상품 표에서만 따진다 — 품목 성적표는 한 행이 한 품목이라 품목명이 행 식별자이고,
     # 거기서는 정렬이 정상이다. 규칙이 걸리는 곳은 값이 반복되는 상품 표다.
     linesheet_head = page.split('id="t-linesheet"')[1].split("</thead>")[0]
-    check("B1i 상품 표에서 품목·입점은 정렬 열이 아니라 다중 선택 칩이다",
+    check("B1i 상품 표에서 품목·입점은 정렬 열이 아니라 다중 선택 칩이다 (품목은 상위·세부 계층)",
           'data-sort="text">카테고리' not in linesheet_head
           and 'data-sort="text">품목' not in linesheet_head
-          and '<span class="facet-label">품목</span>' in page
-          and '<span class="facet-label">입점</span>' in page
+          and '<span class="facet-label">품목 · 대분류</span>' in page
+          and '<span class="facet-label">품목 · 중분류</span>' in page
+          and '<span class="facet-label">품목 · 소분류</span>' in page
+          and 'data-clevel="2"' in page
+          and '<span class="facet-label">입점 수식</span>' in page
+          and 'class="expr-input"' in page
           and page.count('class="chip"') >= 2)
 
     # ── 멀티 플랫폼 합집합·매칭 (SPEC v6 §4 스토리1) ────────────────────────
@@ -260,10 +264,13 @@ def main():
     check("B1x 3개 이상이면 '2곳 이상'과 '전 플랫폼'을 따로 센다",
           "2곳 이상 입점" in p3 and "전 플랫폼 입점" in p3,
           "두 값은 다른데 한 이름으로 뭉뚱그렸다")
-    check("B1y 입점 축은 플랫폼별 칩이고 AND로 동작한다",
-          'data-match="all"' in p3 and "모두 만족" in p3
-          and ">insilence.co.kr<" in p3,
-          "입점 축이 AND가 아니거나 동작을 밝히지 않았다")
+    check("B1y 입점 축은 불리언 수식(AND·OR·NOT·괄호)이다",
+          'facet-expr' in p3 and 'class="expr-input"' in p3
+          and 'class="chip expr-op" data-ins=" AND "' in p3
+          and 'class="chip expr-op" data-ins=" OR "' in p3
+          and 'class="chip expr-op" data-ins=" NOT "' in p3
+          and 'data-ins="insilence.co.kr"' in p3,
+          "입점 축이 수식 입력이 아니거나 연산자·플랫폼 삽입 칩이 없다")
     check("B1z 자사몰은 반응 지표가 null이라 비교 축에서 빠진다",
           "insilence.co.kr 좋아요" not in p3 and "insilence.co.kr 후기" not in p3
           and "insilence.co.kr 평점" not in p3
@@ -284,7 +291,7 @@ def main():
           and "플랫폼 비교 요약" not in solo_page
           and "품목별 입점 커버리지 갭" not in solo_page
           and "전 상품 (플랫폼 합집합)" not in solo_page
-          and '<span class="facet-label">카테고리</span>' in solo_page,
+          and '<span class="facet-label">카테고리 · 대분류</span>' in solo_page,
           "단일 플랫폼 리포트에 비교 섹션이 붙었다")
     check("B1j 품목 성적표에 규모 대비 지수가 있다",
           "품목 성적표" in page and "규모 대비 하트" in page and "규모 대비 후기" in page

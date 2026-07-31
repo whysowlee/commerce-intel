@@ -379,6 +379,15 @@ def cmd_export(conn, args):
 def cmd_proxy_load(conn, args):
     """프록시 정의 + 판정 묶음(JSON)을 등록한다. proxy-extractor 반환 형식과 같다."""
     data = json.loads(Path(args.file).read_text(encoding="utf-8"))
+    # proxy-extractor가 다중 카드를 배열로 반환한다 — 배열이면 각 원소를 순차 적재
+    if isinstance(data, list):
+        for one in data:
+            _proxy_load_one(conn, one)
+        return
+    _proxy_load_one(conn, data)
+
+
+def _proxy_load_one(conn, data):
     d = data.get("proxy") or {}
     if not d.get("proxy_name"):
         raise SystemExit("proxy.proxy_name이 없다")

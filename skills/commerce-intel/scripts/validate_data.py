@@ -340,7 +340,25 @@ def main():
 
     source_total = meta.get("source_total")
     total_gap = None
-    if is_number(source_total) and source_total > 0:
+    sampling = meta.get("sampling")
+    if isinstance(sampling, dict):
+        # 표본 모드(SPEC-INTEL D21): 총계 대조는 완전성 근거가 아니다 —
+        # 완전성 = 표본 계획 완주. source_total은 모집단 크기 기록용으로만 쓴다.
+        planned = sampling.get("planned")
+        if is_number(planned) and planned > 0:
+            gap = abs(count - planned) / planned * 100
+            if gap > TOTAL_TOLERANCE:
+                rep.warn(
+                    "표본 계획 %s건 대비 %d건 수집 — 계획 완주 미달 %.1f%% (기준 ±%.0f%%)"
+                    % (planned, count, gap, TOTAL_TOLERANCE))
+            else:
+                rep.info("표본 계획 %s건 완주 (오차 %.1f%%) — 모집단 %s건의 표본이다"
+                         % (planned, gap, source_total))
+        else:
+            rep.warn("meta.sampling에 planned(계획 표본 수)가 없다 — 완주를 판정할 수 없다")
+        if not sampling.get("design"):
+            rep.warn("meta.sampling에 design(추출 설계 기술)이 없다 — 표본 리포트에 필수다")
+    elif is_number(source_total) and source_total > 0:
         total_gap = abs(count - source_total) / source_total * 100
         if total_gap > TOTAL_TOLERANCE:
             rep.warn(

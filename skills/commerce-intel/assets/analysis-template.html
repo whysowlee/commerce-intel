@@ -22,11 +22,20 @@ h1{font-size:19px;margin:0 0 4px}h2{font-size:15px;margin:22px 0 8px}
 .notice{background:var(--surface-2);border:1px solid var(--border);border-radius:8px;
   padding:10px 14px;margin:12px 0;font-size:12.5px;color:var(--text-secondary)}
 .notice b{color:var(--text-primary)}
-.filters{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin:14px 0;
+details.notice>summary{cursor:pointer;list-style:none;color:var(--text-secondary)}
+details.notice>summary::-webkit-details-marker{display:none}
+details.notice .more{font-size:11px;color:var(--text-muted);font-weight:400}
+details.notice[open] .more{display:none}
+.filters{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start;margin:14px 0;
   padding:12px;background:var(--surface-2);border-radius:8px}
-.filters label{display:block;font-size:11.5px;color:var(--text-secondary);margin-bottom:2px}
+.filters label{display:block;font-size:11.5px;color:var(--text-secondary);margin-bottom:4px}
 .filters select,.filters input{font:inherit;font-size:13px;background:var(--surface-1);
   color:var(--text-primary);border:1px solid var(--border);border-radius:6px;padding:4px 6px}
+.faxis{max-width:340px}
+.chips{display:flex;flex-wrap:wrap;gap:4px;max-height:96px;overflow:auto}
+.chip{font:inherit;font-size:11.5px;cursor:pointer;background:var(--surface-1);
+  color:var(--text-secondary);border:1px solid var(--border);border-radius:12px;padding:2px 9px}
+.chip.on{background:var(--series-1);color:#fff;border-color:var(--series-1)}
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:14px 0}
 .kpi{background:var(--surface-2);border-radius:8px;padding:10px 14px}
 .kpi .v{font-size:21px;font-weight:700}.kpi .l{font-size:11.5px;color:var(--text-secondary)}
@@ -52,11 +61,11 @@ a{color:var(--series-1)}
 </style></head><body><div class="viz-root">
 <h1>가격-반응 탐색 대시보드</h1>
 <div class="sub" id="range"></div>
-<div class="notice"><b>이 도구는 가격-반응의 상관 탐색이지 엄밀한 가격 탄력성 추정이 아니다. 상관은 인과가 아니다.</b><br>
+<details class="notice"><summary><b>이 도구는 가격-반응의 상관 탐색이지 엄밀한 가격 탄력성 추정이 아니다. 상관은 인과가 아니다.</b> <span class="more">주의사항 펼치기 ▾</span></summary>
 · 여기 없는 것: 판매 종료된 상품, 순위권 밖 미관측 구간, 필터에 따라 품절 상품 (생존편향)<br>
 · 축 조합을 훑다 발견한 패턴은 가설이지 결론이 아니다 — 다음 관측으로 재확인하라 (다중비교)<br>
 · 전체 집합의 상관은 세그먼트(카테고리·핏·브랜드)로 나누면 사라지거나 뒤집힐 수 있다 — 아래 필터가 그 확인 장치다 (심슨의 역설)<br>
-· *누적판매·하트는 누적값이라 출시 오래된 상품이 유리하다 · 축약 표기 파싱값은 ±4% 오차</div>
+· *누적판매·하트는 누적값이라 출시 오래된 상품이 유리하다 · 축약 표기 파싱값은 ±4% 오차</details>
 <div class="filters" id="filters"></div>
 <div class="smalln" id="smalln">⚠ 표본이 작다 (n &lt; 30) — 이 조건의 패턴은 우연일 가능성이 크다</div>
 <div class="kpis" id="kpis"></div>
@@ -70,12 +79,26 @@ a{color:var(--series-1)}
 <div class="panel"><h2 style="margin-top:0">분포</h2>
 <div class="axes"><select id="hx"></select> <span class="excl" id="hexcl"></span></div>
 <svg id="hist" width="100%" height="240" viewBox="0 0 920 240"></svg></div>
+<div class="panel"><h2 style="margin-top:0">상품 표</h2><div class="tablewrap" id="table"></div></div>
+<div class="panel" id="tspanel" style="display:none"><h2 style="margin-top:0">시계열 추이 (축적 관측)</h2>
+<div class="sub">같은 상품의 시점별 지표. <b>순위권 밖 구간은 선을 끊는다</b>(관측 없음 — 이어 그으면 없는 순위를 주장하는 것이다). 이동평균은 노이즈를 줄인 것이지 새 데이터가 아니다. 현재 필터가 적용된 상품 중 상위만 그린다.</div>
+<div class="axes">지표 <select id="ts_metric"><option value="rank">순위</option><option value="price">판매가</option><option value="like">하트</option><option value="review">후기 수</option></select>
+ · 계열 <input type="number" id="ts_n" value="8" min="1" max="40" style="width:56px">개
+ <label style="display:inline"><input type="checkbox" id="ts_ma"> 이동평균</label>
+ <span class="sub" id="ts_info"></span></div>
+<svg id="ts" width="100%" height="360" viewBox="0 0 1040 360"></svg>
+<div class="leg" id="ts_leg"></div></div>
 <div class="panel" id="eventspanel"><h2 style="margin-top:0">가격 변경 사건 (관측 간 증분)</h2>
 <div class="sub">같은 상품의 연속 관측에서 판매가가 바뀐 사건. 증분은 그 관측 창의 순변화다 — 창 안의 왕복은 잡히지 않는다.</div>
+<div class="axes"><span>방향</span>
+ <button type="button" class="chip on" id="ev_dir_down">인하</button>
+ <button type="button" class="chip on" id="ev_dir_up">인상</button>
+ <span style="margin-left:8px">하트 증분</span>
+ <button type="button" class="chip" id="ev_like_pos">증가만</button>
+ <span class="sub" id="ev_n"></span></div>
 <div class="tablewrap" id="events"></div></div>
-<div class="panel"><h2 style="margin-top:0">상품 표</h2><div class="tablewrap" id="table"></div></div>
 <div id="tip"></div>
-<script type="application/json" id="data">{"meta": {"generated_at": "TEMPLATE", "obs_min": null, "obs_max": null, "contexts": ["template:샘플"], "sites": ["musinsa", "29cm"]}, "items": [{"site": "musinsa", "product_id": "1", "name": "샘플 상품 1", "url": "#", "image_url": null, "brand": "브랜드B", "category": "데님팬츠", "fit": "슬림", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 107000, "price_sale": 95100, "discount_rate": 10, "review_count": 13, "rating": 4.1, "purchase_count": null, "like_count": 8, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "2", "name": "샘플 상품 2", "url": "#", "image_url": null, "brand": "브랜드A", "category": "데님팬츠", "fit": null, "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 114000, "price_sale": 101200, "discount_rate": 10, "review_count": 26, "rating": 4.2, "purchase_count": null, "like_count": 17, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "3", "name": "샘플 상품 3", "url": "#", "image_url": null, "brand": "브랜드B", "category": "데님팬츠", "fit": "와이드", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 121000, "price_sale": 107300, "discount_rate": 10, "review_count": 39, "rating": 4.3, "purchase_count": null, "like_count": 32, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "4", "name": "샘플 상품 4", "url": "#", "image_url": null, "brand": "브랜드A", "category": "데님팬츠", "fit": "슬림", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 128000, "price_sale": 113400, "discount_rate": 10, "review_count": 52, "rating": 4.4, "purchase_count": null, "like_count": 53, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "5", "name": "샘플 상품 5", "url": "#", "image_url": null, "brand": "브랜드B", "category": "데님팬츠", "fit": null, "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 135000, "price_sale": 119500, "discount_rate": 10, "review_count": 65, "rating": 4.5, "purchase_count": null, "like_count": 80, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "6", "name": "샘플 상품 6", "url": "#", "image_url": null, "brand": "브랜드A", "category": "데님팬츠", "fit": "와이드", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 142000, "price_sale": 125600, "discount_rate": 10, "review_count": 78, "rating": 4.6, "purchase_count": null, "like_count": 113, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "7", "name": "샘플 상품 7", "url": "#", "image_url": null, "brand": "브랜드B", "category": "데님팬츠", "fit": "슬림", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 149000, "price_sale": 131700, "discount_rate": 10, "review_count": 91, "rating": 4.7, "purchase_count": null, "like_count": 152, "viewers_now": null, "sold_out": true, "rank": null}, {"site": "musinsa", "product_id": "8", "name": "샘플 상품 8", "url": "#", "image_url": null, "brand": "브랜드A", "category": "데님팬츠", "fit": null, "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 156000, "price_sale": 137800, "discount_rate": 10, "review_count": 104, "rating": 4.8, "purchase_count": null, "like_count": 197, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "9", "name": "샘플 상품 9", "url": "#", "image_url": null, "brand": "브랜드B", "category": "데님팬츠", "fit": "와이드", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 163000, "price_sale": 143900, "discount_rate": 10, "review_count": 117, "rating": 4.9, "purchase_count": null, "like_count": 248, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "10", "name": "샘플 상품 10", "url": "#", "image_url": null, "brand": "브랜드A", "category": "데님팬츠", "fit": "슬림", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 170000, "price_sale": 150000, "discount_rate": 10, "review_count": 130, "rating": 4.0, "purchase_count": null, "like_count": 305, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "11", "name": "샘플 상품 11", "url": "#", "image_url": null, "brand": "브랜드B", "category": "데님팬츠", "fit": null, "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 177000, "price_sale": 156100, "discount_rate": 10, "review_count": 143, "rating": 4.1, "purchase_count": null, "like_count": 368, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "12", "name": "샘플 상품 12", "url": "#", "image_url": null, "brand": "브랜드A", "category": "데님팬츠", "fit": "와이드", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 184000, "price_sale": 162200, "discount_rate": 10, "review_count": 156, "rating": 4.2, "purchase_count": null, "like_count": 437, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "13", "name": "샘플 상품 13", "url": "#", "image_url": null, "brand": "브랜드B", "category": "데님팬츠", "fit": "슬림", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 191000, "price_sale": 168300, "discount_rate": 10, "review_count": 169, "rating": 4.3, "purchase_count": null, "like_count": 512, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "14", "name": "샘플 상품 14", "url": "#", "image_url": null, "brand": "브랜드A", "category": "데님팬츠", "fit": null, "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 198000, "price_sale": 174400, "discount_rate": 10, "review_count": 182, "rating": 4.4, "purchase_count": null, "like_count": 593, "viewers_now": null, "sold_out": true, "rank": null}, {"site": "musinsa", "product_id": "15", "name": "샘플 상품 15", "url": "#", "image_url": null, "brand": "브랜드B", "category": "데님팬츠", "fit": "와이드", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 205000, "price_sale": 180500, "discount_rate": 10, "review_count": 195, "rating": 4.5, "purchase_count": null, "like_count": 680, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "16", "name": "샘플 상품 16", "url": "#", "image_url": null, "brand": "브랜드A", "category": "데님팬츠", "fit": "슬림", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 212000, "price_sale": 186600, "discount_rate": 10, "review_count": 208, "rating": 4.6, "purchase_count": null, "like_count": 773, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "17", "name": "샘플 상품 17", "url": "#", "image_url": null, "brand": "브랜드B", "category": "데님팬츠", "fit": null, "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 219000, "price_sale": 192700, "discount_rate": 10, "review_count": 221, "rating": 4.7, "purchase_count": null, "like_count": 872, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "18", "name": "샘플 상품 18", "url": "#", "image_url": null, "brand": "브랜드A", "category": "데님팬츠", "fit": "와이드", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 226000, "price_sale": 198800, "discount_rate": 10, "review_count": 234, "rating": 4.8, "purchase_count": null, "like_count": 977, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "19", "name": "샘플 상품 19", "url": "#", "image_url": null, "brand": "브랜드B", "category": "데님팬츠", "fit": "슬림", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 233000, "price_sale": 204900, "discount_rate": 10, "review_count": 247, "rating": 4.9, "purchase_count": null, "like_count": 1088, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "20", "name": "샘플 상품 20", "url": "#", "image_url": null, "brand": "브랜드A", "category": "데님팬츠", "fit": null, "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 240000, "price_sale": 211000, "discount_rate": 10, "review_count": 260, "rating": 4.0, "purchase_count": null, "like_count": 1205, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "21", "name": "샘플 상품 21", "url": "#", "image_url": null, "brand": "브랜드B", "category": "데님팬츠", "fit": "와이드", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 247000, "price_sale": 217100, "discount_rate": 10, "review_count": 273, "rating": 4.1, "purchase_count": null, "like_count": 1328, "viewers_now": null, "sold_out": true, "rank": null}, {"site": "musinsa", "product_id": "22", "name": "샘플 상품 22", "url": "#", "image_url": null, "brand": "브랜드A", "category": "데님팬츠", "fit": "슬림", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 254000, "price_sale": 223200, "discount_rate": 10, "review_count": 286, "rating": 4.2, "purchase_count": null, "like_count": 1457, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "23", "name": "샘플 상품 23", "url": "#", "image_url": null, "brand": "브랜드B", "category": "데님팬츠", "fit": null, "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 261000, "price_sale": 229300, "discount_rate": 10, "review_count": 299, "rating": 4.3, "purchase_count": null, "like_count": 1592, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "24", "name": "샘플 상품 24", "url": "#", "image_url": null, "brand": "브랜드A", "category": "데님팬츠", "fit": "와이드", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 268000, "price_sale": 235400, "discount_rate": 10, "review_count": 312, "rating": 4.4, "purchase_count": null, "like_count": 1733, "viewers_now": null, "sold_out": false, "rank": null}], "price_events": []}</script>
+<script type="application/json" id="data">{"meta": {"generated_at": "TEMPLATE", "obs_min": null, "obs_max": null, "contexts": ["template:샘플"], "sites": ["musinsa", "29cm"], "proxies": []}, "items": [{"site": "musinsa", "product_id": "1", "name": "샘플 상품 1", "url": "#", "image_url": null, "brand": "브랜드B", "category": "데님팬츠", "fit": "슬림", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 107000, "price_sale": 95100, "discount_rate": 10, "review_count": 13, "rating": 4.1, "purchase_count": null, "like_count": 8, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "2", "name": "샘플 상품 2", "url": "#", "image_url": null, "brand": "브랜드A", "category": "데님팬츠", "fit": null, "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 114000, "price_sale": 101200, "discount_rate": 10, "review_count": 26, "rating": 4.2, "purchase_count": null, "like_count": 17, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "3", "name": "샘플 상품 3", "url": "#", "image_url": null, "brand": "브랜드B", "category": "데님팬츠", "fit": "와이드", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 121000, "price_sale": 107300, "discount_rate": 10, "review_count": 39, "rating": 4.3, "purchase_count": null, "like_count": 32, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "4", "name": "샘플 상품 4", "url": "#", "image_url": null, "brand": "브랜드A", "category": "데님팬츠", "fit": "슬림", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 128000, "price_sale": 113400, "discount_rate": 10, "review_count": 52, "rating": 4.4, "purchase_count": null, "like_count": 53, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "5", "name": "샘플 상품 5", "url": "#", "image_url": null, "brand": "브랜드B", "category": "데님팬츠", "fit": null, "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 135000, "price_sale": 119500, "discount_rate": 10, "review_count": 65, "rating": 4.5, "purchase_count": null, "like_count": 80, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "6", "name": "샘플 상품 6", "url": "#", "image_url": null, "brand": "브랜드A", "category": "데님팬츠", "fit": "와이드", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 142000, "price_sale": 125600, "discount_rate": 10, "review_count": 78, "rating": 4.6, "purchase_count": null, "like_count": 113, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "7", "name": "샘플 상품 7", "url": "#", "image_url": null, "brand": "브랜드B", "category": "데님팬츠", "fit": "슬림", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 149000, "price_sale": 131700, "discount_rate": 10, "review_count": 91, "rating": 4.7, "purchase_count": null, "like_count": 152, "viewers_now": null, "sold_out": true, "rank": null}, {"site": "musinsa", "product_id": "8", "name": "샘플 상품 8", "url": "#", "image_url": null, "brand": "브랜드A", "category": "데님팬츠", "fit": null, "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 156000, "price_sale": 137800, "discount_rate": 10, "review_count": 104, "rating": 4.8, "purchase_count": null, "like_count": 197, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "9", "name": "샘플 상품 9", "url": "#", "image_url": null, "brand": "브랜드B", "category": "데님팬츠", "fit": "와이드", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 163000, "price_sale": 143900, "discount_rate": 10, "review_count": 117, "rating": 4.9, "purchase_count": null, "like_count": 248, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "10", "name": "샘플 상품 10", "url": "#", "image_url": null, "brand": "브랜드A", "category": "데님팬츠", "fit": "슬림", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 170000, "price_sale": 150000, "discount_rate": 10, "review_count": 130, "rating": 4.0, "purchase_count": null, "like_count": 305, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "11", "name": "샘플 상품 11", "url": "#", "image_url": null, "brand": "브랜드B", "category": "데님팬츠", "fit": null, "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 177000, "price_sale": 156100, "discount_rate": 10, "review_count": 143, "rating": 4.1, "purchase_count": null, "like_count": 368, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "12", "name": "샘플 상품 12", "url": "#", "image_url": null, "brand": "브랜드A", "category": "데님팬츠", "fit": "와이드", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 184000, "price_sale": 162200, "discount_rate": 10, "review_count": 156, "rating": 4.2, "purchase_count": null, "like_count": 437, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "13", "name": "샘플 상품 13", "url": "#", "image_url": null, "brand": "브랜드B", "category": "데님팬츠", "fit": "슬림", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 191000, "price_sale": 168300, "discount_rate": 10, "review_count": 169, "rating": 4.3, "purchase_count": null, "like_count": 512, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "14", "name": "샘플 상품 14", "url": "#", "image_url": null, "brand": "브랜드A", "category": "데님팬츠", "fit": null, "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 198000, "price_sale": 174400, "discount_rate": 10, "review_count": 182, "rating": 4.4, "purchase_count": null, "like_count": 593, "viewers_now": null, "sold_out": true, "rank": null}, {"site": "musinsa", "product_id": "15", "name": "샘플 상품 15", "url": "#", "image_url": null, "brand": "브랜드B", "category": "데님팬츠", "fit": "와이드", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 205000, "price_sale": 180500, "discount_rate": 10, "review_count": 195, "rating": 4.5, "purchase_count": null, "like_count": 680, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "16", "name": "샘플 상품 16", "url": "#", "image_url": null, "brand": "브랜드A", "category": "데님팬츠", "fit": "슬림", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 212000, "price_sale": 186600, "discount_rate": 10, "review_count": 208, "rating": 4.6, "purchase_count": null, "like_count": 773, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "17", "name": "샘플 상품 17", "url": "#", "image_url": null, "brand": "브랜드B", "category": "데님팬츠", "fit": null, "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 219000, "price_sale": 192700, "discount_rate": 10, "review_count": 221, "rating": 4.7, "purchase_count": null, "like_count": 872, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "18", "name": "샘플 상품 18", "url": "#", "image_url": null, "brand": "브랜드A", "category": "데님팬츠", "fit": "와이드", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 226000, "price_sale": 198800, "discount_rate": 10, "review_count": 234, "rating": 4.8, "purchase_count": null, "like_count": 977, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "19", "name": "샘플 상품 19", "url": "#", "image_url": null, "brand": "브랜드B", "category": "데님팬츠", "fit": "슬림", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 233000, "price_sale": 204900, "discount_rate": 10, "review_count": 247, "rating": 4.9, "purchase_count": null, "like_count": 1088, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "20", "name": "샘플 상품 20", "url": "#", "image_url": null, "brand": "브랜드A", "category": "데님팬츠", "fit": null, "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 240000, "price_sale": 211000, "discount_rate": 10, "review_count": 260, "rating": 4.0, "purchase_count": null, "like_count": 1205, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "21", "name": "샘플 상품 21", "url": "#", "image_url": null, "brand": "브랜드B", "category": "데님팬츠", "fit": "와이드", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 247000, "price_sale": 217100, "discount_rate": 10, "review_count": 273, "rating": 4.1, "purchase_count": null, "like_count": 1328, "viewers_now": null, "sold_out": true, "rank": null}, {"site": "musinsa", "product_id": "22", "name": "샘플 상품 22", "url": "#", "image_url": null, "brand": "브랜드A", "category": "데님팬츠", "fit": "슬림", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 254000, "price_sale": 223200, "discount_rate": 10, "review_count": 286, "rating": 4.2, "purchase_count": null, "like_count": 1457, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "23", "name": "샘플 상품 23", "url": "#", "image_url": null, "brand": "브랜드B", "category": "데님팬츠", "fit": null, "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 261000, "price_sale": 229300, "discount_rate": 10, "review_count": 299, "rating": 4.3, "purchase_count": null, "like_count": 1592, "viewers_now": null, "sold_out": false, "rank": null}, {"site": "musinsa", "product_id": "24", "name": "샘플 상품 24", "url": "#", "image_url": null, "brand": "브랜드A", "category": "데님팬츠", "fit": "와이드", "observed_at": "2026-07-31 12:00:00", "context": "template:샘플", "price_original": 268000, "price_sale": 235400, "discount_rate": 10, "review_count": 312, "rating": 4.4, "purchase_count": null, "like_count": 1733, "viewers_now": null, "sold_out": false, "rank": null}], "price_events": [], "time_series": null}</script>
 <script>
 const DATA=JSON.parse(document.getElementById('data').textContent);
 const AXES=[["price_sale","판매가"],["price_original","정가"],["discount_rate","할인율(%)"],
@@ -87,18 +110,35 @@ const fmt=v=>v==null?"—":(typeof v==="number"?v.toLocaleString("ko-KR"):v);
 const css=n=>getComputedStyle(document.querySelector('.viz-root')).getPropertyValue(n).trim();
 const S={f:{}};
 function uniq(field){return [...new Set(DATA.items.map(d=>d[field]).filter(v=>v!=null&&v!==""))].sort();}
-function mkFilter(id,label,vals){
-  const wrap=document.createElement('div');
+const SEL={};   // 축id -> 켜진 값 Set (비어 있으면 전체 통과)
+function countBy(field){const m={};DATA.items.forEach(d=>{const v=d[field];if(v!=null&&v!=="")m[v]=(m[v]||0)+1;});return m;}
+// 다중 선택 칩 필터 — 한 축 안에서 여러 값을 켜면 OR, 축끼리는 AND (§4 리포트 공통)
+function mkFilter(id,label,vals,counts){
+  SEL[id]=new Set();
+  const wrap=document.createElement('div');wrap.className='faxis';
   wrap.innerHTML=`<label>${label}</label>`;
-  const sel=document.createElement('select');sel.id='f_'+id;
-  sel.innerHTML=`<option value="">전체</option>`+vals.map(v=>`<option>${v}</option>`).join("");
-  sel.onchange=apply;wrap.appendChild(sel);document.getElementById('filters').appendChild(wrap);
+  const box=document.createElement('div');box.className='chips';
+  vals.forEach(v=>{
+    const c=counts?(counts[v]||0):null;
+    const chip=document.createElement('button');chip.type='button';chip.className='chip';
+    chip.textContent=c!=null?`${v} ${c}`:v;
+    chip.onclick=()=>{chip.classList.toggle('on');
+      if(chip.classList.contains('on'))SEL[id].add(v);else SEL[id].delete(v);apply();};
+    box.appendChild(chip);
+  });
+  wrap.appendChild(box);document.getElementById('filters').appendChild(wrap);
 }
 function initFilters(){
-  mkFilter('site','플랫폼',DATA.meta.sites);
-  mkFilter('category','카테고리',uniq('category'));
-  if(uniq('fit').length)mkFilter('fit','핏',uniq('fit'));
-  mkFilter('brand','브랜드',uniq('brand'));
+  const sc=countBy('site'),cc=countBy('category'),bc=countBy('brand'),fc=countBy('fit');
+  mkFilter('site','플랫폼',DATA.meta.sites,sc);
+  mkFilter('category','카테고리',uniq('category'),cc);
+  if(uniq('fit').length)mkFilter('fit','핏',uniq('fit'),fc);
+  mkFilter('brand','브랜드',uniq('brand'),bc);
+  (DATA.meta.proxies||[]).filter(p=>!p.numeric).forEach(p=>{
+    const key='px_'+p.name, vals=uniq(key), pc=countBy(key);
+    if(vals.length)mkFilter(key,p.name+' (AI 판정)',vals.concat(['(미판정)']),
+      {...pc,'(미판정)':DATA.items.filter(d=>d[key]==null).length});
+  });
   const prices=DATA.items.map(d=>d.price_sale).filter(v=>v!=null);
   const w=document.createElement('div');
   w.innerHTML=`<label>판매가 범위</label><input id="f_pmin" type="number" placeholder="${Math.min(...prices)}" style="width:90px">
@@ -112,18 +152,76 @@ function initFilters(){
 function filtered(){
   const g=id=>{const e=document.getElementById(id);return e?e.value:"";};
   const pmin=+g('f_pmin')||null,pmax=+g('f_pmax')||null,so=g('f_so');
+  const axisOK=(id,val)=>{const s=SEL[id];return !s||s.size===0||s.has(val==null?'(미판정)':val);};
+  const pxOK=d=>(DATA.meta.proxies||[]).every(p=>axisOK('px_'+p.name,d['px_'+p.name]));
   return DATA.items.filter(d=>
-    (!g('f_site')||d.site===g('f_site'))&&(!g('f_category')||d.category===g('f_category'))&&
-    (!g('f_fit')||d.fit===g('f_fit'))&&(!g('f_brand')||d.brand===g('f_brand'))&&
+    axisOK('site',d.site)&&axisOK('category',d.category)&&
+    axisOK('fit',d.fit)&&axisOK('brand',d.brand)&&
     (pmin==null||d.price_sale>=pmin)&&(pmax==null||d.price_sale<=pmax)&&
-    (so===""||(so==="1")===!!d.sold_out));
+    (so===""||(so==="1")===!!d.sold_out)&&pxOK(d));
 }
 function median(a){if(!a.length)return null;const s=[...a].sort((x,y)=>x-y);return s[Math.floor(s.length/2)];}
 function apply(){
   S.data=filtered();
   document.getElementById('smalln').style.display=S.data.length<30?'block':'none';
-  renderKPIs();renderScatter();renderHist();renderTable();
+  renderKPIs();renderScatter();renderHist();renderTable();renderTimeSeries();
 }
+const TS=DATA.time_series;
+const TSMETA={rank:{label:"순위",invert:true},price:{label:"판매가",invert:false},
+  like:{label:"하트",invert:false},review:{label:"후기 수",invert:false}};
+function movavg(arr,w){ // null 유지하며 관측된 값만 창 평균
+  return arr.map((v,i)=>{if(v==null)return null;let s=0,c=0;
+    for(let j=Math.max(0,i-w+1);j<=i;j++){if(arr[j]!=null){s+=arr[j];c++;}}
+    return c?s/c:null;});
+}
+function renderTimeSeries(){
+  const panel=document.getElementById('tspanel');
+  if(!TS||!TS.series||!TS.series.length){panel.style.display='none';return;}
+  panel.style.display='';
+  const metric=document.getElementById('ts_metric').value;
+  const N=Math.max(1,Math.min(40,+document.getElementById('ts_n').value||8));
+  const ma=document.getElementById('ts_ma').checked;
+  const meta=TSMETA[metric], stamps=TS.stamps;
+  // 현재 필터에 든 상품만 (site+product_id 매칭)
+  const keep=new Set(S.data.map(d=>d.site+'/'+d.product_id));
+  let ser=TS.series.filter(s=>keep.has(s.site+'/'+s.product_id))
+    .filter(s=>s[metric].some(v=>v!=null));
+  // 관측 시점 많은 순 → 상위 N
+  ser=ser.slice().sort((a,b)=>b[metric].filter(v=>v!=null).length-a[metric].filter(v=>v!=null).length).slice(0,N);
+  document.getElementById('ts_info').textContent=
+    `· 표시 ${ser.length}계열 (필터 내 축적 상품 중 상위, 전체 축적 ${TS.total_series}) · 시점 ${stamps.length}`;
+  const svg=document.getElementById('ts');svg.innerHTML="";
+  if(!ser.length){document.getElementById('ts_leg').innerHTML="";return;}
+  const P={l:56,r:16,t:14,b:40},W=1040,H=360;
+  const vals=[];ser.forEach(s=>{(ma?movavg(s[metric],3):s[metric]).forEach(v=>{if(v!=null)vals.push(v);});});
+  let mn=Math.min(...vals),mx=Math.max(...vals);if(mn===mx){mn-=1;mx+=1;}
+  const sx=i=>P.l+(stamps.length<=1?0.5:i/(stamps.length-1))*(W-P.l-P.r);
+  const sy=v=>{const t=(v-mn)/(mx-mn);return meta.invert? P.t+t*(H-P.t-P.b) : H-P.b-t*(H-P.t-P.b);};
+  let g="";
+  for(let k=0;k<=4;k++){const vv=mn+(mx-mn)*k/4,y=sy(vv);
+    g+=`<line class="grid" x1="${P.l}" x2="${W-P.r}" y1="${y}" y2="${y}"/><text x="${P.l-8}" y="${y+4}" text-anchor="end">${fmt(Math.round(vv))}</text>`;}
+  // 시간축 라벨 (5개)
+  [0,Math.floor(stamps.length/4),Math.floor(stamps.length/2),Math.floor(stamps.length*3/4),stamps.length-1]
+    .filter((v,i,a)=>a.indexOf(v)===i).forEach(i=>{
+      g+=`<text x="${sx(i)}" y="${H-P.b+16}" text-anchor="middle">${(stamps[i]||'').slice(5,16)}</text>`;});
+  g+=`<text x="${P.l}" y="${P.t-2}" font-size="10">${meta.label}${meta.invert?' (위=1위)':''}${ma?' · 이동평균':''}</text>`;
+  const COL=["--series-1","--series-2","--series-3"];
+  ser.forEach((s,si)=>{
+    const arr=ma?movavg(s[metric],3):s[metric];
+    const col=si<5?css(COL[si%3]):css('--text-muted');
+    // 연속 관측 구간만 선으로 잇는다(순위권 밖 = null은 끊는다)
+    let d="",pen=false;
+    arr.forEach((v,i)=>{if(v==null){pen=false;return;}
+      d+=(pen?"L":"M")+sx(i)+" "+sy(v)+" ";pen=true;});
+    g+=`<path d="${d}" fill="none" stroke="${col}" stroke-width="${si<5?2:1}" stroke-opacity="${si<5?0.9:0.4}"/>`;
+  });
+  svg.innerHTML=g;
+  document.getElementById('ts_leg').innerHTML=ser.slice(0,5).map((s,i)=>
+    `<span><i style="background:${css(COL[i%3])}"></i>${(s.name||s.product_id).slice(0,20)}</span>`).join("")
+    +(ser.length>5?`<span class="sub">외 ${ser.length-5}계열(회색)</span>`:"");
+}
+['ts_metric','ts_n','ts_ma'].forEach(id=>{const e=document.getElementById(id);
+  if(e)e.addEventListener('input',renderTimeSeries);});
 function renderKPIs(){
   const d=S.data,ps=d.map(x=>x.price_sale).filter(v=>v!=null);
   const dr=d.map(x=>x.discount_rate).filter(v=>v!=null);
@@ -176,8 +274,9 @@ function renderScatter(){
     c.setAttribute('fill',css(SITECOLOR[d.site]||'--series-3'));c.setAttribute('fill-opacity',.75);
     c.setAttribute('stroke',css('--surface-1'));c.setAttribute('stroke-width',1);
     c.style.cursor='pointer';
+    const lbl=f=>{const a=AXES.find(a=>a[0]===f);return a?a[1]:f.replace('px_','')+' (AI)';};
     c.onmousemove=ev=>showTip(ev,`<b>${d.name||d.product_id}</b><br>${d.brand||""} · ${d.site}<br>`+
-      `${AXES.find(a=>a[0]===xf)[1]}: ${fmt(d[xf])} · ${AXES.find(a=>a[0]===yf)[1]}: ${fmt(d[yf])}`);
+      `${lbl(xf)}: ${fmt(d[xf])} · ${lbl(yf)}: ${fmt(d[yf])}`);
     c.onmouseleave=()=>tip.style.display='none';
     c.onclick=()=>{if(d.url&&d.url!=="#")window.open(d.url);};
     svg.appendChild(c);});
@@ -227,23 +326,54 @@ function renderTable(){
   document.getElementById('table').innerHTML=h+"</tbody></table>";
 }
 function sortBy(f){if(sortCol===f)sortDir*=-1;else{sortCol=f;sortDir=-1;}renderTable();}
+let evSortCol="like_delta",evSortDir=-1;
+const EV_COLS=[["name","상품"],["site","사이트"],["pct","변동"],["price_to","판매가"],
+  ["window","관측 창"],["like_delta","하트 증분"],["review_delta","후기 증분"]];
+function evFilters(){
+  const down=document.getElementById('ev_dir_down').classList.contains('on');
+  const up=document.getElementById('ev_dir_up').classList.contains('on');
+  const posOnly=document.getElementById('ev_like_pos').classList.contains('on');
+  return DATA.price_events.map(e=>({...e,
+      pct:e.price_from?(e.price_to-e.price_from)/e.price_from*100:0,
+      window:`${e.from_at} ~ ${e.to_at}`})).filter(e=>{
+    const dir=e.pct<0?down:e.pct>0?up:(down||up);
+    return dir && (!posOnly || (e.like_delta!=null&&e.like_delta>0));});
+}
 function renderEvents(){
-  const ev=DATA.price_events;
-  if(!ev.length){document.getElementById('eventspanel').style.display='none';return;}
-  let h=`<table><thead><tr><th>상품</th><th>사이트</th><th class="num">가격</th>
-    <th>관측 창</th><th class="num">하트 증분</th><th class="num">후기 증분</th></tr></thead><tbody>`;
-  ev.forEach(e=>{h+=`<tr><td>${e.name||e.product_id}</td><td>${e.site}</td>
-    <td class="num">${fmt(e.price_from)} → ${fmt(e.price_to)}</td>
-    <td>${e.from_at} ~ ${e.to_at}</td>
-    <td class="num">${fmt(e.like_delta)}</td><td class="num">${fmt(e.review_delta)}</td></tr>`;});
+  if(!DATA.price_events.length){document.getElementById('eventspanel').style.display='none';return;}
+  const rows=evFilters().sort((a,b)=>{
+    let av=a[evSortCol],bv=b[evSortCol];
+    if(av==null)return 1;if(bv==null)return -1;
+    return (av<bv?-1:av>bv?1:0)*evSortDir;});
+  document.getElementById('ev_n').textContent=`· ${rows.length}건`;
+  let h="<table><thead><tr>"+EV_COLS.map(([f,l])=>{
+    const num=["pct","price_to","like_delta","review_delta"].includes(f);
+    return `<th class="${num?'num':''}" onclick="evSort('${f}')" style="cursor:pointer">${l} ${evSortCol===f?(evSortDir>0?"▲":"▼"):"↕"}</th>`;}).join("")+"</tr></thead><tbody>";
+  rows.forEach(e=>{h+=`<tr><td>${(e.name||e.product_id).slice(0,36)}</td><td>${e.site}</td>
+    <td class="num" style="color:${e.pct<0?'var(--series-2)':'var(--series-1)'}">${e.pct.toFixed(1)}%</td>
+    <td class="num">${fmt(e.price_from)}→${fmt(e.price_to)}</td>
+    <td style="font-size:11px">${e.window}</td>
+    <td class="num">${e.like_delta>0?'+':''}${fmt(e.like_delta)}</td>
+    <td class="num">${e.review_delta==null?'—':(e.review_delta>0?'+':'')+e.review_delta}</td></tr>`;});
   document.getElementById('events').innerHTML=h+"</tbody></table>";
 }
+function evSort(f){if(evSortCol===f)evSortDir*=-1;else{evSortCol=f;evSortDir=-1;}renderEvents();}
+['ev_dir_down','ev_dir_up','ev_like_pos'].forEach(id=>{
+  const el=document.getElementById(id);
+  if(el)el.onclick=()=>{el.classList.toggle('on');renderEvents();};});
 function init(){
   const m=DATA.meta;
+  const pxsum=(m.proxies||[]).map(p=>`${p.name}: 판정 ${p.judged}·미판정 ${p.unjudged}`).join(" / ");
+  if(pxsum){const el=document.createElement('div');el.className='sub';
+    el.textContent='AI 판정 프록시 — '+pxsum+' (판정이지 사실이 아니다)';
+    document.getElementById('range').after(el);}
   document.getElementById('range').textContent=
     `관측 범위 ${m.obs_min||"—"} ~ ${m.obs_max||"—"} · 문맥: ${m.contexts.join(", ")} · 생성 ${m.generated_at}`+
     (m.generated_at==="TEMPLATE"?" · ⚠ 샘플 데이터(템플릿)":"");
   const avail=AXES.filter(([f])=>DATA.items.some(d=>d[f]!=null));
+  (DATA.meta.proxies||[]).filter(p=>p.numeric).forEach(p=>{
+    const key='px_'+p.name;
+    if(DATA.items.some(d=>d[key]!=null))avail.push([key,p.name+' (AI 판정)']);});
   for(const id of['ax','ay','hx']){
     document.getElementById(id).innerHTML=avail.map(([f,l])=>`<option value="${f}">${l}</option>`).join("");
     document.getElementById(id).onchange=apply;}

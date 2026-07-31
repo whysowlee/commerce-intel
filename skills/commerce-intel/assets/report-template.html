@@ -79,6 +79,10 @@ header { background: var(--surface); border: 1px solid var(--border);
 section { background: var(--surface); border: 1px solid var(--border);
   border-radius: 12px; padding: 20px 22px; margin-bottom: 20px; }
 .section-note { font-size: 13px; color: var(--muted); margin: -6px 0 14px; }
+details.section-note > summary { cursor: pointer; list-style: none; font-size: 12px;
+  color: var(--muted); width: fit-content; }
+details.section-note > summary::-webkit-details-marker { display: none; }
+details.section-note[open] > summary { margin-bottom: 6px; }
 .empty { color: var(--muted); font-size: 14px; margin: 4px 0; }
 
 /* auto-fill이어야 블록이 1개일 때 트랙이 합쳐지지 않는다.
@@ -114,6 +118,20 @@ section { background: var(--surface); border: 1px solid var(--border);
 /* 다중 선택 필터 — 여러 개를 켜면 OR, 서로 다른 그룹끼리는 AND로 걸린다. */
 .facets { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
 .facet-group { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.facet-expr { align-items: center; }
+.facet-expr .expr-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.chip.expr-op { font-weight: 600; color: var(--accent); }
+.chip.expr-ins { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.expr-input { flex: 1; min-width: 240px; font: inherit; font-size: 13px; padding: 4px 8px;
+  border: 1px solid var(--grid); border-radius: 6px; background: var(--surface); color: var(--text); }
+.expr-status { font-size: 12px; color: var(--muted); }
+.expr-status.err { color: var(--down); }
+.expr-hint { display: inline-flex; width: 15px; height: 15px; align-items: center;
+  justify-content: center; border-radius: 50%; background: var(--grid); color: var(--muted);
+  font-size: 10px; cursor: help; }
+.facet-group.cascade-collapsed .chip:not(.chip-all) { display: none; }
+.facet-group.cascade-collapsed::after {
+  content: "상위를 고르면 나옵니다"; font-size: 11px; color: var(--muted); }
 .facet-label { font-size: 12px; color: var(--muted); margin-right: 4px;
   flex: 0 0 auto; min-width: 52px; }
 .chip { font: inherit; font-size: 12px; padding: 3px 9px; border-radius: 999px;
@@ -192,6 +210,12 @@ table.grid tbody tr:hover { background: var(--page); }
 .thumb-missing { background: repeating-linear-gradient(45deg, var(--grid),
   var(--grid) 4px, var(--surface) 4px, var(--surface) 8px); }
 .na { color: var(--muted); font-size: 12px; }
+.col-variant { text-align: left; white-space: normal; min-width: 150px; }
+.vopts { display: flex; flex-wrap: wrap; gap: 3px; }
+.vopt { font-size: 11px; padding: 1px 6px; border-radius: 5px; background: var(--grid);
+  color: var(--text-1); white-space: nowrap; }
+.vopt sub { color: var(--muted); font-size: 9px; margin-left: 2px; vertical-align: baseline; }
+.vopt-out { text-decoration: line-through; color: var(--muted); opacity: 0.7; }
 .approx { color: var(--text-2); font-size: 12px; }
 .price-sale { font-weight: 600; }
 .price-was { color: var(--muted); text-decoration: line-through; font-size: 12px; }
@@ -407,8 +431,62 @@ footer { max-width: 1180px; margin: 0 auto; color: var(--muted); font-size: 12px
   var state = {};   // tableId -> {q: '', picked: {facetIdx: Set}}
 
   function stateOf(id) {
-    if (!state[id]) state[id] = { q: '', picked: {}, mode: {} };
+    if (!state[id]) state[id] = { q: '', picked: {}, mode: {}, expr: {} };
     return state[id];
+  }
+
+  // 입점 수식 — 플랫폼 이름을 AND·OR·NOT·괄호로 조합. 행의 입점 집합에 대해 평가한다.
+  // shunting-yard로 RPN을 만들고 행마다 평가한다(NOT>AND>OR, 괄호). 오류면 null(필터 미적용).
+  function compileExpr(src, plats) {
+    if (!src.trim()) return { rpn: null };
+    var names = plats.slice().sort(function (a, b) { return b.length - a.length; });
+    var s = src, i = 0, toks = [];
+    while (i < s.length) {
+      var c = s[i];
+      if (/\s/.test(c)) { i++; continue; }
+      if (c === '(' || c === ')') { toks.push(c); i++; continue; }
+      var rest = s.slice(i);
+      var op = /^(AND|OR|NOT)\b/i.exec(rest) || /^(&&|\|\||&|\||!)/.exec(rest);
+      if (op) {
+        var o = op[0].toUpperCase();
+        o = (o === '&&' || o === '&') ? 'AND' : (o === '||' || o === '|') ? 'OR' : (o === '!') ? 'NOT' : o;
+        toks.push(o); i += op[0].length; continue;
+      }
+      var found = null;
+      for (var k = 0; k < names.length; k++) {
+        if (rest.slice(0, names[k].length).toLowerCase() === names[k].toLowerCase()) { found = names[k]; break; }
+      }
+      if (found) { toks.push({ p: found }); i += found.length; continue; }
+      return { error: '알 수 없는 항목: "' + rest.slice(0, 14) + '"' };
+    }
+    var prec = { NOT: 3, AND: 2, OR: 1 }, out = [], ops = [];
+    for (var t = 0; t < toks.length; t++) {
+      var tk = toks[t];
+      if (typeof tk === 'object') out.push(tk);
+      else if (tk === '(') ops.push(tk);
+      else if (tk === ')') {
+        while (ops.length && ops[ops.length - 1] !== '(') out.push(ops.pop());
+        if (!ops.length) return { error: '괄호가 안 맞습니다' };
+        ops.pop();
+      } else {
+        while (ops.length && ops[ops.length - 1] !== '(' &&
+               prec[ops[ops.length - 1]] >= prec[tk] && tk !== 'NOT') out.push(ops.pop());
+        ops.push(tk);
+      }
+    }
+    while (ops.length) { var op2 = ops.pop(); if (op2 === '(') return { error: '괄호가 안 맞습니다' }; out.push(op2); }
+    return { rpn: out };
+  }
+  function evalRpn(rpn, present) {
+    var st = [];
+    for (var i = 0; i < rpn.length; i++) {
+      var t = rpn[i];
+      if (typeof t === 'object') st.push(present.has(t.p));
+      else if (t === 'NOT') st.push(!st.pop());
+      else if (t === 'AND') { var b = st.pop(), a = st.pop(); st.push(a && b); }
+      else if (t === 'OR') { var b2 = st.pop(), a2 = st.pop(); st.push(a2 || b2); }
+    }
+    return st.length === 1 ? !!st[0] : true;
   }
 
   function apply(id) {
@@ -431,6 +509,15 @@ footer { max-width: 1180px; margin: 0 auto; color: var(--muted); font-size: 12px
           if (!ok) { hit = false; break; }
         }
       }
+      if (hit) {   // 입점 수식 축
+        for (var eidx in st.expr) {
+          var rpn = st.expr[eidx];
+          if (!rpn) continue;
+          var raw = row.getAttribute('data-f' + eidx) || '';
+          var present = new Set(raw.split('|').filter(Boolean));
+          if (!evalRpn(rpn, present)) { hit = false; break; }
+        }
+      }
       row.hidden = !hit;
       if (hit) shown++;
     });
@@ -447,8 +534,37 @@ footer { max-width: 1180px; margin: 0 auto; color: var(--muted); font-size: 12px
     });
   });
 
+  // 입점 수식 축 — 삽입 칩·연산자 버튼·텍스트 입력을 잇는다.
+  document.querySelectorAll('.facet-group.facet-expr').forEach(function (group) {
+    var id = group.dataset.for, idx = group.dataset.facet;
+    var input = group.querySelector('.expr-input');
+    var status = group.querySelector('.expr-status');
+    var plats = Array.prototype.map.call(group.querySelectorAll('.expr-ins'),
+      function (b) { return b.dataset.ins; });
+    function recompile() {
+      var res = compileExpr(input.value, plats);
+      if (res.error) { status.textContent = '⚠ ' + res.error; status.className = 'expr-status err';
+        stateOf(id).expr[idx] = null; }
+      else { stateOf(id).expr[idx] = res.rpn;
+        status.textContent = res.rpn ? '유효' : ''; status.className = 'expr-status'; }
+      apply(id);
+    }
+    group.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-ins]');
+      if (!b) return;
+      if (b.classList.contains('expr-clear')) { input.value = ''; }
+      else {
+        var v = b.dataset.ins, pos = input.selectionStart || input.value.length;
+        input.value = input.value.slice(0, pos) + v + input.value.slice(input.selectionEnd || pos);
+        input.focus();
+      }
+      recompile();
+    });
+    input.addEventListener('input', recompile);
+  });
+
   var pending = {};
-  document.querySelectorAll('.facet-group').forEach(function (group) {
+  document.querySelectorAll('.facet-group:not(.facet-expr)').forEach(function (group) {
     var id = group.dataset.for;
     var idx = group.dataset.facet;
     var all = group.querySelector('.chip-all');
@@ -482,6 +598,42 @@ footer { max-width: 1180px; margin: 0 auto; color: var(--muted); font-size: 12px
     }
   });
   Object.keys(pending).forEach(apply);
+
+  // 계층 카테고리 캐스케이드: 대분류 → 중분류 → 소분류. 상위를 골라야 하위 칩이 나온다.
+  // 하위 칩은 data-parent가 바로 위 단계의 선택값과 맞을 때만 보인다. 체인으로 전파한다.
+  (function () {
+    var chains = {};   // (for|ckey) → { level: groupEl }
+    document.querySelectorAll('.facet-group[data-ckey]').forEach(function (g) {
+      var k = g.dataset.for + '|' + g.dataset.ckey;
+      (chains[k] = chains[k] || {})[+g.dataset.clevel] = g;
+    });
+    Object.keys(chains).forEach(function (k) {
+      var byLevel = chains[k];
+      var levels = Object.keys(byLevel).map(Number).sort(function (a, b) { return a - b; });
+      function selVals(g) {
+        var out = [];
+        g.querySelectorAll('.chip:not(.chip-all).is-on').forEach(function (c) { out.push(c.dataset.v); });
+        return out;
+      }
+      function sync() {
+        for (var i = 1; i < levels.length; i++) {
+          var parent = byLevel[levels[i - 1]], child = byLevel[levels[i]];
+          var sel = selVals(parent);
+          var anyParent = sel.length > 0;
+          child.classList.toggle('cascade-collapsed', !anyParent);
+          child.querySelectorAll('.chip:not(.chip-all)').forEach(function (c) {
+            var show = anyParent && sel.indexOf(c.dataset.parent) >= 0;
+            c.style.display = show ? '' : 'none';
+            if (!show && c.classList.contains('is-on')) c.click();  // 끄며 상태·필터 갱신
+          });
+        }
+      }
+      levels.forEach(function (L) {
+        byLevel[L].addEventListener('click', function () { setTimeout(sync, 0); });
+      });
+      sync();
+    });
+  })();
 })();
 
 // ── 스토리3 추이 렌더 ───────────────────────────────────────────────────────

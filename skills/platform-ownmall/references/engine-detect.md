@@ -7,7 +7,7 @@
 | 순서 | 엔진 | 신호 | 상태 |
 |---|---|---|---|
 | 1 | **Cafe24** | HTML에 `/cafe24\|ecimg\.cafe24\|cfa-js\.cafe24\|app4you\.cafe24/i` | **실측 2026-07-30** — 인사일런스(`cfa-js.cafe24.com`)·2000아카이브스(`cfa-js` + `app4you`) |
-| 2 | **Shopify** | HTML에 `cdn.shopify.com` 또는 `Shopify.theme`, `/products.json` 엔드포인트 200 | 「미검증」 — 일반 지식이며 이 프로젝트 실측 아님 |
+| 2 | **Shopify** | HTML에 `cdn.shopify.com` 또는 `Shopify.theme`, `/products.json`이 **본문까지 진짜 JSON** | **실측 2026-07-31** — 표준형: LEWKIN(`cdn.shopify.com` ×89 · `Shopify.theme` · products.json JSON · robots에 `/{스토어ID}/checkouts`). **헤드리스형은 이 신호가 HTML에 없다** — 아래 함정 참조 |
 | 3 | **고도몰(NHN커머스)** | HTML에 `godomall` / `nhn-commerce` 계열 리소스 | 「미검증」 |
 | 4 | **임웹** | HTML에 `imweb` 계열 리소스(`cdn.imweb.me` 등) | 「미검증」 |
 | 5 | **메이크샵** | HTML에 `makeshop` 계열 리소스 | 「미검증」 |
@@ -19,3 +19,16 @@
   `engine-unknown.md`로 간다 — 찍지 않는다.
 - 판별식 검사는 **원본 HTML 문자열**로 한다 — 마크다운 변환기를 거치면 스크립트
   태그가 사라져 신호를 놓친다.
+
+## 함정 2건 (실측 2026-07-31)
+
+- **`/products.json` 200은 본문이 JSON인지까지 확인해야 한다.** SPA 자사몰은 **아무
+  경로나 200 + index.html 셸**을 돌려준다 — intl.thisisneverthat.com의 `/products.json`이
+  HTTP 200이지만 본문은 HTML이었다. 상태 코드만 보면 오판·오탐이 둘 다 난다.
+- **헤드리스 Shopify는 HTML 신호가 없다.** 프런트가 Vite/React SPA(2KB 셸)면
+  `cdn.shopify.com`도 `Shopify.theme`도 안 나온다. 번들 JS에서 `*.myshopify.com`
+  참조를 찾아 판별한다(실측: intl.thisisneverthat.com → `thisisneverthat-intl.myshopify.com`
+  발견, 그 백킹 도메인의 `/products.json`은 진짜 JSON). 판별식 5종이 전부 미검출인데
+  사이트가 멀쩡히 돌아가면 **자체 구축**일 수도 있다(실측: adererror.com — 자체
+  `/_api/goods/*` API·아임포트/토스 직접 연동) — `engine-unknown.md` 분기에서 실측으로
+  특정한다.

@@ -27,6 +27,24 @@ from intel_db import connect  # noqa: E402
 
 FULL_TABLES = ("products", "variants", "platforms", "runs", "proxy_defs")
 INCR_TABLES = ("observations", "variant_observations", "proxy_cache")
+# 스토리별 뷰 탭 — 정본이 아니라 파생이다(context 접두사로 걸러 상품별 최신 관측만).
+# 스토리 안의 세부 대상은 context 열(앞쪽)로 구분한다 — 시트 필터로 걸러 본다.
+VIEWS = (("뷰_라인시트", "brand:", "브랜드 라인시트 수집분"),
+         ("뷰_전수조사", "market:", "카테고리 전수조사 수집분 (핏 분류 포함)"),
+         ("뷰_랭킹", "ranking:", "랭킹 모니터링 축적분 (카테고리는 context 열로 구분)"))
+VIEW_HEADERS = ["썸네일", "site", "context", "product_id", "상품명", "브랜드", "카테고리",
+                "핏", "관측시각", "정가", "판매가", "할인율", "후기수", "평점", "하트",
+                "누적판매", "보는중", "품절", "순위"]
+TABLE_DESC = {  # 안내 탭에 싣는 원본 탭 설명
+    "products": "상품 정적 속성(이름·브랜드·카테고리·핏). 상품당 1행, 전체 다시 쓰기",
+    "observations": "시점별 관측 원본(가격·하트·순위…). append only, context 열이 출처",
+    "variants": "옵션(컬러·사이즈) 구성. 옵션 수집 시 생성",
+    "variant_observations": "옵션별 재고 관측. 재고 프로브 시 생성",
+    "platforms": "입점처 누적 카탈로그. channel-scout 실행 시 생성",
+    "runs": "수집 실행 이력",
+    "proxy_defs": "AI 파생 프록시 정의. 프록시 사용 시 생성",
+    "proxy_cache": "프록시 판정 캐시. 프록시 사용 시 생성",
+}
 NOTICE = ("이 스프레드시트는 로컬 정본 DB(data/intel.db)의 단방향 미러입니다. "
           "여기서 고친 값은 정본에 반영되지 않고 다음 동기화 때 덮일 수 있습니다.")
 
@@ -56,6 +74,57 @@ def rows_of(conn, table, since_rowid=None):
     headers = [k for k in rows[0].keys() if k != "_rowid"]
     data = [["" if r[h] is None else r[h] for h in headers] for r in rows]
     return headers, data, rows[-1]["_rowid"] if rows else None
+
+
+def view_rows(conn, prefix):
+    """한 스토리(context 접두사)의 상품별 최신 관측을 사람이 읽을 표로 만든다."""
+    rows = conn.execute("""
+        SELECT p.site, p.product_id, p.name, p.brand, p.category, p.attributes, p.image_url,
+               o.context, o.observed_at, o.price_original, o.price_sale, o.discount_rate,
+               o.review_count, o.rating, o.like_count, o.purchase_count,
+               o.viewers_now, o.sold_out, o.rank
+        FROM products p JOIN observations o
+          ON o.site = p.site AND o.product_id = p.product_id
+        WHERE o.context LIKE ? AND o.observed_at = (
+            SELECT MAX(o2.observed_at) FROM observations o2
+            WHERE o2.site = o.site AND o2.product_id = o.product_id
+              AND o2.context LIKE ?)
+        ORDER BY o.context, o.rank IS NULL, o.rank, p.site, p.product_id
+    """, (prefix + "%", prefix + "%")).fetchall()
+    data, seen = [], set()
+    for r in rows:
+        key = (r["site"], r["product_id"], r["context"])
+        if key in seen:
+            continue
+        seen.add(key)
+        fit = (json.loads(r["attributes"]) if r["attributes"] else {}).get("핏") or ""
+        so = "" if r["sold_out"] is None else ("품절" if r["sold_out"] else "판매중")
+        # 썸네일: 시트가 인셀 렌더하는 =IMAGE() 수식 (value_input_option=USER_ENTERED 필요)
+        img = f'=IMAGE("{r["image_url"]}")' if r["image_url"] else ""
+        vals = [img, r["site"], r["context"], r["product_id"], r["name"], r["brand"],
+                r["category"], fit, r["observed_at"], r["price_original"], r["price_sale"],
+                r["discount_rate"], r["review_count"], r["rating"], r["like_count"],
+                r["purchase_count"], r["viewers_now"], so, r["rank"]]
+        data.append(["" if v is None else v for v in vals])
+    return data
+
+
+THUMB_PX = 102   # 썸네일 열 너비·데이터 행 높이(px)
+
+
+def size_thumbs(sh, ws, n_rows):
+    """썸네일 열(A)을 넓히고 데이터 행을 높인다 — =IMAGE(url,1)이 셀에 맞춰 커진다.
+    25k행도 요청 2번(열 1 + 행 범위 1)이라 싸다."""
+    sid = ws._properties["sheetId"]
+    dim = lambda kind, start, end, px: {"updateDimensionProperties": {
+        "range": {"sheetId": sid, "dimension": kind, "startIndex": start, "endIndex": end},
+        "properties": {"pixelSize": px}, "fields": "pixelSize"}}
+    try:
+        sh.batch_update({"requests": [
+            dim("COLUMNS", 0, 1, THUMB_PX),            # A열 너비
+            dim("ROWS", 1, n_rows + 1, THUMB_PX)]})    # 데이터 행(헤더 제외) 높이
+    except Exception as e:
+        print(f"  썸네일 크기 조정 실패(무해): {e}")
 
 
 def ensure_ws(sh, title, cols=26):
@@ -90,18 +159,53 @@ def main():
         sys.exit(1)
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    ensure_ws(sh, "안내", 2).update("A1:A2", [[NOTICE], [f"마지막 동기화: {now}"]])
+    existing = {ws.title: ws for ws in sh.worksheets()}
+    tab_rows = []      # 안내 탭에 실을 [탭, 행수, 내용]
+    def drop_if_empty(title):
+        if title in existing:
+            sh.del_worksheet(existing.pop(title))
+            print(f"{title}: 데이터 없음 — 탭 삭제")
 
     for table in FULL_TABLES:
         headers, data, _ = rows_of(conn, table)
+        if not data:               # 빈 테이블은 탭을 만들지 않는다 (있으면 지운다)
+            drop_if_empty(table)
+            continue
         ws = ensure_ws(sh, table)
         ws.clear()
-        if headers:
-            ws.update("A1", [headers] + data)
+        ws.update(values=[headers] + data, range_name="A1")
+        tab_rows.append([table, len(data), TABLE_DESC.get(table, "")])
         print(f"{table}: 전체 {len(data)}행 미러")
 
-    # 관측 테이블들은 rowid 기준 증분 append
+    # 스토리별 뷰 탭 — 파생이므로 전체 다시 쓰기. 데이터 없는 스토리는 탭이 없다
+    story_rows = []    # 안내 탭에 실을 스토리 현황
+    for title, prefix, desc in VIEWS:
+        data = view_rows(conn, prefix)
+        if not data:
+            drop_if_empty(title)
+            story_rows.append([title, "아직 데이터 없음", desc])
+            continue
+        ws = ensure_ws(sh, title, len(VIEW_HEADERS))
+        ws.clear()
+        # USER_ENTERED: 썸네일 =IMAGE() 수식이 셀에서 렌더된다
+        ws.update(values=[VIEW_HEADERS] + data, range_name="A1",
+                  value_input_option="USER_ENTERED")
+        size_thumbs(sh, ws, len(data))   # 썸네일 열·행을 키운다(=IMAGE는 셀에 맞춰 커짐)
+        n_ctx = len({d[2] for d in data})
+        story_rows.append([title, f"{len(data)}행 · 대상 {n_ctx}개(context 열로 구분)", desc])
+        tab_rows.append([title, len(data), desc + " — 상품별 최신 관측만. 원본은 observations"])
+        print(f"{title}: {len(data)}행 (상품별 최신 관측)")
+    for t in list(existing):       # 구 명명 규칙의 뷰_ 탭 정리 (다른 탭은 건드리지 않는다)
+        if t.startswith("뷰_") and t not in {v[0] for v in VIEWS}:
+            drop_if_empty(t)
+
+    # 관측 테이블들은 rowid 기준 증분 append — 빈 테이블은 탭을 만들지 않는다
     for table in INCR_TABLES:
+        total = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        if total == 0:
+            drop_if_empty(table)
+            continue
+        tab_rows.append([table, total, TABLE_DESC.get(table, "")])
         row = conn.execute(
             "SELECT last_synced_key FROM sync_state WHERE table_name=?", (table,)).fetchone()
         last = int(row["last_synced_key"]) if row and row["last_synced_key"] else 0
@@ -110,7 +214,7 @@ def main():
         ws = ensure_ws(sh, table, 30)
         if not ws.get_values("A1:A1"):
             full_headers = [d[1] for d in conn.execute(f"PRAGMA table_info({table})")]
-            ws.update("A1", [full_headers])
+            ws.update(values=[full_headers], range_name="A1")
         if data:
             ws.append_rows(data, value_input_option="RAW")
             conn.execute(
@@ -121,6 +225,15 @@ def main():
             print(f"{table}: 증분 {len(data)}행 append (rowid ≤ {max_rowid})")
         else:
             print(f"{table}: 새 관측 없음")
+
+    # 안내 탭 — 스토리 현황과 탭 가이드를 사람이 읽게 쓴다
+    guide = [[NOTICE], [f"마지막 동기화: {now}"], [""],
+             ["■ 스토리 현황", "", ""]] + story_rows + [
+             [""], ["■ 탭 안내", "행수", "내용"]] + [[t, str(n), d] for t, n, d in tab_rows]
+    ws = ensure_ws(sh, "안내", 4)
+    ws.clear()
+    ws.update(values=guide, range_name="A1")
+    print(f"안내: 스토리 현황 {len(story_rows)}줄 + 탭 가이드 {len(tab_rows)}줄")
 
 
 if __name__ == "__main__":

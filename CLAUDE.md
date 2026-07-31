@@ -37,7 +37,7 @@ data/.tools/              범용 수집기 (git 추적. 수집 데이터는 미�
 ├── snap_ranking_any.py   랭킹 스냅샷 — --cron으로 주기 등록까지
 ├── classify_fit.py       상품명 → 핏 1단계 분류
 └── ranking_targets.json  두 플랫폼 카테고리 코드 실측 카탈로그 1,546개
-tests/                    run_tests.py 회귀 111건 + test_intel_db.py 31건. 픽스처만 쓴다
+tests/                    run_tests.py 회귀 111건 + test_intel_db.py 41건. 픽스처만 쓴다
 ```
 
 - 정본 DB는 `data/intel.db`(SQLite), 구글 시트는 단방향 미러다 — 파이프라인은

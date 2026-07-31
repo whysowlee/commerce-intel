@@ -12,6 +12,12 @@ usage:
     snap_ranking_any.py --site musinsa --target 바지 --cron        # crontab 등록 줄 출력
     snap_ranking_any.py --site 29cm --target 남성슈즈 \
         --until "2026-07-31 10:00" --cron                          # 기한부 모니터링
+    snap_ranking_any.py --site musinsa --target "반소매 티셔츠" --gender F   # 여성 랭킹
+
+성별(--gender, 무신사 전용): 랭킹 API의 `gf` 파라미터다 — A 전체(기본) / M 남성 / F 여성
+(platform-musinsa/references/adapter.md §gf 실측). A가 아니면 target에 `(남성)`·`(여성)`이
+붙어 파일명·crontab 태그·DB 문맥이 성별 무관 축적분과 섞이지 않는다. 29CM은 성별이
+카테고리 facet에 있으므로 `--target "여성의류>상의>반소매 티셔츠"`처럼 경로로 지정한다.
 
 기한부 모니터링(--until): 기한이 지난 실행은 수집하지 않고 **자기 crontab 줄을
 스스로 지우고** 종료한다. 마감 후에도 빈 실행이 계속되던 하드코딩 마감의 안티패턴
@@ -19,7 +25,7 @@ usage:
 정리하므로 죽은 잡이 남지 않는다.
 
 수집 기준(사용자 컨펌·어댑터 확정값):
-    무신사  sections/199 + period=REALTIME + gf=A            (30분 갱신)
+    무신사  sections/199 + period=REALTIME + gf=A(--gender로 M·F)  (30분 갱신)
     29CM   BEST API + HOURLY + POPULARITY + gender/age=ALL   (1시간 갱신)
 
 새 플랫폼 추가 체크리스트 — 코드 수정 지점은 SITES 레지스트리 하나다:
@@ -29,7 +35,7 @@ usage:
     2. ranking_targets.json에 사이트 섹션을 추가한다:
        {"entries": [{"path": ["대","중",...], "target": "정규이름", ...코드 필드}]}
        path·target은 공통 스키마이고 코드 필드(code/facet 등)는 사이트 자유다
-    3. collect_<site>(entry) 함수를 쓴다 — (records, notes)를 반환하며
+    3. collect_<site>(entry, gender="A") 함수를 쓴다 — (records, notes)를 반환하며
        records는 스킬 데이터 계약 필드 전부, 미노출 지표는 null
     4. SITES에 {"collect": 함수, "cron": "분 시 * * *"} 한 줄을 등록한다
        (cron 분(minute)은 기존 사이트와 겹치지 않게, 갱신 주기는 어댑터 실측값)
@@ -54,8 +60,10 @@ CATALOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ranking_targ
 TOP_N = 100
 
 MUSINSA_URL = ("https://api.musinsa.com/api2/hm/web/v5/pans/ranking/sections/199"
-               "?storeCode=musinsa&gf=A&ageBand=AGE_BAND_ALL&period={period}"
+               "?storeCode=musinsa&gf={gf}&ageBand=AGE_BAND_ALL&period={period}"
                "&categoryCode={code}&page=1")
+# gf 성별 필터 (adapter.md 실측) — 라벨은 target 접미사·보고용
+GENDERS = {"A": "전체", "M": "남성", "F": "여성"}
 # 원시값 보강 엔드포인트 — references/musinsa.md §4·§4-1 실측 확정 (전부 비로그인 200)
 MUSINSA_DETAIL = "https://goods-detail.musinsa.com/api2/goods/{no}"           # 성별·시즌·리뷰·정가
 MUSINSA_STAT = "https://goods-detail.musinsa.com/api2/goods/{no}/stat"        # 누적판매·조회수 원시
@@ -146,9 +154,9 @@ def resolve_target(catalog, site, query):
 
 # ---------------------------------------------------------------- 무신사
 
-def musinsa_ranking(code, period):
+def musinsa_ranking(code, period, gf="A"):
     """sections/199 랭킹 한 기간 조회 → (순위순 items, updatedAt epoch ms)."""
-    data = curl([MUSINSA_URL.format(code=code, period=period)])
+    data = curl([MUSINSA_URL.format(code=code, period=period, gf=gf)])
     found = []
 
     def walk(obj):
@@ -257,8 +265,8 @@ def musinsa_like_counts(kind, relation_ids):
             for i in ((data.get("data") or {}).get("contents") or {}).get("items") or []}
 
 
-def collect_musinsa(entry):
-    items, updated_at = musinsa_ranking(entry["code"], "REALTIME")
+def collect_musinsa(entry, gender="A"):
+    items, updated_at = musinsa_ranking(entry["code"], "REALTIME", gender)
     items = items[:TOP_N]
     if not items:
         raise RuntimeError("랭킹 항목 0건 — categoryCode·응답 구조를 의심할 것")
@@ -272,7 +280,7 @@ def collect_musinsa(entry):
     period_rank, period_updated = {}, {}
     for period in MUSINSA_PERIODS:
         try:
-            p_items, p_up = musinsa_ranking(entry["code"], period)
+            p_items, p_up = musinsa_ranking(entry["code"], period, gender)
             period_rank[period] = {str(i["id"]): i["image"]["rank"] for i in p_items}
             period_updated[period] = p_up
         except Exception:
@@ -397,8 +405,8 @@ def collect_musinsa(entry):
     notes = [
         "updatedAt(원본 갱신 시각, epoch ms): %s" % updated_at,
         "기간별 랭킹 updatedAt: %s" % json.dumps(period_updated),
-        "경로 A: sections/199 + categoryCode=%s, period=REALTIME top %d"
-        % (entry["code"], TOP_N),
+        "경로 A: sections/199 + categoryCode=%s, gf=%s(%s), period=REALTIME top %d"
+        % (entry["code"], gender, GENDERS[gender], TOP_N),
         "보강 수집(2026-07-30 지시): 상품별 detail·stat·page-view + 하트 배치(goods·brand) "
         "+ DAILY/WEEKLY/MONTHLY 순위 — 계약 외 필드 purchase_total·page_view_total·"
         "brand_slug·brand_like_count·sex·season·season_year·rank_daily/weekly/monthly",
@@ -424,7 +432,7 @@ def collect_musinsa(entry):
 
 # ---------------------------------------------------------------- 29CM
 
-def collect_29cm(entry):
+def collect_29cm(entry, gender="A"):  # 29CM 성별은 카테고리 facet에 있다 — gender는 안 쓴다
     body = {
         "pageRequest": {"page": 1, "size": TOP_N},
         "userSegment": {"gender": "ALL", "age": "ALL"},
@@ -551,7 +559,13 @@ def main():
     parser.add_argument("--cron", action="store_true", help="crontab 등록 줄만 출력")
     parser.add_argument("--until", metavar="'YYYY-MM-DD HH:MM'",
                         help="이 시각이 지난 실행은 수집 대신 자기 crontab 줄을 지우고 끝낸다")
+    parser.add_argument("--gender", choices=list(GENDERS), default="A",
+                        help="무신사 랭킹 gf 필터: A 전체(기본)·M 남성·F 여성")
     args = parser.parse_args()
+
+    if args.gender != "A" and args.site != "musinsa":
+        parser.error("--gender는 무신사 전용이다(gf 파라미터). 29CM은 성별이 카테고리에 "
+                     "있으므로 --target \"여성의류>상의>반소매 티셔츠\"처럼 경로로 지정한다")
 
     until = None
     if args.until:
@@ -576,7 +590,11 @@ def main():
         parser.error("--site와 --target이 필요하다 (--list 제외)")
 
     entry = resolve_target(catalog, args.site, args.target)
-    target = entry["target"]
+    base_target = entry["target"]        # 카탈로그 정규 이름 — 재실행 인자로 그대로 쓴다
+    target = base_target
+    if args.gender != "A":               # 성별 한정 축적은 별도 계열로 쌓는다
+        target = "%s(%s)" % (base_target, GENDERS[args.gender])
+        entry = dict(entry, target=target)
     tag = cron_tag(args.site, target)
 
     if until and datetime.now() >= until:
@@ -590,12 +608,18 @@ def main():
         script = os.path.abspath(__file__)
         log = os.path.join(os.path.dirname(script), "snap-%s-%s.log" % (args.site, safe))
         until_part = " --until '%s'" % args.until.strip() if until else ""
-        line = ("%s /usr/bin/python3 %s --site %s --target '%s'%s >> %s 2>&1 # %s"
-                % (SITES[args.site]["cron"], script, args.site, target, until_part, log, tag))
+        gender_part = " --gender %s" % args.gender if args.gender != "A" else ""
+        # --target은 카탈로그 정규 이름이어야 재실행 때 resolve된다(접미사 붙은 target 아님)
+        # 로그 경로는 반드시 따옴표로 감싼다 — cron은 /bin/sh로 실행하므로 파일명에
+        # 괄호가 들어가면(성별 접미사 '(여성)') 인용 없이는 리다이렉트가 문법 오류로 죽는다.
+        # 실측 2026-07-31: 인용 없는 줄은 수집도 로그도 남기지 못하고 매 실행 실패했다.
+        line = ("%s /usr/bin/python3 %s --site %s --target '%s'%s%s >> '%s' 2>&1 # %s"
+                % (SITES[args.site]["cron"], script, args.site, base_target,
+                   gender_part, until_part, log, tag))
         print("( crontab -l 2>/dev/null; echo \"%s\" ) | crontab -" % line.replace('"', '\\"'))
         return 0
 
-    records, notes = SITES[args.site]["collect"](entry)
+    records, notes = SITES[args.site]["collect"](entry, gender=args.gender)
 
     now = datetime.now()
     safe = target.replace("/", "·")
