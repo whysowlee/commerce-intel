@@ -1,0 +1,43 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  claude-review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          show_full_output: true
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            이 풀 리퀘스트를 리뷰해줘. 코드는 절대 수정하지 말고 리뷰 코멘트만 남겨.
+            다음 관점에서 검토해:
+            - 버그와 로직 오류
+            - 보안 취약점 (하드코딩된 시크릿, 인젝션 등)
+            - 엣지 케이스 누락
+            - 코드 품질과 가독성
+
+            발견한 문제는 심각도별로 Blocker / Suggestion / Nit 으로 분류하고,
+            가능하면 해당 코드 라인에 인라인 코멘트로 달아줘.
+            리뷰는 한국어로 작성해.
+          claude_args: '--allowed-tools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'
