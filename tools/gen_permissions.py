@@ -98,7 +98,22 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--check", action="store_true",
                     help="생성하지 않고 파일이 최신인지만 확인한다 (다르면 exit 1)")
+    ap.add_argument("--team-snippet", action="store_true",
+                    help="팀원 환경(~/.claude/skills 설치)용 스니펫을 출력한다. "
+                         "저장소 파일은 건드리지 않는다 — README 안내용")
     a = ap.parse_args()
+
+    if a.team_snippet:
+        # 팀원은 스킬을 ~/.claude/skills/ 로 복사하고 **작업 폴더**(data/·output/이 있는 곳)
+        # 에서 Claude를 연다 — 그래서 실행 경로가 홈 절대경로가 된다. 이 저장소의
+        # 상대경로 규칙(scripts/·../commerce-intel/scripts/)은 거기서 안 맞는다.
+        home = "~/.claude/skills/commerce-intel/scripts/"
+        allowed = [x for x in ACTIVE_SCRIPTS if x not in DENY_WHOLE_SCRIPTS]
+        snip = {"permissions": {
+            "allow": ["Bash(python3 %s%s.py:*)" % (home, x) for x in allowed],
+            "deny": ["Bash(python3 %s%s.py:*)" % (home, x) for x in DENY_WHOLE_SCRIPTS]}}
+        print(json.dumps(snip, ensure_ascii=False, indent=2))
+        return 0
 
     want = build()
     text = json.dumps(want, ensure_ascii=False, indent=2) + "\n"

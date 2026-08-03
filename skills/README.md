@@ -19,6 +19,39 @@ cp -r skills/* ~/.claude/skills/
 cp -r skills/* <프로젝트>/.claude/skills/
 ```
 
+### 승인 프롬프트를 없애려면 (선택)
+
+스킬이 스크립트를 돌릴 때마다 **"실행할까요?"가 뜬다.** 매번 누르기 번거로우면 아래를
+`~/.claude/settings.json`(없으면 새로 만든다)의 `permissions`에 넣는다. 우리 스크립트
+실행만 열고 **임의 명령은 그대로 물어본다** — 그게 이 방식이 안전한 이유다.
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 ~/.claude/skills/commerce-intel/scripts/validate_data.py:*)",
+      "Bash(python3 ~/.claude/skills/commerce-intel/scripts/eda.py:*)",
+      "Bash(python3 ~/.claude/skills/commerce-intel/scripts/analyze.py:*)",
+      "Bash(python3 ~/.claude/skills/commerce-intel/scripts/insight.py:*)",
+      "Bash(python3 ~/.claude/skills/commerce-intel/scripts/sync_sheets.py:*)",
+      "Bash(python3 ~/.claude/skills/commerce-intel/scripts/pdf_doc.py:*)",
+      "Bash(python3 ~/.claude/skills/commerce-intel/scripts/diff_snapshots.py:*)",
+      "Bash(python3 ~/.claude/skills/commerce-intel/scripts/group_variants.py:*)",
+      "Bash(python3 ~/.claude/skills/commerce-intel/scripts/plan_sample.py:*)"
+    ],
+    "deny": [
+      "Bash(python3 ~/.claude/skills/commerce-intel/scripts/intel_db.py:*)"
+    ]
+  }
+}
+```
+
+- **`intel_db.py`는 일부러 deny다.** 정본 DB를 덮는 `merge`·`import-snapshots`가 들어
+  있어서다. 이건 승인을 거치는 게 맞다(자주 쓰지도 않는다)
+- 위는 **`~/.claude/skills/`에 설치했을 때** 기준이다. 다른 곳에 설치했으면 경로를
+  그에 맞게 바꾼다
+- 안 넣어도 동작에는 문제가 없다 — 승인만 매번 뜬다
+
 설치되는 스킬은 이렇게 나뉜다 — **말은 그냥 하면 되고, 어느 단계로 갈지는 알아서 정해진다.**
 
 | 스킬 | 하는 일 |
