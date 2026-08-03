@@ -64,9 +64,13 @@ EDA를 돌린 뒤 **검증된 가설을 PDF로** 낸다. 판단 기준은 `docs/
 ```
 
 - **수집 방법은 이 스킬이 모른다.** 사이트별 방법은 플랫폼 스킬이 갖는다:
-  무신사 → `platform-musinsa` · 29CM → `platform-29cm` · 자사몰 → `platform-ownmall` ·
+  무신사 → `platform-musinsa` · 무신사 글로벌 → `platform-musinsa-global` ·
+  29CM → `platform-29cm` · W컨셉 → `platform-wconcept` · EQL → `platform-eql` ·
+  SSF샵 → `platform-ssf` · 자사몰 → `platform-ownmall` ·
   처음 보는 플랫폼 → `platform-generic`. 플랫폼 스킬의 산출물은 언제나
   §데이터 계약 JSON이고, 그 뒤는 전부 이 스킬의 일이다.
+  ※ W컨셉·EQL·SSF·무신사 글로벌은 **건별 수집만**(D30)이고 일부는 `draft`(브랜드 모드 등
+  미검증) — 어댑터를 먼저 읽는다.
 - **입점처 리서치**는 `channel-scout` 서브 에이전트를 스폰한다(있으면). **스폰 전에
   `platforms` 테이블에서 기존 정찰을 꺼내 프롬프트에 넘긴다** — 90일(D7 준용) 이내
   정찰이 있는 플랫폼은 재정찰하지 않고, 이번에 새로 볼 것은 그 브랜드의 입점 여부뿐이다:

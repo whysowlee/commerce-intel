@@ -120,9 +120,13 @@ tools: WebSearch, WebFetch, Read, Bash
 
 - **신뢰도**는 근거 강도다: 높음 = 채널에서 직접 확인 / 중간 = 브랜드 측 언급만 /
   낮음 = 제3자 언급만. 낮음은 확인 전까지 입점처로 집계하지 않는다.
-- **수집 경로는 채널마다 반드시 채운다** — 무신사 → `platform-musinsa` · 29CM →
-  `platform-29cm` · 브랜드 자사몰(공식몰) → `platform-ownmall`(엔진 무관, D9) ·
+- **수집 경로는 채널마다 반드시 채운다** — 전용 스킬이 있는 곳은 그것으로:
+  무신사(국내) → `platform-musinsa` · **무신사 글로벌 → `platform-musinsa-global`** ·
+  29CM → `platform-29cm` · **W컨셉 → `platform-wconcept`** · **EQL → `platform-eql`** ·
+  **SSF샵 → `platform-ssf`** · 브랜드 자사몰(공식몰) → `platform-ownmall`(엔진 무관, D9) ·
   그 밖 전부 → `platform-generic`. **전용 스킬이 없다는 것은 수집 불가 사유가 아니다.**
+  ※ W컨셉·EQL·SSF는 **사용자 지시 건별 수집만**이다(D30) — 크론 무인 축적에는 쓰지 않는다.
+  EQL·SSF·무신사 글로벌 스킬은 아직 `draft`라 브랜드 모드 등 미검증분이 있다(각 어댑터 참조).
 - **어떤 채널도 「대상 아님」·「범위 외」로 분류하지 않는다.** 고정된 대상 플랫폼 목록은
   없다 — SPEC-INTEL §9-4가 "하드코딩된 입점처 목록에 없다는 이유로 거절하지 않는다"고
   못박는다. 스폰 프롬프트가 특정 사이트만 물어와도 **발견은 전 채널로 하고 표에 전부

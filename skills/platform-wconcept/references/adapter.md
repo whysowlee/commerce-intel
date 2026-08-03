@@ -1,33 +1,129 @@
 # W컨셉 어댑터
 
-- 사이트: **국내** https://www.wconcept.co.kr (브랜드관 https://display.wconcept.co.kr) ·
-  **글로벌** https://www.wconcept.com — `meta.site` 값: `wconcept` / `wconcept-global`
-- 최초 실측: 2026-07-31 · 최근 확인: 2026-07-31 (글로벌 경로 A 실측 완료)
+- 사이트: **국내** https://www.wconcept.co.kr (브랜드관 https://display.wconcept.co.kr ·
+  PLP API https://api-display.wconcept.co.kr) · **글로벌** https://www.wconcept.com —
+  `meta.site` 값: `wconcept` / `wconcept-global`
+- 최초 실측: 2026-07-31 · 최근 확인: **2026-08-03 (국내 PLP API 실측 — 주 경로)**
 
 **규칙: 여기 적힌 것만 검증된 스킴이다.** 항목마다 실측 일자를 붙이고, 확인 안 된 것은
 `「미검증」`으로 표기한다. 미검증 항목을 지우지 말 것 — 할 일 목록이다.
 
-> 🛑 **수집 포기 상태다 (2026-07-31 사용자 확정).** 아래 글로벌 스킴은 실제로 완주되지만
-> (마뗑킴 886/886), `sold_out` 구조적 미노출로 데이터 계약을 만족하지 못해
-> `validate_data.py`가 exit 2를 낸다. **결정이 바뀔 때를 위해 실측을 보존해 둔 문서**이고,
-> 지금은 이 스킴으로 수집하지 않는다. 상세는 SKILL.md 🛑절.
+> ✅ **건별 수집 상태다 (2026-08-03 D30).** 2026-07-31 "수집 포기" 결정은 **국내 robots
+> 오독**에 근거했고, 재실측으로 뒤집혔다. 국내 robots는 `ClaudeBot`·`Claude-User`를 명시
+> 허용하고, 브라우저 UA 헤더 3종으로 PLP API 200을 받는다. **주 경로는 국내 PLP(§A)**,
+> 글로벌(§B)은 보조다. `sold_out`은 두 경로 모두 구조적으로 `null`이다(§A는 PLP가 품절
+> 제외, §B는 재고 필드 부재). **제약: 건별 수집만·크론 축적 금지**(D30). 상세는 SKILL.md
+> 결정절과 `docs/SPEC-INTEL.md` D30.
 
-## §0. 국내와 글로벌은 사실상 다른 플랫폼이다 (2026-07-31 실측)
+---
 
-**robots 정책이 정반대이고, 데이터 경로도 완전히 다르다.** 국내가 막혔다고 W컨셉 전체를
-포기하면 안 된다 — **글로벌은 열려 있고 총계까지 준다.**
+## §A. 국내 PLP API — 주 경로 (확인, 2026-08-03)
 
-| | 국내 (`wconcept.co.kr` / `display.…`) | 글로벌 (`www.wconcept.com`) |
+**국내가 이제 주 경로다.** `api-display.wconcept.co.kr`의 카테고리 상품 API가 필수 9필드와
+총계·딥 페이지네이션을 응답 안에서 준다. `sold_out`만 구조적으로 불가하다.
+
+### 접근 (2026-08-03 실측)
+
+- 국내 robots(`www.wconcept.co.kr`·`display.wconcept.co.kr`)는 `User-agent: *`에
+  `Disallow: /`지만 **§4에서 `ClaudeBot`·`Claude-User`를 `Allow: /`로 명시 허용**한다
+  (2026-07-31에 이 화이트리스트 섹션을 못 보고 "전면 차단"으로 오독). 단
+  `display.wconcept.co.kr`의 `/api/`·`/rn/api/`는 **모든 그룹에 Disallow**.
+- 정직한 신원으로 상세를 요청하면 **403**(선언 정책과 서버 집행 불일치). **브라우저 UA
+  헤더 3종**(Chrome UA + `Accept` + `Accept-Language: ko-KR`)으로 **200** — 재시도·백오프
+  불필요. 선은 UA·Accept 헤더까지다(캡차 우회·IP 로테이션·TLS 지문 위조는 범위 밖 — D30).
+- PLP 호스트 `api-display.wconcept.co.kr`는 **별도 호스트로 robots.txt를 서빙하지 않는다**
+  (키 없는 요청에 401 JSON). robots 부재 호스트를 어떻게 취급할지는 **프로젝트 정책 판단으로
+  남긴다** — 여기에는 사실만 기록한다.
+
+### 목록 API (핵심, 2026-08-03 실측)
+
+```
+POST https://api-display.wconcept.co.kr/display/api/v2/category/products/{mediumCd}/{largeCategory}
+Headers:
+  display-api-key: <DISPLAY_API_KEY>   ← 비로그인 방문자 전원에게 내려가는
+                                          __NEXT_DATA__.runtimeConfig.DISPLAY_API_KEY 공개 상수.
+                                          탈취 토큰이 아니다
+  Content-Type: application/json; charset=UTF-8
+  devicetype: PC
+Body: {"custNo":"","gender":"All","sort":"WCK","pageNo":1,"pageSize":60,"bcds":[],"colors":[],
+       "benefits":[],"discounts":[],"status":["01"],"shopCds":[],"domainType":"pc"}
+```
+
+- `custNo:""`(익명)으로 정상 응답.
+- **`pageSize`는 서버가 60으로 강제**(200 요청해도 60 반환). `pageNo`를 올려 순회한다.
+  **딥 페이지네이션 상한 없음** — 최종면 `pageNo=7936`도 60건 정상.
+- **카테고리 SSR HTML(`__NEXT_DATA__`)에는 상품 목록이 없고 `productTotal`만 있다** —
+  목록은 이 POST API로만 얻는다.
+- 카테고리 트리: `GET /display/api/v2/category/list?categoryType=women&gender=women&category=001&shopcd=`
+  (PC용은 `/list/pc`).
+- 정렬(`sort`): `NEW`(신상)·`WCK`(추천)·`SALE`(판매순)·`DISCOUNT`·`LOWPRICE`·`HIGHPRICE`·`REVIEW`.
+
+### 필드 매핑 (계약 필드 ← PLP 응답, itemCd 305914779 실측, 2026-08-03)
+
+| 계약 필드 | 응답 필드 | 주의 |
 |---|---|---|
-| robots `User-agent: *` | **화이트리스트 전용 — `Disallow: /`** | **`Allow: /`** (전면 허용 + sitemap 공개) |
-| 도구 기본 UA | 즉시 **403** (집행 확인) | 정상 200 |
-| 수집 가능 | **불가** | **가능 — 경로 A 확보(§1)** |
+| product_id | `itemCd` | |
+| name | `itemName` | |
+| url | `www.wconcept.co.kr` + `webViewUrl` | 상대경로 조립 |
+| image_url | `imageUrlMobile` | |
+| brand | `brandNameKr` / `brandNameEn` / `brandCd` | |
+| category | `categoryDepthName1/2/3` + `mediumName` | 3뎁스, 목록에 나온다 |
+| price_original | `customerPrice` | KRW |
+| price_sale | `finalPrice` | **전 회원 공통 쿠폰적용가로 검증됨.** W컨셉이 상세 화면에서 "쿠폰적용가 [할인내역] 69,025원 29%"로 **문구 직접 라벨링**(29CM과 달리 추론 아님). 개인화 가격(신규회원가·카드사 할인)은 별도 칸으로 분리 |
+| discount_rate | `finalDiscountRate` | |
+| review_count | `reviewCnt` | |
+| rating | `reviewScore` | 4.921 관측 — **5점 만점 그대로** |
+| like_count | `heartCnt` | |
+| sold_out | **PLP로 불가 → `null`** | `status`를 `["01"]`/`[]`/`["01","04"]`/`["04"]`로 바꿔도 **전부 무시**(totalElements 476,130 불변, 반환 60건 전부 `statusCd=01`). **PLP는 품절 상품을 애초에 목록에 싣지 않는다.** notes에 "PLP가 품절 제외" 명기. **`false`로 채우면 오염**(결측이 아니라 오염). 상세로만 가능(아래 함정) |
+| view_count · viewers_now · buyers_now · purchase_count | **PLP 미노출 → `null`** | 상세 노출 여부 「미검증」 |
+
+### 총계 (2026-08-03 실측)
+
+- PLP `data.productList.totalElements` / SSR `__NEXT_DATA__.initialData.productTotal`
+  (여성/의류 476,163). **품절 제외 기준** — `source_total`에 담을 때 notes에 "품절 제외
+  총계" 명기.
+- 30초 3회 관측 476,117→476,130→476,163 흔들림 → **완전성 검증 시 허용 오차**를 둔다.
+
+### 카테고리 체계 (2026-08-03 실측)
+
+- 2축: `mediumCd`(대분류 문자코드, `M33439436`=여성/의류·`M39593862`=뷰티) +
+  `largeCategory`/`middleCategory`/`smallCategory`(3자리 숫자, `000`=전체).
+- URL: `display.wconcept.co.kr/category/{women|men|beauty}/{largeCategory}`,
+  API 경로는 `/{mediumCd}/{largeCategory}`.
+
+### 함정 (국내 PLP, 2026-08-03 실측)
+
+1. **HTML 문자열 "SOLD OUT"은 판매중 페이지에도 존재**(템플릿). 품절은 상세 서버 렌더
+   인라인 **`var statusCd`**(`'04'`=품절/`'01'`=판매중)를 파싱해야 한다. 단 상품당 상세
+   1회라 47만 건 전수는 비현실적 — **라인시트(수백~수천)나 랭킹 상위 N에서만.**
+2. **`totalQty`는 잔여 재고가 아니다**(품절 상품이 984). 의미 미확인, **쓰지 말 것**.
+3. **`01`/`04` 외 statusCd 의미 「미검증」**.
+4. **옵션(사이즈)별 재고**: 상세 `<select>`는 품절 옵션도 나열, 2뎁스는
+   `SetNextOption_Sku1()` AJAX — **엔드포인트 「미검증」**.
+
+---
+
+## §B. 글로벌 경로 A — 보조 (확인, 2026-07-31)
+
+**글로벌은 보조 경로다** — 국내에 없는 글로벌 전용 진열이 필요할 때만. 마뗑킴 886/886으로
+완주되지만 KRW 미노출·`sold_out` 미노출 한계가 있다.
+
+## §B.0 국내와 글로벌은 사실상 다른 플랫폼이다 (2026-07-31 실측 · 2026-08-03 국내 정정)
+
+**데이터 경로가 완전히 다르다.** 국내 수집은 §A(주 경로)를 쓴다 — 아래 표의 국내 열은
+2026-08-03 재실측으로 정정됐다(2026-07-31의 "불가"는 robots 오독).
+
+| | 국내 (§A) | 글로벌 (`www.wconcept.com`) |
+|---|---|---|
+| robots | `*: Disallow: /`지만 **Claude 봇은 `Allow: /` 명시**(§A 접근) | **`Allow: /`** (전면 허용 + sitemap 공개) |
+| 도구 기본 UA | 정직한 신원은 **403**, **브라우저 UA 헤더 3종으로 200** | 정상 200 |
+| 수집 가능 | **가능 — PLP API(§A), 주 경로** | 가능 — 경로 A 확보(§B.1), 보조 |
 | 브랜드 ID | 로우클래식 100216 · 인사일런스 남성 103603/우먼 108005 · 마뗑킴 109612 | **다른 체계** — 마뗑킴 **3233**(확증) |
-| 통화 | KRW | **KRW 없음** — USD 등 9종(§3 함정) |
+| 통화 | KRW | **KRW 없음** — USD 등 9종(§B.3 함정) |
 
 정책은 바뀔 수 있으니 수집 전 양쪽 robots를 런타임에 다시 읽는다.
 
-## 1. 엔드포인트 (경로 A) — 글로벌 (확인, 2026-07-31)
+## §B.1 엔드포인트 (경로 A) — 글로벌 (확인, 2026-07-31)
 
 | 용도 | 요청 | 실측 일자 | 비고 |
 |---|---|---|---|
@@ -63,7 +159,7 @@ GET https://api.yesplz.ai/api/v1/retailer/wconcept/textsearch/
 브랜드 링크에서 `/brand/{slug}/{id}.html` 형태로 나온다. 응답 상품의
 `custom_fields.brandOptionId`로 ID를 교차 확인할 수 있다(마뗑킴 3233 확인).
 
-## 2. 필드 매핑 (계약 필드 ← `textsearch` 응답) — 글로벌 (확인, 2026-07-31)
+## §B.2 필드 매핑 (계약 필드 ← `textsearch` 응답) — 글로벌 (확인, 2026-07-31)
 
 응답 경로는 `results[].product`다.
 
@@ -95,41 +191,52 @@ GET https://api.yesplz.ai/api/v1/retailer/wconcept/textsearch/
 - 라인시트에 섞어 쓸 때는 `meta.site`를 `wconcept-global`로 구분하고, 가격 비교 축에서
   빼거나 통화를 리포트에 명시한다. 환산해서 같은 축에 올리는 것은 **추정**이다.
 
-## 3. 갱신 주기
+## §B.3 갱신 주기
 
 - 「미검증」 — 스킵 창은 24시간 기본.
 
-## 4. 함정 (실측된 것만)
+## §B.4 함정 (실측된 것만)
 
-- **§1 brand URL 함정** — slug + `.html` 없으면 404 + SPA 셸(2026-07-31).
-- **§2 통화 함정** — 글로벌에 KRW 없음(2026-07-31).
-- **국내 robots 차단인데 페이지 일부는 열린다고 착각하기 쉽다**(2026-07-31) — 브랜드관
-  HTML 1회 수신이 정찰 중 robots 확인 이전에 이뤄진 적이 있다. 열렸다는 사실이 허용의
-  근거가 아니다. 판단 기준은 robots 문서다.
+- **§B.1 brand URL 함정** — slug + `.html` 없으면 404 + SPA 셸(2026-07-31).
+- **§B.2 통화 함정** — 글로벌에 KRW 없음(2026-07-31).
+- **국내 브랜드관 화면(display.…)이 열린다고 robots 허용으로 단정하지 마라**(2026-07-31) —
+  브랜드관 HTML 1회 수신이 정찰 중 robots 확인 이전에 이뤄진 적이 있다. 판단 기준은 robots
+  문서다(2026-08-03 정정: 국내 robots는 Claude 봇을 명시 허용하지만 `display.…/api/`·
+  `/rn/api/`는 전 그룹 Disallow다 — 대상별로 다르니 경로를 봐야 한다).
 - **국내 브랜드관 상품 목록은 서버 HTML에 없다**(2026-07-31) — Next.js RSC 스트리밍
   (`self.__next_f.push`)으로 CSR 렌더. 원본 HTML만 파싱하면 "상품 0개"로 조용히 틀린다.
+  (국내 카테고리 목록은 §A의 PLP POST API로 얻는다 — SSR HTML에는 `productTotal`만 있다.)
 - **브랜드에 따라 남성/우먼 브랜드관이 분리돼 있다**(국내 실측: 인사일런스 103603/108005).
   하나만 잡으면 절반을 놓친다. 글로벌도 그런지는 「미검증」.
 - 공통 함정 후보는 `../platform-generic/references/common-traps.md` 참조.
 
-## 5. 경로 B (브라우저 백업)
+## §B.5 경로 B (브라우저 백업)
 
 - 글로벌 브랜드관 화면은 브라우저로 정상 렌더된다(2026-07-31). 경로 A가 막히면
   화면 순회로 폴백하되, 렌더 방식·카드 경계·스크롤 종료 판정은 「미검증」이다.
-- 국내는 robots 차단이라 경로 B도 자동 수집이면 같은 제약을 받는다 — 실측하지 않는다.
+- 국내 백업은 §A의 상세 페이지(서버 렌더 `var statusCd`)를 쓴다 — 품절이 필요한 경우.
 
 ## 미검증 목록
 
-**글로벌 경로 A는 확보됐다. 남은 것은 아래.**
+**국내 PLP(§A)·글로벌 경로 A(§B)는 확보됐다. 남은 것은 아래.**
 
+국내 (§A):
+- [x] 상세에서 품절 획득 — 인라인 `var statusCd`(2026-08-03). 전수는 비현실적, 라인시트·랭킹 상위 N에서만
+- [ ] 옵션(사이즈)별 재고 — 2뎁스 `SetNextOption_Sku1()` AJAX 엔드포인트 「미검증」
+- [ ] `totalQty` 의미 「미검증」(잔여 재고 아님 — 품절 상품이 984, 쓰지 말 것)
+- [ ] `01`/`04` 외 statusCd 의미 「미검증」
+- [ ] view_count/viewers_now/buyers_now/purchase_count가 상세에는 나오는지 「미검증」
+- [ ] 갱신 주기
+- [ ] `api-display.wconcept.co.kr`(robots 부재 호스트) 취급 — 프로젝트 정책 판단 대기
+
+글로벌 (§B):
 - [x] `review_count`·`rating`이 채워지는 상품 존재 — 886건 중 37건 확인(2026-07-31)
 - [ ] rating 스케일 확정 — 관측값이 전부 5.0이라 5점인지 100점인지 못 가린다
 - [ ] 품절 상품이 목록에 아예 안 오는가, 아니면 표시 없이 섞여 오는가
       (`sticker1: "Low Stock"` 외에 재고 신호 없음)
 - [ ] `limit` 정확한 상한(200 동작 / 500 실패 — 그 사이 미확인)
-- [ ] 상세 페이지에 재고·품절이 있는가 — **있으면 수집 포기 결정을 재검토할 근거가 된다**
-- [ ] 글로벌 카탈로그 ↔ 국내 카탈로그 차이 (같은 브랜드라도 진열이 다를 수 있다)
-- [ ] 글로벌 브랜드 ID ↔ 국내 브랜드 ID 대응 관계 (마뗑킴 3233 ↔ 109612)
-- [ ] 갱신 주기
-- [ ] 상세 페이지에서 추가로 나오는 값(옵션·재고·후기)
-- [ ] (국내) robots 완화 시에만: 국내 경로 전부
+- [ ] 상세 페이지에 재고·품절이 있는가
+
+교차 (국내 ↔ 글로벌):
+- [ ] 카탈로그 차이 (같은 브랜드라도 진열이 다를 수 있다)
+- [ ] 브랜드 ID 대응 관계 (마뗑킴 3233 ↔ 109612)
