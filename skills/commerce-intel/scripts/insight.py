@@ -140,7 +140,8 @@ def build(db_path, contexts, ai_notes=None):
     strong = _select([h for h in hyps if h["verdict"] == "strong"], STRONG_MAX)
     weak = _select([h for h in hyps if h["verdict"] == "weak"], WEAK_MAX)
     rejected = [h for h in hyps if h["verdict"] == "rejected"]
-    return {"generated": res["generated"], "plan": res["plan"],
+    folded = len(res["data"]["items"]) - len(an.style_rows(res["data"]["items"]))
+    return {"generated": res["generated"], "plan": res["plan"], "folded_variants": folded,
             "strong": strong, "weak": weak, "rejected": rejected,
             "eda": res["eda"], "data": res["data"],
             "strong_pool": sum(1 for h in hyps if h["verdict"] == "strong"),
@@ -161,6 +162,13 @@ def honesty_points(res):
     pts.append("관측 창: %s ~ %s · 상품 %s건 · 플랫폼 %s" % (
         g["observed_from"], g["observed_to"], "{:,}".format(g["rows"]),
         ", ".join(g["sites"])))
+    # 어느 단위로 센 숫자인지 모르면 모든 n을 잘못 읽는다 (#7)
+    folded = res.get("folded_variants")
+    if folded:
+        pts.append("그룹 비교와 상관은 **스타일 단위**로 셌다 — 색상 변형 %s건을 접었다"
+                   "(무신사는 `(5 COLORS)`로 한 줄, 자사몰은 색상마다 한 줄이라 "
+                   "그대로 세면 플랫폼마다 기준이 달라진다). 품절·재고는 상품 단위 그대로다."
+                   % "{:,}".format(folded))
     return pts
 
 

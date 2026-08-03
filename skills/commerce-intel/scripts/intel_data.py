@@ -19,6 +19,7 @@ D27로 폐기됐지만 이 부분은 산출 형식과 무관하다 — 상품별
 import json
 import re
 import sqlite3
+import statistics as st
 from datetime import datetime
 
 # ── 동일 상품 매칭 ──────────────────────────────────────────────────────────
@@ -37,13 +38,38 @@ BRACKETS_RE = re.compile(r"\[[^\]]*\]|\([^)]*\)")
 # 한글·영숫자만 남긴다. 공백·`_`·`/`·하이픈은 사이트마다 다르게 넣는다.
 NON_WORD_RE = re.compile(r"[^0-9a-z가-힣]")
 
+# ── 괄호 안이 시즌이면 지우지 않는다 (2026-08-03 실측) ─────────────────────
+# 괄호 제거는 색상·유통 표기를 걷어내려는 규칙인데, 시즌 표기까지 지워서
+# `(FW23) T-Logo LT Hoodie`와 `(FW24) T-Logo LT Hoodie`가 **같은 상품이 됐다.**
+# 서로 다른 시즌 상품은 다른 상품이다.
+#
+# FW/SS/SP/AW 문자를 **필수**로 요구한다 — 숫자만 보면 상품코드 `[0157]`을 시즌으로
+# 오인한다(실측에서 실제로 걸렸다).
+#
+# 실측 효과: 플랫폼 간 매칭 688건 → 688건(손실 0) · 사이트 내 잘못된 병합 40건 감소.
+# 공짜다.
+SEASON_RE = re.compile(r"^(?:(?:FW|SS|SP|AW)\s?\d{2,4}|\d{2,4}\s?(?:FW|SS|SP|AW))$", re.I)
+
 
 def match_key(name):
-    """동일 상품 판정에 쓰는 정규화 상품명. 이 키가 같을 때만 같은 상품이다."""
+    """동일 상품 판정에 쓰는 정규화 상품명. 이 키가 같을 때만 같은 상품이다.
+
+    괄호 안은 지우되 **시즌 표기는 키에 남긴다.** 색상 변형은 묶이고(무신사
+    `REYA LACE TOP (5 COLORS)` = 자사몰 `REYA LACE TOP (PINK)`), 시즌 변형은
+    갈라진다(`(FW23) X` ≠ `(FW24) X`).
+    """
     if not name:
         return ""
-    lowered = str(name).lower()
-    return NON_WORD_RE.sub("", BRACKETS_RE.sub(" ", lowered))
+    kept = []
+
+    def _repl(m):
+        inner = m.group(0).strip("[]()").strip()
+        if SEASON_RE.match(inner):
+            kept.append(inner.upper().replace(" ", ""))
+        return " "
+
+    base = NON_WORD_RE.sub("", BRACKETS_RE.sub(_repl, str(name).lower()))
+    return base + ("|" + "|".join(sorted(kept)) if kept else "")
 
 
 AXES = [
@@ -362,7 +388,62 @@ def product_series(db_path, contexts):
     return out
 
 
-def matched_pairs(items, metric):
+# ══════════════════════════════════════════════════════════════════════════
+# 스타일 : 변형 2계층 (2026-08-03 — 사용자 지적 #7)
+# ══════════════════════════════════════════════════════════════════════════
+# 플랫폼마다 **한 상품을 세는 단위가 다르다.** 무신사는 `REYA LACE TOP (5 COLORS)`
+# 한 줄로 올리고 자사몰은 색상마다 따로 올린다. 그대로 세면 자사몰 카탈로그가 몇 배로
+# 부풀고, 플랫폼 비교의 n이 서로 다른 기준으로 세어진다.
+#
+# 실측(2026-08-03): 사이트 안에서 같은 스타일로 묶이는 상품이 4,350건.
+# 그중 **843개 그룹은 변형끼리 가격이 다르다** — 대표 하나만 쓰면 그 차이가 사라진다.
+#
+# 그래서 단위를 **명시적으로 고른다**:
+#   variant(상품) — 재고·품절·개별 가격. 기본값
+#   style(스타일)  — 플랫폼 비교·카탈로그 폭. 대표값은 **중앙값**(첫 건이 아니다)
+
+
+def style_groups(items):
+    """(site, style_key) → 그 스타일의 변형 목록. 같은 사이트 안에서만 묶는다."""
+    groups = {}
+    for it in items:
+        key = match_key(it.get("name"))
+        if not key:
+            key = "\x00%s\x00%s" % (it["site"], it["product_id"])
+        groups.setdefault((it["site"], key), []).append(it)
+    return groups
+
+
+def style_rows(items, numeric_fields=None):
+    """상품 목록을 **스타일 단위**로 접는다.
+
+    수치는 변형들의 **중앙값**을 쓴다. 첫 건을 쓰면 어느 색이 먼저 수집됐느냐에 따라
+    값이 달라져 재현되지 않고, 평균을 쓰면 한 색만 세일 중일 때 끌려간다.
+
+    `variant_n`(변형 수)과 `variant_price_spread`(변형 간 가격 폭)를 함께 남긴다 —
+    접었다는 사실과 접으면서 버린 정보량을 리포트가 밝힐 수 있어야 한다.
+    """
+    numeric_fields = numeric_fields or [
+        "price_original", "price_sale", "discount_rate", "review_count", "rating",
+        "purchase_count", "like_count", "viewers_now", "opt_out_rate", "opt_total"]
+    out = []
+    for (site, key), members in style_groups(items).items():
+        rep = dict(members[0])
+        rep["style_key"] = key
+        rep["variant_n"] = len(members)
+        for f in numeric_fields:
+            vals = [m[f] for m in members if m.get(f) is not None]
+            rep[f] = st.median(vals) if vals else None
+        prices = [m["price_sale"] for m in members if m.get("price_sale") is not None]
+        rep["variant_price_spread"] = (max(prices) - min(prices)) if len(prices) > 1 else 0
+        # 하나라도 재고가 있으면 그 스타일은 살아 있다 — 전부 품절일 때만 품절이다
+        so = [m["sold_out"] for m in members if m.get("sold_out") is not None]
+        rep["sold_out"] = (1 if all(so) else 0) if so else None
+        out.append(rep)
+    return out
+
+
+def matched_pairs(items, metric, unit="style"):
     """플랫폼 간 **같은 상품** 쌍. 쌍체 비교용.
 
     독립 두 집단으로 플랫폼을 비교하면 상품 구성 차이가 섞인다 — 한쪽에 비싼 아우터가
@@ -370,17 +451,20 @@ def matched_pairs(items, metric):
 
     매칭은 정규화 상품명 완전일치(match_key)뿐이다 — 리포트 전체가 쓰는 규칙 하나.
 
+    **기본 단위는 스타일이다.** 상품 단위로 짝지으면 색상 변형이 많은 쪽이 같은 쌍을
+    여러 번 밀어 넣어 쌍이 부풀고, 순열검정의 n이 실제 독립 관측 수보다 커진다
+    (유사 반복 — p값이 실제보다 작게 나온다).
+
     반환: {(siteA, siteB): [(valueA, valueB, name), ...]}
     """
+    rows = style_rows(items) if unit == "style" else items
     by_key = {}
-    for it in items:
+    for it in rows:
         if it.get(metric) is None:
             continue
-        key = match_key(it.get("name"))
+        key = it.get("style_key") or match_key(it.get("name"))
         if not key:
             continue
-        # 같은 사이트에 같은 키가 여럿이면(컬러 변형 등) 첫 건을 대표로 쓴다.
-        # 여기서 여러 건을 평균 내면 한쪽만 변형이 많을 때 값이 왜곡된다.
         by_key.setdefault(key, {}).setdefault(it["site"], it)
     pairs = {}
     for key, per_site in by_key.items():

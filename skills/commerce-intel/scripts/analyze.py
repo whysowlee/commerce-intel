@@ -44,7 +44,8 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import stat_playbook as sp                                          # noqa: E402
 from eda import CAT_AXES, MIN_N, run as run_eda                     # noqa: E402
-from intel_data import AXES, collect, matched_pairs, product_series  # noqa: E402
+from intel_data import (AXES, collect, matched_pairs, product_series,  # noqa: E402
+                        style_rows)
 
 LABELS = dict(AXES)
 CAT_LABELS = dict(CAT_AXES)
@@ -110,7 +111,7 @@ def _chk_group(ctx):
     axes_ok = []
     for field, label in CAT_AXES:
         counts = defaultdict(int)
-        for it in ctx["items"]:
+        for it in ctx["styles"]:
             if it.get(field) is not None:
                 counts[it[field]] += 1
         big = [k for k, v in counts.items() if v >= N_MIN]
@@ -118,7 +119,11 @@ def _chk_group(ctx):
             axes_ok.append("%s(%d값)" % (label, len(big)))
     if not axes_ok or not usable:
         return False, "비교 가능한 범주축(값마다 n≥%d)이 2개 미만이거나 쓸 수 있는 지표가 없다" % N_MIN, 0
-    return True, "범주축 %s × 지표 %d개" % (", ".join(axes_ok), len(usable)), len(ctx["items"])
+    folded = len(ctx["items"]) - len(ctx["styles"])
+    return True, ("범주축 %s × 지표 %d개 · **스타일 단위**(상품 %d건 → 스타일 %d건, "
+                  "색상 변형 %d건 접음)" % (", ".join(axes_ok), len(usable),
+                                       len(ctx["items"]), len(ctx["styles"]), folded)), \
+        len(ctx["styles"])
 
 
 def _chk_corr(ctx):
@@ -162,7 +167,7 @@ def _chk_dose(ctx):
 
 
 def _chk_paired(ctx):
-    sites = {i["site"] for i in ctx["items"]}
+    sites = {i["site"] for i in ctx["styles"]}
     if len(sites) < 2:
         return False, "플랫폼이 1개다 — 쌍을 만들 수 없다", 0
     best = 0
@@ -269,7 +274,7 @@ def run_group(ctx):
     usable = _usable_metrics(ctx["eda"])
     for cat_field, cat_label in CAT_AXES:
         groups = defaultdict(list)
-        for it in ctx["items"]:
+        for it in ctx["styles"]:          # 변형이 아니라 스타일 단위 (#7)
             if it.get(cat_field) is not None:
                 groups[it[cat_field]].append(it)
         big = sorted([(k, v) for k, v in groups.items() if len(v) >= N_MIN],
@@ -312,7 +317,7 @@ def run_corr(ctx):
     for c in ctx["eda"]["correlations"]:
         if c["definitional"] or abs(c["spearman"]) < 0.15:
             continue
-        pairs = [(i[c["x"]], i[c["y"]]) for i in ctx["items"]
+        pairs = [(i[c["x"]], i[c["y"]]) for i in ctx["styles"]
                  if i.get(c["x"]) is not None and i.get(c["y"]) is not None]
         if len(pairs) < N_MIN:
             continue
@@ -564,7 +569,13 @@ def analyze(db_path, contexts, ai_notes=None, plan_only=False):
     if not eda_res["ok"]:
         return {"ok": False, "reason": eda_res.get("reason"), "contexts": contexts}
     data = collect(db_path, contexts)
-    ctx = {"items": data["items"], "eda": eda_res, "data": data,
+    # 분석 단위가 둘이다(2026-08-03 #7):
+    #   items  — 상품(변형) 단위. 재고·품절처럼 색상마다 다른 것
+    #   styles — 스타일 단위. 가격·반응처럼 색상이 같이 움직이는 것
+    # 플랫폼마다 한 상품을 세는 기준이 달라서(자사몰은 색상별로, 무신사는 묶어서)
+    # 변형 단위로 비교하면 n이 서로 다른 기준으로 세어진다.
+    ctx = {"items": data["items"], "styles": style_rows(data["items"]),
+           "eda": eda_res, "data": data,
            "series": product_series(db_path, contexts)}
 
     plan = make_plan(ctx, ai_notes)
