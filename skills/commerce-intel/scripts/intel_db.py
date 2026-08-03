@@ -11,6 +11,7 @@
     python3 intel_db.py import-snapshots data/snapshots
     python3 intel_db.py export --table products --format csv
     python3 intel_db.py stats
+    python3 intel_db.py merge <팀원의 intel.db>     # 각자 모은 것을 합친다 (D31)
 
 재사용 규칙(SPEC-INTEL §2-2):
   정적 속성 TTL 90일 · 시변 값 스킵 창 = 사이트 갱신 주기(미상 24시간).
@@ -429,6 +430,74 @@ def cmd_stats(conn, _args):
         print(f"  {c['context']}: {c['n']}건 ({c['a']} ~ {c['b']})")
 
 
+def cmd_merge(conn, args):
+    """다른 사람의 DB를 이 DB에 합친다 (D31 완화책).
+
+    전원 배포에 공유 DB가 없어서 각자 자기 DB를 갖는다. 나중에 합칠 길이 없으면
+    축적이 사람 수만큼 갈라진 채 영영 못 만난다 — 이 명령이 그 길이다.
+    공유 DB로 옮길 때의 마이그레이션 경로이기도 하다.
+
+    충돌 규칙은 `load`와 같다:
+    - `observations`·`variant_observations`는 append only + 같은 키는 스킵.
+      **관측은 사실이라 덮어쓸 것이 없다** — 같은 시각·같은 문맥이면 같은 관측이다
+    - `products`·`variants`·`platforms`·`proxy_defs`는 **비어 있지 않은 값만** 덮는다.
+      상대가 모르는 필드를 null로 밀어 내 값을 지우면 안 된다
+    - `runs`는 그대로 가져온다(어느 수집에서 왔는지가 이력이다)
+    """
+    src = sqlite3.connect(args.source)
+    src.row_factory = sqlite3.Row
+    stats = {}
+
+    # 관측 계열 — 키가 겹치면 스킵. INSERT OR IGNORE가 곧 그 규칙이다
+    for table in ("observations", "variant_observations", "runs"):
+        try:
+            rows = src.execute(f"SELECT * FROM {table}").fetchall()
+        except sqlite3.OperationalError:
+            continue                       # 상대 DB가 더 옛 스키마일 수 있다
+        if not rows:
+            continue
+        cols = [c for c in rows[0].keys() if c != "rowid"]
+        before = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        conn.executemany(
+            "INSERT OR IGNORE INTO %s (%s) VALUES (%s)"
+            % (table, ",".join(cols), ",".join("?" * len(cols))),
+            [tuple(r[c] for c in cols) for r in rows])
+        after = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        stats[table] = (after - before, len(rows))
+
+    # 정적 계열 — 빈 값으로 덮지 않는다
+    for table, keys in (("products", ("site", "product_id")),
+                        ("variants", ("site", "product_id", "option_id")),
+                        ("platforms", ("platform_key",)),
+                        ("proxy_defs", ("proxy_name",)),
+                        ("proxy_cache", ("proxy_name", "site", "product_id", "fingerprint"))):
+        try:
+            rows = src.execute(f"SELECT * FROM {table}").fetchall()
+        except sqlite3.OperationalError:
+            continue
+        if not rows:
+            continue
+        cols = [c for c in rows[0].keys()]
+        upd = [c for c in cols if c not in keys]
+        before = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        # COALESCE(excluded.x, x) — 들어온 값이 null이면 기존 값을 지킨다
+        sets = ", ".join("%s = COALESCE(excluded.%s, %s.%s)" % (c, c, table, c) for c in upd)
+        conn.executemany(
+            "INSERT INTO %s (%s) VALUES (%s) ON CONFLICT(%s) DO UPDATE SET %s"
+            % (table, ",".join(cols), ",".join("?" * len(cols)), ",".join(keys), sets),
+            [tuple(r[c] for c in cols) for r in rows])
+        after = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        stats[table] = (after - before, len(rows))
+
+    conn.commit()
+    src.close()
+    print("합침: %s → %s" % (args.source, args.db))
+    for t, (added, seen) in stats.items():
+        print("  %-22s 신규 %6d / 상대 %6d" % (t, added, seen))
+    if not stats:
+        print("  가져올 것이 없었다 (빈 DB이거나 스키마가 다르다)")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--db", default=str(DEFAULT_DB))
@@ -454,6 +523,8 @@ def main():
     sp.add_argument("--format", choices=["csv", "json"], default="csv")
     sp.add_argument("--since-rowid", type=int, default=None)
     sub.add_parser("stats")
+    sp = sub.add_parser("merge")
+    sp.add_argument("source", help="합칠 상대 DB 경로 (팀원이 보내준 intel.db)")
     args = p.parse_args()
 
     conn = connect(args.db)
@@ -466,6 +537,8 @@ def main():
         sys.exit(cmd_check(conn, args))
     elif args.cmd == "reuse-attrs":
         cmd_reuse_attrs(conn, args)
+    elif args.cmd == "merge":
+        cmd_merge(conn, args)
     elif args.cmd == "stale-static":
         cmd_stale_static(conn, args)
     elif args.cmd == "import-snapshots":

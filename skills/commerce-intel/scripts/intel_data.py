@@ -17,10 +17,34 @@ D27로 폐기됐지만 이 부분은 산출 형식과 무관하다 — 상품별
     data["meta"]["stock"] # 옵션(사이즈) 재고 요약
 """
 import json
+import re
 import sqlite3
 from datetime import datetime
 
-import build_report as br     # 상품 매칭 규칙(match_key)을 한 곳에서 쓴다
+# ── 동일 상품 매칭 ──────────────────────────────────────────────────────────
+# 규칙은 하나뿐이다: **정규화 상품명 완전일치.** 유사도·가격 보조 매칭은 금지다 —
+# 인사일런스 실측에서 유사도 0.82↑ 후보 11건 중 대부분이 다른 상품이었고,
+# `레터링 그래픽 티셔츠`와 `스탠실 그래픽 티셔츠`는 정가까지 66,000원으로 같아
+# **가격이 오탐을 확증**했다(EVIDENCE §5). 그래서 가격도 신호로 못 쓴다.
+#
+# 원래 build_report.py가 갖고 있던 것을 여기로 옮겼다 — 배포 패키지에서 HTML
+# 생성기를 빼면서 데이터 층이 렌더 층에 의존할 수 없게 됐기 때문이다(D27).
+
+# 괄호/대괄호 안은 매칭에서 뺀다 — "[2 PACK]", "(단독)", "(5 COLORS)" 같은 유통·옵션
+# 표기가 사이트마다 다르게 붙는다. 무신사 `REYA LACE TOP (5 COLORS)`와 자사몰
+# `REYA LACE TOP (PINK)`가 같은 상품으로 묶이는 것이 이 규칙 덕분이다(MD 인터뷰 확인).
+BRACKETS_RE = re.compile(r"\[[^\]]*\]|\([^)]*\)")
+# 한글·영숫자만 남긴다. 공백·`_`·`/`·하이픈은 사이트마다 다르게 넣는다.
+NON_WORD_RE = re.compile(r"[^0-9a-z가-힣]")
+
+
+def match_key(name):
+    """동일 상품 판정에 쓰는 정규화 상품명. 이 키가 같을 때만 같은 상품이다."""
+    if not name:
+        return ""
+    lowered = str(name).lower()
+    return NON_WORD_RE.sub("", BRACKETS_RE.sub(" ", lowered))
+
 
 AXES = [
     ("price_sale", "판매가"), ("price_original", "정가"), ("discount_rate", "할인율(%)"),
@@ -300,7 +324,7 @@ def build_union_rows(items):
         return None
     rows, order = {}, []
     for idx, it in enumerate(items):
-        key = br.match_key(it.get("name")) or "\x00%s\x00%s" % (it["site"], it["product_id"])
+        key = match_key(it.get("name")) or "\x00%s\x00%s" % (it["site"], it["product_id"])
         row = rows.get(key)
         if row is None:
             row = {"n": it.get("name") or it["product_id"], "c": it.get("category"),
