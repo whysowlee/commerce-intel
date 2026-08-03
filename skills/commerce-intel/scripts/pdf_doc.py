@@ -27,6 +27,7 @@ reportlab은 **한글 CID 폰트가 내장**이라 폰트 파일을 번들하지
     d.save("output/insight-0803.pdf")
 """
 import os
+import re
 import sys
 
 try:
@@ -176,7 +177,7 @@ class Doc:
         # 마크업(<b> 등)이 이미 들어 있는 문자열은 이스케이프하지 않는다 —
         # 다만 글리프 치환은 양쪽 다 거쳐야 한다(빠지면 그 줄만 깨진 채 나간다).
         body = _glyphs(text) if _has_markup(text) else esc(text)
-        self.flow.append(Paragraph(body, self.s[style]))
+        self.flow.append(Paragraph(md(body), self.s[style]))
 
     def small(self, text):
         self.para(text, style="small")
@@ -196,7 +197,7 @@ class Doc:
         rows = [[Paragraph(b(esc(title)), self.s["small"])]]
         for p in points:
             # 글머리표는 esc()를 거치지 않으므로 안전한 글자를 직접 쓴다(BAD_GLYPHS 참조)
-            rows.append([Paragraph("・ " + esc(p), self.s["small"])])
+            rows.append([Paragraph(md("・ " + esc(p)), self.s["small"])])
         t = Table(rows, colWidths=[self._content_width()])
         t.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, -1), BG_SOFT),
@@ -226,7 +227,7 @@ class Doc:
         if weak:
             head.append("[약한 단서]")
         prefix = (b(" ".join(head)) + " ") if head else ""
-        inner.append(Paragraph(prefix + esc(claim), self.s["claim"]))
+        inner.append(Paragraph(md(prefix + esc(claim)), self.s["claim"]))
         if detail_link:
             inner.append(Paragraph("→ 상세: %s" % esc(detail_link), self.s["small"]))
         if evidence:
@@ -327,6 +328,18 @@ class Doc:
             return [total / n] * n
         s = float(sum(widths))
         return [total * w / s for w in widths]
+
+
+_MD_BOLD = re.compile(r"\*\*(.+?)\*\*", re.S)
+
+
+def md(text):
+    """`**굵게**`를 reportlab 마크업으로 바꾼다.
+
+    리포트 문구를 쓸 때 마크다운이 손에 익어 `**`를 그냥 치게 되는데, 변환하지 않으면
+    별표가 그대로 인쇄된다. 이스케이프 뒤에 돌려야 본문의 `<`가 태그로 새지 않는다.
+    """
+    return _MD_BOLD.sub(r"<b>\1</b>", text)
 
 
 def _has_markup(text):
