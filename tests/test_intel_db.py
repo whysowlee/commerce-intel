@@ -135,6 +135,69 @@ def team_coverage_tests(work, db, ctx):
     sys.modules.pop("sync_sheets", None)
 
 
+
+def chart_tests():
+    """chart.py 렌더 — 엣지 케이스에서 예외 없이 Drawing이 나오는지 (D40).
+
+    이 테스트가 있는 이유: 차트 결함은 **예외 없이 조용히 깨진다**(빈 그림·잘린 라벨).
+    실제로 D40 작업에서 축 라벨 겹침·음수 값 라벨 잘림을 코드 통과 후 눈으로 찾았다.
+    픽셀까지 검증할 수는 없으니 **"예외 없이 그려지고, 그릴 게 없으면 빈 Drawing"**
+    이라는 계약만 고정한다 — 그것만으로 다음 변경의 크래시 회귀는 막힌다.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    try:
+        import chart
+    except ImportError:
+        # reportlab은 PDF 파이프라인의 필수 의존이지만(package.sh가 배포 전 검사),
+        # 이 테스트 파일의 나머지는 그것 없이도 돈다. 없는 환경에서 실패로 만들면
+        # DB 회귀를 못 돌리게 되므로 스킵한다 — 배포 게이트는 package.sh가 지킨다.
+        print("  SKIP  chart 렌더 — reportlab 미설치 (pip install reportlab)")
+        return
+
+    # 정상 입력 — 요소가 실제로 그려진다(빈 Drawing이 아니다)
+    d = chart.bar_h([("29CM", 18), ("자사몰", 0)], "할인율(%)")
+    check("bar_h 정상 렌더", len(d.contents) > 2, "요소 %d" % len(d.contents))
+    # 음수 혼재 — 0선 양쪽으로 그린다(이중차분이 음수로 나온다)
+    d = chart.bar_h([("A", 12), ("DiD", -4)], "값")
+    check("bar_h 음수 혼재", len(d.contents) > 2)
+    # 전부 음수 — span 계산이 0으로 나눠지지 않는지
+    d = chart.bar_h([("A", -3), ("B", -9)], "값")
+    check("bar_h 전부 음수", len(d.contents) > 2)
+    # 전부 같은 값 — span=0 → 나눗셈 폭발 방지
+    d = chart.bar_h([("A", 5), ("B", 5)], "값")
+    check("bar_h 값이 전부 같음(span=0)", len(d.contents) > 2)
+    # 빈 입력·전부 None — 빈 Drawing을 돌려준다(예외 아님)
+    check("bar_h 빈 입력", len(chart.bar_h([], "값").contents) == 0)
+    check("bar_h 전부 None", len(chart.bar_h([("A", None)], "값").contents) == 0)
+
+    # dist_compare — 표본이 적을 때 사분위 계산이 죽지 않는지
+    check("dist_compare 표본 1개는 빈 Drawing",
+          len(chart.dist_compare([1], [1, 2, 3], "a", "b", "m").contents) == 0)
+    d = chart.dist_compare([1, 2], [3, 4], "a", "b", "판매가")
+    check("dist_compare 표본 2개(사분위 미만)", len(d.contents) > 2)
+    d = chart.dist_compare(list(range(100)), list(range(50, 150)), "a", "b", "판매가")
+    check("dist_compare 정상 렌더", len(d.contents) > 4)
+    check("dist_compare None 섞임",
+          len(chart.dist_compare([1, None, 3, 5], [2, 4, None, 6], "a", "b", "m").contents) > 2)
+
+    # bins_bar — 구간 1개면 추세를 말할 수 없다(빈 Drawing)
+    one = [{"from": 0, "to": 10, "n": 5, "median": 3}]
+    check("bins_bar 구간 1개는 빈 Drawing", len(chart.bins_bar(one, "x", "y").contents) == 0)
+    two = one + [{"from": 10, "to": None, "n": 8, "median": 9}]
+    d = chart.bins_bar(two, "할인 폭(%)", "증분")
+    check("bins_bar 정상 + to=None(마지막 구간)", len(d.contents) > 3)
+    check("bins_bar median None 제외",
+          len(chart.bins_bar(two + [{"from": 90, "to": 100, "n": 1, "median": None}],
+                             "x", "y").contents) > 3)
+
+    # missing_bar — EDA nulls 구조 그대로
+    nulls = [{"label": "평점", "missing_pct": 100.0}, {"label": "하트", "missing_pct": 0.0}]
+    check("missing_bar 정상", len(chart.missing_bar(nulls).contents) > 2)
+    check("missing_bar 빈 입력", len(chart.missing_bar([]).contents) == 0)
+    check("missing_bar missing_pct 없는 항목 제외",
+          len(chart.missing_bar([{"label": "x"}]).contents) == 0)
+
+
 def main():
     work = Path(tempfile.mkdtemp(prefix="intel-db-test-"))
     db = str(work / "intel.db")
@@ -346,6 +409,9 @@ def main():
 
     print("[11] 팀 커버리지 조회 (check --team, D32)")
     team_coverage_tests(work, db, ctx)
+
+    print("[12] 차트 렌더 (chart.py, D40)")
+    chart_tests()
 
     shutil.rmtree(work, ignore_errors=True)
     print("-" * 56)
