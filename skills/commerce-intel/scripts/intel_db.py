@@ -109,6 +109,22 @@ CREATE TABLE IF NOT EXISTS proxy_cache (       -- 판정 캐시 — 재료 지�
     value TEXT, basis TEXT, judged_at TEXT,
     PRIMARY KEY (proxy_name, site, product_id, fingerprint)
 );
+CREATE TABLE IF NOT EXISTS insights (       -- 인사이트 엔진 산출 (D28)
+    -- 팀원이 읽는 창구는 시트다(D31 개정 2026-08-03). PDF는 네 손에서만 나오므로
+    -- 결과가 DB를 거쳐야 미러가 실어 나른다. 파이프라인 원칙과 같다 — 무엇도 DB를
+    -- 건너뛰지 않는다.
+    run_stamp TEXT NOT NULL,       -- 같은 실행의 결과를 묶는 키 (YYYYMMDD-HHmm)
+    target TEXT NOT NULL,          -- 리포트 대상 이름
+    context TEXT,                  -- 관측 문맥 (쉼표 구분)
+    verdict TEXT NOT NULL,         -- strong / weak / rejected
+    idx INTEGER NOT NULL,          -- 그 갈래 안의 순번 (1부터)
+    claim TEXT, audience TEXT,
+    effect REAL, effect_kind TEXT, n INTEGER, p REAL,
+    holdout TEXT, fails TEXT, recheck TEXT,
+    detail_pdf TEXT, detail_page INTEGER,
+    created_at TEXT,
+    PRIMARY KEY (run_stamp, target, verdict, idx)
+);
 CREATE TABLE IF NOT EXISTS sync_state (
     table_name TEXT PRIMARY KEY,
     last_synced_key TEXT,     -- observations는 마지막 rowid, 나머지는 마지막 전체 미러 시각

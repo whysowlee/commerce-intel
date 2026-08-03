@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import stat_playbook as sp                                  # noqa: E402
 from eda import CAT_AXES, MIN_N, run as run_eda             # noqa: E402
 from intel_data import AXES, collect                        # noqa: E402
+from intel_db import connect as db_connect                  # noqa: E402
 from pdf_doc import Doc                                     # noqa: E402
 
 LABELS = dict(AXES)
@@ -546,6 +547,42 @@ def _detail_body(d, h):
                "옵션 재고 감소분이 축적돼야 계산된다.", style="small")
 
 
+def save_to_db(db_path, res, target, contexts, stamp, detail_pdf, pages):
+    """인사이트를 DB에 적재한다 — **시트 미러가 실어 나를 유일한 통로**다 (D31 개정).
+
+    팀원은 시트를 읽고 DB는 한 사람이 갖는다(2026-08-03 사용자 확정). PDF는 그 한 사람
+    손에서만 나오므로, 결과가 DB를 거치지 않으면 팀에 닿을 길이 없다. 파이프라인
+    원칙과 같다 — 무엇도 DB를 건너뛰지 않는다.
+
+    같은 (run_stamp, target)을 다시 쓰면 덮는다. 재실행이 흔하고, 같은 시각의 같은
+    대상은 같은 분석이기 때문이다.
+    """
+    conn = db_connect(db_path)
+    ctx = ", ".join(contexts) if contexts else ""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    rows = []
+    for verdict, items in (("strong", res["strong"]), ("weak", res["weak"]),
+                           ("rejected", res["rejected"])):
+        for i, h in enumerate(items, 1):
+            prefix = {"strong": "s", "weak": "w"}.get(verdict)
+            page = pages.get("%s%d" % (prefix, i)) if prefix else None
+            rows.append((
+                stamp, target, ctx, verdict, i,
+                h.get("claim"), h.get("audience"),
+                h.get("effect"), h.get("effect_kind"), h.get("n"), h.get("p"),
+                h.get("holdout_note"),
+                " / ".join(h.get("fails") or []) or None,
+                recheck_hint(h) if verdict == "weak" else None,
+                os.path.basename(detail_pdf), page, now))
+    conn.executemany(
+        "INSERT OR REPLACE INTO insights (run_stamp, target, context, verdict, idx, "
+        "claim, audience, effect, effect_kind, n, p, holdout, fails, recheck, "
+        "detail_pdf, detail_page, created_at) VALUES (%s)" % ",".join("?" * 17), rows)
+    conn.commit()
+    conn.close()
+    return len(rows)
+
+
 def main():
     ap = argparse.ArgumentParser(description="인사이트 엔진 — 강한 주장 5 + 약한 단서 20")
     ap.add_argument("--db", default="data/intel.db")
@@ -568,11 +605,13 @@ def main():
     # 상세를 먼저 굽는다 — 인사이트가 그 쪽 번호를 가리켜야 하기 때문이다
     pages = build_detail_pdf(res, detail_path, target)
     build_insight_pdf(res, insight_path, target, pages)
+    saved = save_to_db(a.db, res, target, a.context, stamp, detail_path, pages)
 
     print("가설 %d개 검정 → 강한 주장 %d · 약한 단서 %d · 기각 %d" % (
         res["generated"], len(res["strong"]), len(res["weak"]), len(res["rejected"])))
     print("  인사이트: %s" % insight_path)
     print("  상세:     %s" % detail_path)
+    print("  DB 적재:  %d행 (insights) — 다음 시트 미러가 팀에 전달한다" % saved)
     if len(res["strong"]) < STRONG_MAX:
         print("  ※ 강한 주장이 %d개다 — 5관문을 통과한 것만 실었고 빈자리를 채우지 않았다."
               % len(res["strong"]))
