@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "permissions": {
+    "allow": [
+      "Bash(python3 skills/commerce-intel/scripts/intel_db.py:*)",
+      "Bash(python3 skills/commerce-intel/scripts/validate_data.py:*)",
+      "Bash(python3 skills/commerce-intel/scripts/eda.py:*)",
+      "Bash(python3 skills/commerce-intel/scripts/analyze.py:*)",
+      "Bash(python3 skills/commerce-intel/scripts/insight.py:*)",
+      "Bash(python3 skills/commerce-intel/scripts/sync_sheets.py:*)",
+      "Bash(python3 skills/commerce-intel/scripts/pdf_doc.py:*)",
+      "Bash(python3 skills/commerce-intel/scripts/diff_snapshots.py:*)",
+      "Bash(python3 skills/commerce-intel/scripts/group_variants.py:*)",
+      "Bash(python3 skills/commerce-intel/scripts/plan_sample.py:*)",
+      "Bash(python3 data/.tools/scan_market_any.py:*)",
+      "Bash(python3 data/.tools/snap_ranking_any.py:*)",
+      "Bash(python3 data/.tools/classify_fit.py:*)"
+    ]
+  }
+}
