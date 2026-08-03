@@ -140,7 +140,7 @@ def build(db_path, contexts, ai_notes=None):
     strong = _select([h for h in hyps if h["verdict"] == "strong"], STRONG_MAX)
     weak = _select([h for h in hyps if h["verdict"] == "weak"], WEAK_MAX)
     rejected = [h for h in hyps if h["verdict"] == "rejected"]
-    folded = len(res["data"]["items"]) - len(an.style_rows(res["data"]["items"]))
+    folded = len(res["data"]["items"]) - len(an.style_rows(res["data"]["items"], proxies=res["data"]["meta"].get("proxies")))
     return {"generated": res["generated"], "plan": res["plan"], "folded_variants": folded,
             "strong": strong, "weak": weak, "rejected": rejected,
             "eda": res["eda"], "data": res["data"],
