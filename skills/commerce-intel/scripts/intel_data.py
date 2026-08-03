@@ -333,3 +333,62 @@ def build_union_rows(items):
             order.append(key)
         row["i"].append(idx)
     return [rows[k] for k in order]
+
+
+def product_series(db_path, contexts):
+    """상품별 **전체** 관측 시퀀스. collect()의 time_series와 다르다.
+
+    collect()는 화면에 그릴 목적이라 48시점으로 다운샘플하고 120계열로 자른다.
+    이 함수는 **검정용**이라 자르지 않는다 — 사건 전후 구간을 세려면 실제 관측이
+    빠짐없이 있어야 하고, 다운샘플된 계열로 이중차분을 하면 없는 구간을 만들어낸다.
+
+    반환: {(site, product_id): [{observed_at, price_sale, like_count, review_count,
+                                 sold_out, rank}, ...]}  — 시각 오름차순
+    """
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    where, params = "", []
+    if contexts:
+        where = " WHERE context IN (%s)" % ",".join("?" * len(contexts))
+        params = list(contexts)
+    rows = conn.execute(
+        "SELECT site, product_id, observed_at, price_sale, like_count, review_count, "
+        "sold_out, rank FROM observations%s ORDER BY site, product_id, observed_at"
+        % where, params).fetchall()
+    conn.close()
+    out = {}
+    for r in rows:
+        out.setdefault((r["site"], r["product_id"]), []).append(dict(r))
+    return out
+
+
+def matched_pairs(items, metric):
+    """플랫폼 간 **같은 상품** 쌍. 쌍체 비교용.
+
+    독립 두 집단으로 플랫폼을 비교하면 상품 구성 차이가 섞인다 — 한쪽에 비싼 아우터가
+    많으면 "그 플랫폼이 비싸다"가 나온다. 같은 상품끼리 짝지으면 그 교란이 사라진다.
+
+    매칭은 정규화 상품명 완전일치(match_key)뿐이다 — 리포트 전체가 쓰는 규칙 하나.
+
+    반환: {(siteA, siteB): [(valueA, valueB, name), ...]}
+    """
+    by_key = {}
+    for it in items:
+        if it.get(metric) is None:
+            continue
+        key = match_key(it.get("name"))
+        if not key:
+            continue
+        # 같은 사이트에 같은 키가 여럿이면(컬러 변형 등) 첫 건을 대표로 쓴다.
+        # 여기서 여러 건을 평균 내면 한쪽만 변형이 많을 때 값이 왜곡된다.
+        by_key.setdefault(key, {}).setdefault(it["site"], it)
+    pairs = {}
+    for key, per_site in by_key.items():
+        sites = sorted(per_site)
+        for i in range(len(sites)):
+            for j in range(i + 1, len(sites)):
+                a, b = sites[i], sites[j]
+                pairs.setdefault((a, b), []).append(
+                    (per_site[a][metric], per_site[b][metric],
+                     per_site[a].get("name") or key))
+    return pairs

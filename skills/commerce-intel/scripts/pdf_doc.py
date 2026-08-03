@@ -259,7 +259,9 @@ class Doc:
         cw = self._col_widths(len(header), widths)
         data = [[Paragraph(b(esc(h)), self.s["cellhead"]) for h in header]]
         for r in rows:
-            data.append([Paragraph(esc("—" if v is None or v == "" else v), self.s["cell"])
+            # 셀도 마크다운 굵게를 받는다 — para()·card()만 지원하면 표에서만 별표가
+            # 그대로 인쇄돼 같은 문서 안에서 표기가 갈린다(2026-08-03 실측)
+            data.append([Paragraph(md(esc("—" if v is None or v == "" else v)), self.s["cell"])
                          for v in r])
         t = Table(data, colWidths=cw, repeatRows=1)   # 페이지 넘어가면 머리행 반복
         style = [
