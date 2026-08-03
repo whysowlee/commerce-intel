@@ -393,7 +393,8 @@ POST https://like.musinsa.com/like/api/v2/liketypes/brand/counts
 리포트가 조용히 틀린다.
 
 **`view_count`는 `null`로 두고, 원문을 `view_count_display`에 문자열 그대로 담는다.**
-`build_report.py`가 문구 그대로 싣고 순위 차트에서는 뺀다.
+리포트는 그 문구를 그대로 싣고 **수치 축에서는 뺀다** — 구간 표기는 정수로 바꿀 수
+없어서(오차 무한) 분석 축이 되지 못한다(db-contract §1 값 규칙).
 둘 다 채우면 `validate_data.py`가 경고한다.
 
 > 2026-07-30 부기: 구간 표기의 **원시 정수를 주는 API를 찾았다**(§4-1 `stat.pageViewTotal`,

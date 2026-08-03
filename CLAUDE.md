@@ -29,9 +29,12 @@
 ```
 skills/                   intel 정본. 배포 단위 (package.sh가 이걸 묶는다)
 ├── commerce-intel/       오케스트레이터 — 재사용 판정·DB 적재·시트 미러·리포트·검수.
-│   ├── references/       db-contract · story-catalog · analysis-report · sheets-sync · report-spec
-│   └── scripts/          intel_db(정본 DB) · sync_sheets · build_analysis_report(대시보드)
-│                         · 승계 4종(validate_data · build_report · diff_snapshots · group_variants)
+│   ├── references/       db-contract · story-catalog · insight-spec · sheets-sync · proxy-extraction
+│   └── scripts/          intel_db(정본 DB) · sync_sheets · intel_data(데이터 층)
+│                         · eda → analyze → insight(5관문·PDF 2층) · pdf_doc · chart · stat_playbook
+│                         · validate_data · diff_snapshots · group_variants · plan_sample
+│                         ※ build_report·build_analysis_report·report_ui·lint_analysis_html은
+│                           D27로 폐기(배포 제외). 회귀 82건이 아직 그 출력을 고정해 저장소에만 존치
 ├── platform-musinsa/     전용 플랫폼 스킬 3종 — SKILL.md + references/adapter.md(실측)
 ├── platform-29cm/        플랫폼 스킬은 데이터 계약 JSON 생산만 안다. DB·분석은 모른다
 ├── platform-ownmall/     자사몰 엔진 무관(D9) — engine-detect/cafe24/shopify(미검증)/unknown

@@ -58,7 +58,7 @@ commerce-research/
 │   └── report-spec.md        # 리포트 섹션 구성
 ├── scripts/
 │   ├── validate_data.py      # 수집 JSON 검증 → 종료 코드로 진행 여부 판단
-│   ├── build_report.py       # 수집/diff JSON → 단일 HTML 리포트
+│   ├── insight.py            # DB → 인사이트·상세 PDF 2층 (D27 — HTML 폐기)
 │   └── diff_snapshots.py     # 랭킹 스냅샷 기간 비교
 └── assets/
     └── report-template.html  # 코드 실행이 안 되는 환경용 구조 템플릿
@@ -77,14 +77,15 @@ S=commerce-research/scripts
 python3 $S/validate_data.py data/raw/musinsa-brand-linesheet-인사일런스-20260729-1400.json \
     --json data/validation.json
 
-# 2. 리포트 생성 (여러 사이트를 함께 주면 플랫폼 비교가 붙는다)
-python3 $S/build_report.py data/raw/*.json --validation data/validation.json \
-    --out output/linesheet.html
+# 2. 적재 후 리포트 생성 (PDF 2층 — 인사이트 + 상세)
+python3 $S/intel_db.py load data/raw/*.json
+python3 $S/insight.py --db data/intel.db --context "brand:<브랜드>" \
+    --target "<브랜드>" --out output/
 
 # 3. 랭킹 기간 비교 — 종료 코드 1이면 스냅샷이 1개 이하라 비교 불가
 python3 $S/diff_snapshots.py data/snapshots --site musinsa --target 바지 \
     --from 2026-03-01 --to 2026-03-31 --out data/diff.json
-python3 $S/build_report.py data/diff.json --out output/ranking-diff.html
+# diff.json은 스냅샷 비교 산출이다 — 리포트는 위 insight.py가 DB에서 낸다
 ```
 
 ## 랭킹 스냅샷 축적 (스토리3)
