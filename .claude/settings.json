@@ -6,13 +6,14 @@
     "skills/commerce-intel/scripts/(저장소 루트 개발). SKILL.md 실측 기준.",
     "제외: build_report·build_analysis_report·lint_analysis_html 은 D27로 폐기된 HTML",
     "경로다(package.sh가 배포에서 제외). D25·D20의 존치 문구는 D27이 폐기한 결정의 본문.",
-    "deny: intel_db merge/import-snapshots 는 정본 DB를 덮으므로 승인 유지(deny > allow).",
+    "deny: intel_db.py 는 **스크립트 통째로** 승인 유지(deny > allow). 서브커맨드 deny는",
+    "인자 순서로 우회된다 — `--db X merge Y` 는 `merge:*` 프리픽스에 안 걸린다(실측).",
+    "체이닝 안전: Claude Code가 셸 연산자로 서브커맨드를 쪼개 각각 판정한다(공식 문서).",
     "한계: 팀원이 ~/.claude/skills/ 로 설치하면 홈 절대경로라 이 프리픽스에 안 맞는다",
     "— 팀원용 스니펫은 README 안내가 필요하다."
   ],
   "permissions": {
     "allow": [
-      "Bash(python3 scripts/intel_db.py:*)",
       "Bash(python3 scripts/validate_data.py:*)",
       "Bash(python3 scripts/eda.py:*)",
       "Bash(python3 scripts/analyze.py:*)",
@@ -22,7 +23,6 @@
       "Bash(python3 scripts/diff_snapshots.py:*)",
       "Bash(python3 scripts/group_variants.py:*)",
       "Bash(python3 scripts/plan_sample.py:*)",
-      "Bash(python3 ../commerce-intel/scripts/intel_db.py:*)",
       "Bash(python3 ../commerce-intel/scripts/validate_data.py:*)",
       "Bash(python3 ../commerce-intel/scripts/eda.py:*)",
       "Bash(python3 ../commerce-intel/scripts/analyze.py:*)",
@@ -32,7 +32,6 @@
       "Bash(python3 ../commerce-intel/scripts/diff_snapshots.py:*)",
       "Bash(python3 ../commerce-intel/scripts/group_variants.py:*)",
       "Bash(python3 ../commerce-intel/scripts/plan_sample.py:*)",
-      "Bash(python3 skills/commerce-intel/scripts/intel_db.py:*)",
       "Bash(python3 skills/commerce-intel/scripts/validate_data.py:*)",
       "Bash(python3 skills/commerce-intel/scripts/eda.py:*)",
       "Bash(python3 skills/commerce-intel/scripts/analyze.py:*)",
@@ -50,12 +49,9 @@
       "Bash(python3 ../../data/.tools/classify_fit.py:*)"
     ],
     "deny": [
-      "Bash(python3 scripts/intel_db.py merge:*)",
-      "Bash(python3 scripts/intel_db.py import-snapshots:*)",
-      "Bash(python3 ../commerce-intel/scripts/intel_db.py merge:*)",
-      "Bash(python3 ../commerce-intel/scripts/intel_db.py import-snapshots:*)",
-      "Bash(python3 skills/commerce-intel/scripts/intel_db.py merge:*)",
-      "Bash(python3 skills/commerce-intel/scripts/intel_db.py import-snapshots:*)"
+      "Bash(python3 scripts/intel_db.py:*)",
+      "Bash(python3 ../commerce-intel/scripts/intel_db.py:*)",
+      "Bash(python3 skills/commerce-intel/scripts/intel_db.py:*)"
     ]
   }
 }

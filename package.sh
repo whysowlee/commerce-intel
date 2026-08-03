@@ -25,14 +25,20 @@ EXCLUDE_HTML=(
     'skills/commerce-intel/references/report-spec.md'
 )
 
-echo "[1/3] 회귀 테스트"
+echo "[1/4] 권한 파일 최신 확인"
+python3 tools/gen_permissions.py --check || {
+    echo ".claude/settings.json이 정본 목록과 다르다 — python3 tools/gen_permissions.py 로 재생성하라." >&2
+    exit 1
+}
+
+echo "[2/4] 회귀 테스트"
 python3 tests/run_tests.py > /dev/null || {
     echo "테스트 실패 — 패키징을 중단한다. python3 tests/run_tests.py 로 확인할 것." >&2
     exit 1
 }
 echo "      통과"
 
-echo "[2/3] PDF 경로 스모크"
+echo "[3/4] PDF 경로 스모크"
 python3 -c "import reportlab" 2>/dev/null || {
     echo "reportlab이 없다 — PDF 리포트를 만들 수 없다." >&2
     echo "    python3 -m pip install reportlab" >&2
@@ -41,7 +47,7 @@ python3 -c "import reportlab" 2>/dev/null || {
 python3 skills/commerce-intel/scripts/pdf_doc.py > /dev/null
 echo "      통과 (한글 렌더 포함)"
 
-echo "[3/3] 압축"
+echo "[4/4] 압축"
 rm -rf dist
 mkdir -p dist
 find skills -name '.DS_Store' -delete
