@@ -1,0 +1,61 @@
+{
+  "_comment": [
+    "commerce-intel 파이프라인 스크립트 실행 allowlist (팀 공유, git 추적).",
+    "**손으로 고치지 마라** — tools/gen_permissions.py 의 목록을 고쳐 재생성한다.",
+    "경로 3형태: scripts/(오케스트레이터) · ../commerce-intel/scripts/(4단 스킬) ·",
+    "skills/commerce-intel/scripts/(저장소 루트 개발). SKILL.md 실측 기준.",
+    "제외: build_report·build_analysis_report·lint_analysis_html 은 D27로 폐기된 HTML",
+    "경로다(package.sh가 배포에서 제외). D25·D20의 존치 문구는 D27이 폐기한 결정의 본문.",
+    "deny: intel_db merge/import-snapshots 는 정본 DB를 덮으므로 승인 유지(deny > allow).",
+    "한계: 팀원이 ~/.claude/skills/ 로 설치하면 홈 절대경로라 이 프리픽스에 안 맞는다",
+    "— 팀원용 스니펫은 README 안내가 필요하다."
+  ],
+  "permissions": {
+    "allow": [
+      "Bash(python3 scripts/intel_db.py:*)",
+      "Bash(python3 scripts/validate_data.py:*)",
+      "Bash(python3 scripts/eda.py:*)",
+      "Bash(python3 scripts/analyze.py:*)",
+      "Bash(python3 scripts/insight.py:*)",
+      "Bash(python3 scripts/sync_sheets.py:*)",
+      "Bash(python3 scripts/pdf_doc.py:*)",
+      "Bash(python3 scripts/diff_snapshots.py:*)",
+      "Bash(python3 scripts/group_variants.py:*)",
+      "Bash(python3 scripts/plan_sample.py:*)",
+      "Bash(python3 ../commerce-intel/scripts/intel_db.py:*)",
+      "Bash(python3 ../commerce-intel/scripts/validate_data.py:*)",
+      "Bash(python3 ../commerce-intel/scripts/eda.py:*)",
+      "Bash(python3 ../commerce-intel/scripts/analyze.py:*)",
+      "Bash(python3 ../commerce-intel/scripts/insight.py:*)",
+      "Bash(python3 ../commerce-intel/scripts/sync_sheets.py:*)",
+      "Bash(python3 ../commerce-intel/scripts/pdf_doc.py:*)",
+      "Bash(python3 ../commerce-intel/scripts/diff_snapshots.py:*)",
+      "Bash(python3 ../commerce-intel/scripts/group_variants.py:*)",
+      "Bash(python3 ../commerce-intel/scripts/plan_sample.py:*)",
+      "Bash(python3 skills/commerce-intel/scripts/intel_db.py:*)",
+      "Bash(python3 skills/commerce-intel/scripts/validate_data.py:*)",
+      "Bash(python3 skills/commerce-intel/scripts/eda.py:*)",
+      "Bash(python3 skills/commerce-intel/scripts/analyze.py:*)",
+      "Bash(python3 skills/commerce-intel/scripts/insight.py:*)",
+      "Bash(python3 skills/commerce-intel/scripts/sync_sheets.py:*)",
+      "Bash(python3 skills/commerce-intel/scripts/pdf_doc.py:*)",
+      "Bash(python3 skills/commerce-intel/scripts/diff_snapshots.py:*)",
+      "Bash(python3 skills/commerce-intel/scripts/group_variants.py:*)",
+      "Bash(python3 skills/commerce-intel/scripts/plan_sample.py:*)",
+      "Bash(python3 data/.tools/scan_market_any.py:*)",
+      "Bash(python3 data/.tools/snap_ranking_any.py:*)",
+      "Bash(python3 data/.tools/classify_fit.py:*)",
+      "Bash(python3 ../../data/.tools/scan_market_any.py:*)",
+      "Bash(python3 ../../data/.tools/snap_ranking_any.py:*)",
+      "Bash(python3 ../../data/.tools/classify_fit.py:*)"
+    ],
+    "deny": [
+      "Bash(python3 scripts/intel_db.py merge:*)",
+      "Bash(python3 scripts/intel_db.py import-snapshots:*)",
+      "Bash(python3 ../commerce-intel/scripts/intel_db.py merge:*)",
+      "Bash(python3 ../commerce-intel/scripts/intel_db.py import-snapshots:*)",
+      "Bash(python3 skills/commerce-intel/scripts/intel_db.py merge:*)",
+      "Bash(python3 skills/commerce-intel/scripts/intel_db.py import-snapshots:*)"
+    ]
+  }
+}
