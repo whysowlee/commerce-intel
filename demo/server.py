@@ -33,8 +33,7 @@ RAW = REPO / "data" / "raw"
 OUTPUT = REPO / "output"
 DEMO_LOGS = REPO / "data" / "demo-logs" / "jobs.jsonl"  # git 미추적(data/*)
 INTEL_DB = REPO / "skills" / "commerce-intel" / "scripts" / "intel_db.py"
-BUILD_ANALYSIS = REPO / "skills" / "commerce-intel" / "scripts" / "build_analysis_report.py"
-BUILD_REPORT = REPO / "skills" / "commerce-intel" / "scripts" / "build_report.py"
+INSIGHT = REPO / "skills" / "commerce-intel" / "scripts" / "insight.py"
 SYNC_SHEETS = REPO / "skills" / "commerce-intel" / "scripts" / "sync_sheets.py"
 VALIDATE = REPO / "skills" / "commerce-intel" / "scripts" / "validate_data.py"
 
@@ -593,31 +592,24 @@ def step4(contexts, sid):
         ts = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + job["id"]
         OUTPUT.mkdir(exist_ok=True)
         reports = []
-        # ① 라인시트 (build_report.py — data/raw 수집 원본이 입력).
-        #    brand 문맥에만 재료가 있다. 재료가 없으면 건너뛰고 대시보드만 만든다.
-        for brand in [c.split(":", 1)[1] for c in contexts if c.startswith("brand:")]:
-            inputs = linesheet_inputs(brand)
-            if not inputs:
-                log(job, f"· `data/raw/`에 {brand} 라인시트 수집 원본이 없다 — 라인시트는 건너뛴다")
-                continue
-            out = OUTPUT / f"linesheet-demo-{_slug(brand)}-{ts}.html"
-            log(job, f"▶ 라인시트 리포트 생성 — {brand}, 수집 파일 {len(inputs)}개: "
-                     + ", ".join(p.name for p in inputs))
-            rc, _ = run_script(job, ["python3", str(BUILD_REPORT)] + [str(p) for p in inputs]
-                               + ["--out", str(out), "--title", f"{brand} 라인시트"])
-            if rc != 0 or not out.exists():
-                raise RuntimeError(f"라인시트 생성 실패: {brand} (코드 {rc})")
-            reports.append({"url": f"/output/{out.name}", "label": f"{brand} 라인시트"})
-        # ② 분석 대시보드 (build_analysis_report.py — DB가 입력). 문맥 종류와 무관하게 항상 만든다.
-        out = OUTPUT / f"analysis-demo-{ts}.html"
-        log(job, "▶ 분석 대시보드 생성")
-        cmd = ["python3", str(BUILD_ANALYSIS), "--db", str(DB), "--out", str(out)]
+        # 인사이트 PDF 2층 (insight.py — DB가 입력). HTML 리포트는 D27로 폐기됐다.
+        # 문맥마다 따로 낸다 — 대상이 다르면 리포트도 다르다.
         for c in contexts:
-            cmd += ["--context", c]
-        rc, _ = run_script(job, cmd)
-        if rc != 0 or not out.exists():
-            raise RuntimeError(f"분석 대시보드 생성 실패 (코드 {rc})")
-        reports.append({"url": f"/output/{out.name}", "label": "분석 대시보드"})
+            target = c.split(":", 1)[1] if ":" in c else c
+            log(job, f"▶ 인사이트 생성 — {target} (EDA → 방법론 결정 → 5관문 → PDF 2층)")
+            rc, _ = run_script(job, ["python3", str(INSIGHT), "--db", str(DB),
+                                     "--context", c, "--target", target,
+                                     "--out", str(OUTPUT)])
+            if rc != 0:
+                raise RuntimeError(f"인사이트 생성 실패: {target} (코드 {rc})")
+            # insight.py는 파일명에 자기 타임스탬프를 쓴다 — 방금 만든 것을 집어낸다
+            safe = target.replace("/", "-").replace(":", "-")
+            for kind, label in (("insight", "인사이트"), ("detail", "상세 근거")):
+                hits = sorted(OUTPUT.glob(f"{kind}-{safe}-*.pdf"),
+                              key=lambda f: f.stat().st_mtime)
+                if hits:
+                    reports.append({"url": f"/output/{hits[-1].name}",
+                                    "label": f"{target} {label}"})
         with JOBS_LOCK:
             job["result"] = {"reports": reports}
         log(job, f"✅ 생성 완료 {len(reports)}개 — "
@@ -757,10 +749,13 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/output/"):
             # 브라우저가 한글 파일명을 퍼센트 인코딩해 보내므로 먼저 푼다
             name = os.path.basename(unquote(self.path))
-            if not re.fullmatch(r"[\w.\-]+\.html", name):
+            if not re.fullmatch(r"[\w.\-가-힣 ]+\.(html|pdf)", name):
                 self.send_error(400)
                 return
-            self._file(OUTPUT / name, "text/html; charset=utf-8")
+            # PDF를 text/html로 내보내면 브라우저가 원문을 텍스트로 뿌린다
+            ctype = ("application/pdf" if name.lower().endswith(".pdf")
+                     else "text/html; charset=utf-8")
+            self._file(OUTPUT / name, ctype)
         else:
             self.send_error(404)
 

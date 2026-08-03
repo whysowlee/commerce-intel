@@ -100,6 +100,24 @@ MODULES = [
 MODULE_IDS = [m[0] for m in MODULES]
 
 
+MAX_TREND_POINTS = 48   # 시계열에 그릴 최대 시점 수 (D24)
+
+
+def downsample_indices(count, limit=MAX_TREND_POINTS):
+    """시점이 많으면 **균등 구간 대표만** 남긴다 — 평균 내지 않는다(D24).
+
+    평균을 내면 없는 관측을 만들어내는 셈이고, 순위 축에서는 순위권 밖 구간이
+    보간돼 "없는 순위"를 주장하게 된다. 대표 시점만 뽑고 **첫·끝은 반드시 포함**한다.
+
+    build_report.py(D27 폐기)에 있던 함수를 데이터 층으로 옮겼다 — 규칙이 사라지면
+    안 되고, 인라인으로 묻혀 있으면 검증도 참조도 되지 않는다.
+    """
+    if count <= limit:
+        return list(range(count))
+    idx = [round(i * (count - 1) / (limit - 1)) for i in range(limit)]
+    return sorted(set(idx))
+
+
 def numeric_axes(data):
     """값이 하나라도 있는 수치 축. 전부 null인 축으로는 차트를 만들지 않는다."""
     fields = [f for f, _ in AXES] + [
@@ -251,11 +269,9 @@ def collect(db_path, contexts):
         stamps_set.add(r["observed_at"])
         per.setdefault(key, {})[r["observed_at"]] = r
     stamps = sorted(stamps_set)
-    # 시점 48개 초과면 균등 구간 대표 시점만 그린다(평균 금지 — 기존 규칙, 첫·끝 포함)
-    MAXP = 48
-    if len(stamps) > MAXP:
-        idx = [round(i * (len(stamps) - 1) / (MAXP - 1)) for i in range(MAXP)]
-        stamps = [stamps[i] for i in sorted(set(idx))]
+    # 시점이 많으면 균등 구간 대표만 그린다(평균 금지 — D24, 첫·끝 포함)
+    if len(stamps) > MAX_TREND_POINTS:
+        stamps = [stamps[i] for i in downsample_indices(len(stamps))]
     series = []
     for key, byt in per.items():
         pts = [byt.get(s) for s in stamps]

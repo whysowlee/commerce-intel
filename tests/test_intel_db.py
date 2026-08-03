@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""intel_db.py · build_analysis_report.py 회귀 테스트.
+"""intel_db.py · 데이터 층·차트 회귀 테스트.
 
     python3 tests/test_intel_db.py
 
@@ -198,6 +198,125 @@ def chart_tests():
           len(chart.missing_bar([{"label": "x"}]).contents) == 0)
 
 
+
+
+def _single_stamp_has_no_series():
+    """시점이 하나뿐인 DB에서 collect()가 time_series를 만들지 않는지 (B4 이식).
+
+    "스냅샷 1개면 변화 분석을 하지 않는다"는 규칙은 리포트 문구가 아니라 데이터 층의
+    계약이다 — 시점 2개 이상인 상품만 시계열에 담긴다.
+    """
+    import sqlite3
+    import tempfile as _tf
+    sys.path.insert(0, str(SCRIPTS))
+    import intel_data
+    import importlib
+    intel_db = importlib.import_module("intel_db")
+    tmp = Path(_tf.mkdtemp()) / "one.db"
+    conn = intel_db.connect(str(tmp))
+    conn.execute("INSERT INTO products (site, product_id, name) VALUES ('s','1','A')")
+    conn.execute("INSERT INTO observations (site, product_id, observed_at, context, "
+                 "price_sale, like_count) VALUES ('s','1','2026-01-01 00:00:00','brand:x',100,5)")
+    conn.commit()
+    conn.close()
+    d = intel_data.collect(str(tmp), ["brand:x"])
+    shutil.rmtree(tmp.parent, ignore_errors=True)
+    return not d.get("time_series")
+
+
+def data_rule_tests():
+    """B계열에서 이식한 **데이터 규칙** (HTML 폐기와 무관하게 지켜야 하는 것들).
+
+    구 run_tests.py의 B계열 82건은 대부분 HTML 레이아웃 검증(칩·정렬·섹션 유무)이라
+    D27로 함께 폐기됐다. 그러나 **소수는 형식이 아니라 데이터 규칙**이었고, 그것들이
+    HTML 문자열 파싱에 얹혀 있어 생성기를 지우면 함께 사라질 참이었다.
+
+    여기로 옮긴 것은 규칙 자체를 데이터 층에서 검증한다 — 산출이 HTML이든 PDF든
+    같은 답이 나와야 한다.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import intel_data
+
+    m = json.loads((FIX / "musinsa-brand-linesheet-good.json").read_text())["items"]
+    c = json.loads((FIX / "29cm-brand-linesheet-good.json").read_text())["items"]
+    for it in m:
+        it["site"] = "musinsa"
+    for it in c:
+        it["site"] = "29cm"
+    both = m + c
+
+    # B1m — 매칭된 상품은 합집합에서 1행이다 (단순 합 38 ≠ 합집합 28)
+    rows = intel_data.build_union_rows(both)
+    check("B1m 합집합: 매칭된 상품은 1행 (38건 → 28행)",
+          rows is not None and len(rows) == 28,
+          "행수 %s" % (len(rows) if rows else None))
+    check("B1m2 단순 합과 합집합이 다르다는 것이 계산으로 드러난다",
+          len(both) == 38 and len(rows) < len(both))
+
+    # B1n — 입점 구분: 양쪽/한쪽 단독이 행에서 갈린다
+    sites_per_row = [{both[i]["site"] for i in r["i"]} for r in rows]
+    both_n = sum(1 for s_ in sites_per_row if len(s_) == 2)
+    solo_m = sum(1 for s_ in sites_per_row if s_ == {"musinsa"})
+    solo_c = sum(1 for s_ in sites_per_row if s_ == {"29cm"})
+    check("B1n 입점이 세 가지로 갈린다 (양쪽 10 · 무신사 단독 14 · 29CM 단독 4)",
+          (both_n, solo_m, solo_c) == (10, 14, 4),
+          "%s" % ((both_n, solo_m, solo_c),))
+
+    # B1s — 매칭은 정규화 이름 완전일치뿐이다(유사도·가격 보조 금지)
+    # EVIDENCE §5: 다른 상품인데 정가가 같아 가격이 오탐을 확증한 사례가 있다
+    check("B1s 이름이 다르면 가격이 같아도 매칭되지 않는다",
+          intel_data.match_key("레터링 그래픽 티셔츠") != intel_data.match_key("스탠실 그래픽 티셔츠"))
+    check("B1s2 괄호 안 옵션·유통 표기는 매칭에서 뺀다",
+          intel_data.match_key("REYA LACE TOP (5 COLORS)")
+          == intel_data.match_key("REYA LACE TOP (PINK)"))
+
+    # B1z — 반응 지표가 전부 null인 플랫폼은 비교 축에서 빠진다(자사몰)
+    own = [dict(i, site="own.com", like_count=None, review_count=None, rating=None)
+           for i in m[:5]]
+    data = {"items": both + own, "meta": {"proxies": []}}
+    axes = intel_data.numeric_axes(data)
+    check("B1z 값이 하나라도 있는 축만 남는다", "price_sale" in axes)
+    none_data = {"items": [dict(i, like_count=None) for i in both], "meta": {"proxies": []}}
+    check("B1z2 전부 null인 축은 분석 축에서 빠진다",
+          "like_count" not in intel_data.numeric_axes(none_data))
+
+    # B1d·B1g — 미노출(null)과 구간 표기는 정수 축이 되지 못한다
+    check("B1d·B1g 구간 표기는 정수 칸이 null이다 (오차 무한 — 축이 못 된다)",
+          all(i.get("view_count") is None
+              for i in both if i.get("view_count_display")))
+
+    # ── 2차 이식: 문구 뒤에 깔린 규칙들 (B1q·B2h·B4·D4b) ──────────────────
+    # 구 테스트는 리포트 문구로 확인했다("단독 입점 상품은 이 비교에서 빠진다").
+    # 문구는 형식이지만 그 밑의 규칙은 형식과 무관하다 — 규칙을 직접 검증한다.
+
+    # B1q — 플랫폼 반응 비교는 **매칭된 상품만** 센다(단독 입점은 빠진다).
+    # 안 그러면 카탈로그가 큰 쪽이 이기는 비교가 된다.
+    pairs = intel_data.matched_pairs(both, "like_count")
+    paired_keys = set()
+    for (sa, sb), lst in pairs.items():
+        paired_keys |= {n for _, _, n in lst}
+    check("B1q 쌍체 비교는 양쪽에 다 있는 상품만 센다",
+          pairs and all(len(lst) <= 10 for lst in pairs.values()),
+          "쌍 %s" % {k: len(v) for k, v in pairs.items()})
+
+    # B2h — 후기 0건과 평점 미노출은 다른 값이다(0을 결측으로, 결측을 0으로 세지 않는다)
+    mixed = [dict(both[0], review_count=0, rating=None),
+             dict(both[1], review_count=5, rating=4.5)]
+    data_mixed = {"items": mixed, "meta": {"proxies": []}}
+    axes_mixed = intel_data.numeric_axes(data_mixed)
+    check("B2h 후기 0건은 값이 있는 것이다 (축에 남는다)", "review_count" in axes_mixed)
+    check("B2h2 평점은 값이 하나라도 있으면 축에 남는다", "rating" in axes_mixed)
+    all_null_rating = {"items": [dict(i, rating=None) for i in mixed],
+                       "meta": {"proxies": []}}
+    check("B2h3 전부 미노출인 평점은 축에서 빠진다 (0으로 세지 않는다)",
+          "rating" not in intel_data.numeric_axes(all_null_rating))
+
+    # B4 — 시점이 하나면 변화를 말할 수 없다. 시계열은 시점 2개 이상인 상품만 담는다.
+    check("B4 단일 시점 데이터로 시계열을 만들지 않는다",
+          _single_stamp_has_no_series())
+
+
+
 def main():
     work = Path(tempfile.mkdtemp(prefix="intel-db-test-"))
     db = str(work / "intel.db")
@@ -264,25 +383,19 @@ def main():
                                                 for v in it["attributes"].values()))
     check("TTL 0일이면 만료로 채우지 않는다", n_exp == 0, f"filled={n_exp}")
 
-    print("[4] 가격 변경 사건 + 대시보드 산출")
+    print("[4] 가격 변경 사건 (데이터 층)")
     run([SCRIPTS / "intel_db.py", "import-snapshots", FIX / "snapshots"], work, db)
-    out_html = work / "analysis.html"
-    r = run([SCRIPTS / "build_analysis_report.py", "--db", db,
-             "--out", str(out_html)], work, db)
-    check("대시보드 생성 성공", r.returncode == 0, r.stderr)
-    check("가격 변경 사건이 검출된다", "가격 변경 사건 0건" not in r.stdout, r.stdout)
-    html = out_html.read_text(encoding="utf-8")
-    for token, why in [
-        ("상관은 인과가 아니다", "정직성 문구"),
-        ("심슨의 역설", "세그먼트 경고"),
-        ("생존편향", "생존편향 경고"),
-        ('type="application/json"', "데이터 1회 임베드"),
-        ("prefers-color-scheme", "다크 모드"),
-    ]:
-        check(f"산출물에 {why}", token in html)
-    check("외부 리소스 0 (http 로드 없음)",
-          'src="http' not in html and 'href="http' not in html.replace('href="https://www.musinsa', 'X'))
-    check("구간 표기 필드(view_count)는 축 후보에 없다", '"view_count"' not in html.split("AXES=")[1][:400])
+    sys.path.insert(0, str(SCRIPTS))
+    import intel_data
+    d4 = intel_data.collect(db, None)
+    check("가격 변경 사건이 검출된다", len(d4.get("price_events") or []) > 0,
+          "사건 %d건" % len(d4.get("price_events") or []))
+    ev = (d4.get("price_events") or [{}])[0]
+    check("사건에 전후 가격과 시각이 있다",
+          all(k in ev for k in ("price_from", "price_to", "from_at", "to_at")), ev)
+    # 구 대시보드 테스트에서 이식: 구간 표기 필드는 수치 축 후보가 아니다
+    check("구간 표기 필드(view_count)는 수치 축 후보에 없다",
+          "view_count" not in intel_data.numeric_axes(d4))
 
     print("[5] 옵션(variants) 적재")
     vraw = {
@@ -337,12 +450,6 @@ def main():
     check("판정 적재 + 값 공간 밖 거부", "판정 1건 적재" in r.stdout and "거부" in r.stdout, r.stdout)
     r = run([SCRIPTS / "intel_db.py", "proxy-load", pf], work, db)
     check("proxy-load 멱등(중복 스킵)", "판정 0건 적재" in r.stdout, r.stdout)
-    px_html = work / "px.html"
-    r = run([SCRIPTS / "build_analysis_report.py", "--db", db, "--out", str(px_html)], work, db)
-    check("프록시 포함 대시보드 생성", r.returncode == 0, r.stderr)
-    html = px_html.read_text(encoding="utf-8")
-    check("px_ 열이 주입된다", '"px_name_lang"' in html)
-    check("AI 판정 표기·미판정 구분이 있다", "AI 판정" in html and "(미판정)" in html)
 
     # [6b] 새 파이프라인(eda/analyze)에서도 프록시가 축이 되는지 — D39 회귀 방어.
     # 위 [6]은 폐기 예정 HTML(build_analysis_report)만 봐서, D27 리팩터링 때 새
@@ -359,20 +466,6 @@ def main():
     nums = [f for f, _ in intel_data.num_axes(data)]
     check("num_axes는 범주 프록시를 수치축에 넣지 않는다 (name_lang은 범주형)",
           "px_name_lang" not in nums)
-
-    print("[7] AI 생성 모드 도구 (--emit-json · 린터)")
-    ej = work / "analysis.json"
-    r = run([SCRIPTS / "build_analysis_report.py", "--db", db, "--emit-json",
-             "--out", str(ej)], work, db)
-    check("--emit-json 산출", r.returncode == 0 and ej.exists(), r.stderr)
-    d = json.loads(ej.read_text(encoding="utf-8"))
-    check("JSON에 meta·items·price_events", set(d) >= {"meta", "items", "price_events"})
-    r = run([SCRIPTS / "lint_analysis_html.py", str(px_html)], work, db)
-    check("생성 대시보드는 린터 통과", r.returncode == 0, r.stdout)
-    bad = work / "bad.html"
-    bad.write_text('<html><script src="https://cdn.x/c.js"></script></html>', encoding="utf-8")
-    r = run([SCRIPTS / "lint_analysis_html.py", str(bad)], work, db)
-    check("결격 HTML은 린터 FAIL", r.returncode == 1, r.stdout)
 
     print("[8] 표본 계획 (plan_sample)")
     plan_f = work / "plan.json"
@@ -400,18 +493,14 @@ def main():
     check("표본 모드: 총계 불일치가 경고가 아니다(계획 완주로 판정)",
           "계획" in r.stdout and "오차" not in r.stdout.split("계획")[0][-200:], r.stdout[-500:])
 
-    print("[10] 템플릿 산출 (--emit-template)")
-    tpl = work / "tpl.html"
-    r = run([SCRIPTS / "build_analysis_report.py", "--emit-template",
-             "--out", str(tpl)], work, db)
-    check("템플릿 생성 성공", r.returncode == 0, r.stderr)
-    check("샘플 데이터임이 화면에 명시된다", "TEMPLATE" in tpl.read_text(encoding="utf-8"))
-
     print("[11] 팀 커버리지 조회 (check --team, D32)")
     team_coverage_tests(work, db, ctx)
 
     print("[12] 차트 렌더 (chart.py, D40)")
     chart_tests()
+
+    print("[13] 데이터 규칙 (B계열 이식 — HTML과 무관)")
+    data_rule_tests()
 
     shutil.rmtree(work, ignore_errors=True)
     print("-" * 56)

@@ -155,223 +155,14 @@ def main():
     code, log = run("validate_data.py", snap)
     check("V6 랭킹 스냅샷 검증 통과", code == 0, "exit=%d\n%s" % (code, log[-500:]))
 
-    print("\n[2] build_report.py — HTML 생성")
+    print("\n[2] (HTML 리포트 검증 — D27로 폐기, 데이터 규칙은 test_intel_db [13]으로 이식)")
 
-    code, log = run("build_report.py", fx("musinsa-brand-linesheet-good.json"),
-                    fx("29cm-brand-linesheet-good.json"),
-                    "--validation", out("v-good.json"),
-                    "--out", out("linesheet.html"))
-    check("B1 크로스 플랫폼 라인시트 생성", code == 0 and os.path.exists(out("linesheet.html")),
-          "exit=%d\n%s" % (code, log[-400:]))
-    page = read(out("linesheet.html"))
-    check("B1b 인기 상품 상위 10 섹션을 만들지 않는다 (전 상품을 좋아요로 정렬하면 같은 답)",
-          "플랫폼별 인기 상품" not in page and "상위 10 상세" not in page)
-    check("B1b2 품목별 인기 비교가 있다",
-          "플랫폼별 품목 인기" in page and "품목별 하트 합" in page and "품목별 후기 합" in page
-          and page.count("품목별 하트 합") == 2)  # 무신사·29CM 각각
-    check("B1c 무신사·29CM가 모두 나온다", "무신사" in page and "29CM" in page)
-    check("B1d 미노출 값을 추정하지 않고 표기한다", "미노출" in page)
-    check("B1g 구간 표기 조회수는 문구 그대로 싣는다",
-          "회 이상 (최근 1개월)" in page)
-    check("B1h 구간 표기 값에는 정렬 키를 주지 않는다",
-          'class="approx"' in page
-          and re.search(r'<td class="col-num" data-k="">\s*<span class="approx"', page) is not None)
-    check("B1e 외부 리소스를 부르지 않는다",
-          "http://" not in page.replace("http://www.w3.org", "")
-          or "cdn" not in page.lower(),
-          "외부 스크립트/스타일 참조 의심")
-    check("B1f 표 정렬·거르기가 붙는다", 'class="filter"' in page and "sorted-asc" in page)
-    # 상품 표에서만 따진다 — 품목 성적표는 한 행이 한 품목이라 품목명이 행 식별자이고,
-    # 거기서는 정렬이 정상이다. 규칙이 걸리는 곳은 값이 반복되는 상품 표다.
-    linesheet_head = page.split('id="t-linesheet"')[1].split("</thead>")[0]
-    check("B1i 상품 표에서 품목·입점은 정렬 열이 아니라 다중 선택 칩이다 (품목은 상위·세부 계층)",
-          'data-sort="text">카테고리' not in linesheet_head
-          and 'data-sort="text">품목' not in linesheet_head
-          and '<span class="facet-label">품목 · 대분류</span>' in page
-          and '<span class="facet-label">품목 · 중분류</span>' in page
-          and '<span class="facet-label">품목 · 소분류</span>' in page
-          and 'data-clevel="2"' in page
-          and '<span class="facet-label">입점 수식</span>' in page
-          and 'class="expr-input"' in page
-          and page.count('class="chip"') >= 2)
-
-    # ── 멀티 플랫폼 합집합·매칭 (SPEC v6 §4 스토리1) ────────────────────────
-    check("B1m 합집합 표가 나온다 (매칭된 상품은 1행)",
-          "전 상품 (플랫폼 합집합)" in page
-          # 무신사 24 + 29CM 14 = 38건이지만 10건이 매칭돼 합집합은 28행이다
-          and '<span class="table-count" id="t-linesheet-count">28행</span>' in page,
-          "합집합 행수가 28이 아니다")
-    check("B1n 입점 칼럼이 세 가지 값을 구분한다",
-          "양쪽 입점" in page and "무신사 단독" in page and "29CM 단독" in page)
-    check("B1o 헤더가 단순 합과 합집합을 구분해 싣는다",
-          "단순 합 38건" in page and "647" not in page.split("<body")[0]
-          and "28건 — 양쪽 입점 10" in page,
-          "헤더에 합집합 요약이 없다")
-    check("B1p 비교 레이어 3블록이 있다 (구 4개 축 — 커버리지+단독 성격을 합쳤다)",
-          "품목별 입점 차이" in page and "같은 상품 반응 강도 비교" in page
-          and "가격·할인 포지셔닝 차이" in page
-          and "<h2>단독 입점 상품 성격</h2>" not in page
-          and "단독 중위가" in page)
-    check("B1p2 같은 답을 두 번 그리지 않는다 (상품 표는 전 상품 하나뿐)",
-          page.count('<table id="t-linesheet"') == 1
-          and "t-price-gap" not in page
-          and "단독 입점이 많은 품목" not in page and "단독 — 품목 분포" not in page)
-    check("B1q 반응 강도는 매칭된 상품만 센다고 밝힌다",
-          "단독 입점 상품은 이 비교에서 빠진다" in page and "매칭 상품" in page)
-    check("B1r 품목 통합축의 대응 근거를 싣는다",
-          "품목 대응" in page and "니트웨어" in page and "동일 상품" in page,
-          "통합축 근거(details.axis-map)가 없다")
-    check("B1s 추정 매칭을 하지 않는다고 밝힌다",
-          "정규화 상품명 완전일치" in page and "추정 매칭" in page)
-    check("B1t 한쪽에만 있는 칸은 미노출이 아니라 —로 구분한다",
-          "그 플랫폼에 그 상품이 없다" in page and "—" in page)
-
-    # ── 플랫폼 3개 (SPEC v14 §4 스토리1) ───────────────────────────────────
-    #
-    # 규칙은 "사이트 수와 무관하게 성립해야 한다"인데, 3개가 되어야만 드러나는 버그가 있었다.
-    # 2-플랫폼 픽스처만으로는 영영 안 잡히므로 여기서 세 개를 넘긴다.
-    code, _ = run("build_report.py",
-                  fx("musinsa-brand-linesheet-good.json"),
-                  fx("29cm-brand-linesheet-good.json"),
-                  fx("insilence-brand-linesheet.json"),
-                  "--out", out("linesheet-3p.html"))
-    p3 = read(out("linesheet-3p.html"))
-
-    def coverage_sums(page):
-        """`품목별 입점 차이` 표에서 합집합 합계와 단독 합계를 읽는다."""
-        sec = page.split("품목별 입점 차이")[1].split("</section>")[0]
-        body = sec.split("<tbody>")[1].split("</tbody>")[0]
-        total = solo = 0
-        for tr in re.findall(r"<tr.*?</tr>", body, re.S):
-            cells = [re.sub(r"<[^>]+>", "", c).strip()
-                     for c in re.findall(r"<td.*?</td>", tr, re.S)]
-            if len(cells) >= 8:
-                total += int(cells[1])
-                solo += sum(int(cells[i]) for i in (5, 6, 7))
-        return total, solo
-
-    p3_total, p3_solo = coverage_sums(p3)
-    # 검산: 단독 합계 + 2곳 이상 입점 = 합집합. 구 구조는 `정확히 2곳`을 잃어 26 ≠ 28이었다.
-    check("B1v 플랫폼 3개에서 상품이 입점 표에서 사라지지 않는다",
-          code == 0 and p3_total == 28 and p3_solo == 18,
-          "합집합 %d · 단독 %d (기대 28 / 18 — 정확히 2곳 입점 4건이 빠지면 실패)"
-          % (p3_total, p3_solo))
-    check("B1w 입점 표 열이 플랫폼별 입점·단독 두 쌍이다",
-          "무신사 입점" in p3 and "29CM 입점" in p3 and "insilence.co.kr 입점" in p3
-          and "무신사 단독" in p3 and "insilence.co.kr 단독" in p3
-          and "양쪽 입점" not in p3,          # 3개일 때 '양쪽'은 틀린 말이다
-          "플랫폼별 입점/단독 열이 아니다")
-    check("B1x 3개 이상이면 '2곳 이상'과 '전 플랫폼'을 따로 센다",
-          "2곳 이상 입점" in p3 and "전 플랫폼 입점" in p3,
-          "두 값은 다른데 한 이름으로 뭉뚱그렸다")
-    check("B1y 입점 축은 불리언 수식(AND·OR·NOT·괄호)이다",
-          'facet-expr' in p3 and 'class="expr-input"' in p3
-          and 'class="chip expr-op" data-ins=" AND "' in p3
-          and 'class="chip expr-op" data-ins=" OR "' in p3
-          and 'class="chip expr-op" data-ins=" NOT "' in p3
-          and 'data-ins="insilence.co.kr"' in p3,
-          "입점 축이 수식 입력이 아니거나 연산자·플랫폼 삽입 칩이 없다")
-    check("B1z 자사몰은 반응 지표가 null이라 비교 축에서 빠진다",
-          "insilence.co.kr 좋아요" not in p3 and "insilence.co.kr 후기" not in p3
-          and "insilence.co.kr 평점" not in p3
-          # 조용히 빼면 그 플랫폼이 애초에 없었다고 읽는다 — 빠진 사실을 밝혀야 한다
-          and "노출하지 않아 수집하지 않았다" in p3,
-          "수집하지 않은 지표로 열을 만들었거나, 빠진 사실을 밝히지 않았다")
-    # 둘 다 지표를 내는 2-플랫폼 리포트에는 제외 각주가 붙으면 안 된다 (오탐 방지)
-    check("B1z2 지표를 내는 플랫폼만 있으면 제외 각주를 붙이지 않는다",
-          "노출하지 않아 수집하지 않았다" not in page,
-          "빠진 플랫폼이 없는데 제외 각주가 붙었다")
-
-    # 플랫폼이 1개면 비교 섹션을 만들지 않는다 — 빈 섹션을 내지 않는 것이 규칙이다.
-    code, log = run("build_report.py", fx("musinsa-brand-linesheet-good.json"),
-                    "--out", out("linesheet-solo.html"))
-    solo_page = read(out("linesheet-solo.html"))
-    check("B1u 플랫폼 1개면 비교 섹션을 만들지 않는다",
-          code == 0
-          and "플랫폼 비교 요약" not in solo_page
-          and "품목별 입점 커버리지 갭" not in solo_page
-          and "전 상품 (플랫폼 합집합)" not in solo_page
-          and '<span class="facet-label">카테고리 · 대분류</span>' in solo_page,
-          "단일 플랫폼 리포트에 비교 섹션이 붙었다")
-    check("B1j 품목 성적표에 규모 대비 지수가 있다",
-          "품목 성적표" in page and "규모 대비 하트" in page and "규모 대비 후기" in page
-          and 'class="th-tip"' in page)
-    check("B1l 파생 지표의 계산식이 리포트에 적혀 있다",
-          "지표 비중 ÷ 상품 수 비중" in page)
-    check("B1m 전 상품 표에 좋아요 열이 있고 정렬된다 (플랫폼이 2개면 사이트별로)",
-          re.search(r'<th class="col-num" data-sort="num">(?:<span[^>]*>)?[^<]*좋아요', page) is not None)
-
-    code, log = run("build_report.py", fx("musinsa-market-scan.json"),
-                    "--validation", out("v-scan.json"),
-                    "--out", out("scan.html"))
-    check("B2 시장 전수조사 리포트 생성", code == 0, "exit=%d\n%s" % (code, log[-400:]))
-    page = read(out("scan.html"))
-    check("B2b 리뷰 본문을 안 쓴다고 명시한다",
-          "리뷰 본문은 수집하지 않는다" in page and "평점·후기 수만" in page)
-    check("B2c 속성 분포 차트가 있다", "핏 분포" in page)
-    check("B2d 판매가 분포 차트가 있다", "판매가 분포" in page)
-    check("B2e 상품 평점 분포 차트가 있다",
-          "상품 평점 분포" in page and "평점 미노출 상품" in page)
-    check("B2f 후기 수 가중 평균 평점이 KPI에 뜬다",
-          "평균 평점" in page and "후기 수 가중" in page)
-    check("B2g 전수조사 표에도 이미지 열이 있다 (v5 결정으로 뒤집힘)",
-          '<th class="col-img"' in page and 'class="thumb' in page
-          and 'loading="lazy"' in page)
-    check("B2i 핏은 정렬 열이 아니라 다중 선택 칩이다",
-          'data-sort="text">핏' not in page
-          and '<span class="facet-label">핏</span>' in page)
-    check("B2h 후기 0건과 평점 미노출이 구분된다",
-          'data-k="0">0<' in page and "미노출" in page)
-
-    code, _ = run("build_report.py", snap, "--out", out("rank-one.html"))
-    page = read(out("rank-one.html"))
-    check("B4 스냅샷 1개면 변화 분석을 하지 않는다",
-          code == 0 and "변화 분석을 하지 않았다" in page)
-    check("B4b 실시간 지표(보는 중/구매 중) 열이 붙는다",
-          "보는 중" in page and "구매 중" in page)
-
-    code, log = run("validate_data.py", fx("musinsa-brand-linesheet-partial.json"),
-                    "--json", out("v-partial.json"))
-    code, _ = run("build_report.py", fx("musinsa-brand-linesheet-partial.json"),
-                  "--validation", out("v-partial.json"), "--out", out("partial.html"))
-    check("B5 부분 수집은 리포트 상단에 경고가 뜬다",
-          code == 0 and "부분 수집 데이터다" in read(out("partial.html")))
-
-    run("validate_data.py", fx("musinsa-brand-linesheet-broken.json"),
-        "--json", out("v-broken.json"))
-    code, _ = run("build_report.py", fx("musinsa-brand-linesheet-broken.json"),
-                  "--validation", out("v-broken.json"), "--out", out("broken.html"))
-    check("B6 결측 과다는 구조 변경 배너로 드러난다",
-          code == 0 and "사이트 구조 변경 의심" in read(out("broken.html")))
-
-    code, log = run("build_report.py", fx("musinsa-brand-linesheet-good.json"),
-                    fx("musinsa-market-scan.json"), "--out", out("mixed.html"))
-    check("B7 서로 다른 story를 섞으면 거부한다", code == 2 and "섞을 수 없다" in log,
-          "exit=%d\n%s" % (code, log[-300:]))
-
-    code, log = run("build_report.py", "--emit-template", "--out", out("template.html"))
-    template = read(out("template.html")) if code == 0 else ""
-    check("B8 폴백 템플릿을 뽑을 수 있다",
-          code == 0 and "리포트 구조 템플릿" in template, "exit=%d\n%s" % (code, log[-300:]))
-    check("B8b 템플릿이 노출값 원칙과 미노출 규칙을 안내한다",
-          "노출된 평점" in template and "미노출" in template and "approx" in template)
-    shipped = os.path.join(ROOT, "skills", "commerce-intel", "assets", "report-template.html")
-    check("B8c 배포된 템플릿이 생성기와 어긋나지 않는다",
-          os.path.exists(shipped) and read(shipped) == template,
-          "assets/report-template.html이 낡았다. "
-          "build_report.py --emit-template --out skills/commerce-intel/assets/report-template.html 로 다시 뽑을 것")
-
-    code, _ = run("build_report.py", "--out", out("noinput.html"))
-    check("B9 입력 없이 리포트를 만들려 하면 거부한다", code == 2, "exit=%d" % code)
-
-    # E-OUT-1: 사이트 텍스트에 스크립트가 섞여 와도 실행되지 않아야 한다
-    linesheet_page = read(out("linesheet.html"))
-    check("B10 사이트 텍스트의 HTML이 이스케이프된다",
-          "&lt;script&gt;" in linesheet_page
-          and linesheet_page.count("<script>") == 1,  # 리포트 자체 JS 하나뿐이어야 한다
-          "raw <script> %d개" % linesheet_page.count("<script>"))
-
-    print("\n[2.5] group_variants.py — 색상 변형 묶기")
+    # ── B 계열(HTML 리포트 검증)은 2026-08-03에 삭제됐다 ────────────────────
+    # D27로 HTML 산출을 폐기하고 생성기 4종을 실제로 지우면서 함께 들어냈다.
+    # 그 안에 있던 **데이터 규칙**(합집합 매칭·입점 구분·미노출과 0의 구분·
+    # 매칭분만 비교·단일 시점 시계열 금지)은 형식과 무관하므로
+    # tests/test_intel_db.py [13]으로 이식했다 — 13건이 HTML 없이 같은 규칙을 지킨다.
+    # 나머지는 칩·정렬·섹션 유무 같은 레이아웃 검증이라 폐기 대상이었다.
 
     scan_copy = out("scan-group.json")
     shutil.copy(fx("musinsa-market-scan.json"), scan_copy)
@@ -474,72 +265,23 @@ def main():
     check("D6 변화 0건이면 diff에 0으로 집계된다",
           code == 0 and s2.get("entered") == 0 and s2.get("exited") == 0
           and s2.get("price_change_events") == 0, "exit=%d %s" % (code, json.dumps(s2)))
-    code, _ = run("build_report.py", out("diff-same.json"), "--out", out("ranking-same.html"))
-    same_page = read(out("ranking-same.html"))
-    check("D6b 변화 없음이 명시된 리포트가 나온다",
-          code == 0 and "감지되지 않았다" in same_page
-          and "변화 없음" in same_page and 'class="delta delta-flat"' in same_page)
 
     check("D2i 급등락 임계값이 랭킹 길이의 10%(최소 3)로 계산된다",
           s["big_move_threshold"] == 3, str(s.get("big_move_threshold")))
 
-    code, log = run("build_report.py", out("diff.json"), "--out", out("ranking.html"))
-    check("D4 변화 리포트 생성", code == 0, "exit=%d\n%s" % (code, log[-400:]))
-    page = read(out("ranking.html"))
-    check("D4b 신규 진입·이탈을 따로 표로 두지 않고 끝점 축으로 흡수한다",
-          "<h2>신규 진입</h2>" not in page and "<h2>이탈</h2>" not in page
-          and "신규 진입" in page and "이탈" in page
-          and '<span class="facet-label">끝점</span>' in page)
-    check("D4b2 급상승·급하락 막대를 만들지 않는다 (표 정렬로 대체)",
-          "변동 요약" not in page and "급상승 (" not in page)
-    check("D4b3 KPI가 등장 상품·교체율이다",
-          "등장 상품" in page and "교체율" in page and "인접 스냅샷 평균 신규 유입" in page)
-    check("D4c 할인 시작이 표에 뜬다", "할인 시작" in page)
-    check("D4c3 순위·가격·할인이 한 표에 있다",
-          "상품별 추이" in page and "순위 변동" in page and "가격 변화" in page
-          and "할인율 변화" in page and "감지된 변화" in page
-          and "<h2>순위 변동</h2>" not in page)
-    check("D4c4 구간으로만 아는 사건은 관측 창을 밝힌다",
-          "사이" in page and "결석" in page and "시점 확정" in page)
-    check("D4c2 스토리3 표에 이미지 열이 있다",
-          page.count('<th class="col-img"') >= 2,  # 주 표 + 시점별 원자료
-          "col-img 헤더 %d개" % page.count('<th class="col-img"'))
-    check("D4d 순위·가격 추이 스파크라인 자리가 행마다 붙는다",
-          page.count('data-spark="rank"') >= 3 and page.count('data-spark="price"') >= 3
-          and page.count('data-spark="rank"') == page.count('data-spark="price"'))
-    check("D4e 계열 데이터를 문서에 한 번만 심는다",
-          page.count('<script id="series-data"') == 1)
-    check("D4f 추이 차트 조작부가 1~100 계열을 받는다",
-          'id="trend-n"' in page and 'min="1" max="100"' in page
-          and 'id="trend-mode"' in page and 'id="trend-host"' in page
-          and "표의 현재 정렬·필터 순서대로" in page)
-    check("D4f2 겹쳐 보기/나란히 보기 전환 기준을 밝힌다",
-          "5개까지는 겹쳐" in page and "6개 이상은 나란히" in page
-          and "인과를 주장하지 않는다" in page)
-    check("D4f3 '전 구간·일부 구간' 라벨을 쓰지 않는다 (랭킹 체류 숫자 + 끝점 배지)",
-          "일부 구간" not in page and "전 구간" not in page
-          and "랭킹 체류" in page and "기간 중만" in page)
-    check("D4g 실시간 지표는 별도 섹션이 아니라 계열 데이터에 실린다",
-          "<h2>실시간 지표 추이</h2>" not in page and '"stamps"' in page)
+    # D4~D6의 리포트 표시 검증(신규 진입·이탈 축·급등락 막대·할인 시작 열 등)은
+    # HTML 레이아웃이라 D27 폐기와 함께 들어냈다. **diff 계산 자체**는 위 D1~D6이
+    # diff.json으로 검증한다 — 끝점·교체율·급등락 임계는 형식과 무관한 데이터 규칙이다.
 
-    payload = json.loads(
-        re.search(r'<script id="series-data"[^>]*>(.*?)</script>', page, re.S).group(1)
-    )
-    obs = sum(len(v["p"]) for v in payload["products"].values())
-    check("D4h 계열 JSON은 관측된 시점만 담는다 (널로 채우지 않는다)",
-          obs > 0 and obs < len(payload["products"]) * len(payload["stamps"]),
-          "관측점 %d / 전 칸 %d" % (obs, len(payload["products"]) * len(payload["stamps"])))
-    check("D4i 표에 등장 상품 전부가 실린다",
-          len(payload["products"]) == page.count('<tr data-f0'),
-          "JSON %d / 행 %d" % (len(payload["products"]), page.count('<tr data-f0')))
-
+    # D7 — 시계열 다운샘플은 D24 규범이다. build_report(폐기)에 있던 함수를
+    # intel_data로 옮겼고, 규칙은 그대로다: 균등 구간 대표만·평균 금지·첫끝 포함.
     sys.path.insert(0, SCRIPTS)
-    import build_report as br
-    ds = br.downsample_indices(336)
+    import intel_data as idat
+    ds = idat.downsample_indices(336)
     check("D7 추이 다운샘플 — 48구간 대표만 남는다",
-          len(ds) <= br.MAX_TREND_POINTS + 1 and ds[0] == 0 and ds[-1] == 335
+          len(ds) <= idat.MAX_TREND_POINTS + 1 and ds[0] == 0 and ds[-1] == 335
           and ds == sorted(set(ds)), "len=%d" % len(ds))
-    check("D7b 48개 이하면 전부 그린다", br.downsample_indices(48) == list(range(48)))
+    check("D7b 48개 이하면 전부 그린다", idat.downsample_indices(48) == list(range(48)))
 
     print("\n%s" % ("-" * 56))
     print("통과 %d · 실패 %d" % (len(PASSED), len(FAILED)))

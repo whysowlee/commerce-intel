@@ -14,7 +14,7 @@ INTEL_DEMO_DB=/path/copy.db python3 demo/server.py   # 리허설용 DB 복사본
 | ① 수집 요청 | 자연어 | `claude -p` 헤드리스가 해석 — 재사용 판정(TTL·스킵 창)이 먼저고, 필요할 때만 수집(랭킹은 `snap_ranking_any.py`, 라인시트는 플랫폼 스킬 절차) |
 | ② DB 업데이트 | 버튼 2개 | **정본 DB 적재**: `intel_db.py import-snapshots`(중복 스킵·멱등) + `load`(①의 라인시트 등) + 안전망(보고 안 된 `data/raw/` 라인시트를 검증 후 적재) + `stats`. **구글 시트 업로드**: `sync_sheets.py`(단방향 미러) — **정본 적재를 마쳐야 활성화되고**(화면·서버 양쪽에서 검사), 실패해도 정본은 유효하며 다음 업로드가 따라잡는다 |
 | ③ 분석 요청 | 자연어 | `claude -p`가 문맥 선정 → `--emit-json`으로 데이터 확인 → 소견 요약 |
-| ④ 레포트 생성 | 문맥(③에서 자동 입력, 비면 가장 최근 수집 문맥) | `build_analysis_report.py`(분석 대시보드 — DB)는 항상, `brand:…` 문맥이면 `build_report.py`(라인시트 — `data/raw/`의 사이트별 최신 수집분)도 함께 → `/output/…html` 링크 1~2개 |
+| ④ 리포트 생성 | 문맥(③에서 자동 입력, 비면 가장 최근 수집 문맥) | `insight.py`가 문맥마다 **PDF 2층**(인사이트 + 상세 근거)을 낸다 — EDA → 방법론 결정 → 5관문 판정. HTML 리포트는 D27로 폐기됐다 |
 
 ## 트러블슈팅
 

@@ -11,19 +11,12 @@ cd "$(dirname "$0")"
 # ── 배포에서 빼는 것 (D27 — HTML 산출 폐기) ────────────────────────────────
 #
 # 산출물은 PDF뿐이므로 **팀원 손에 HTML 생성기가 가면 안 된다.** 다만 저장소에서는
-# 아직 지우지 않는다 — 회귀 테스트 111건 중 82건(B·D 계열)이 이 생성기들의 HTML
-# 출력으로 diff 규칙·매칭·급등락 판정을 검증하고 있고, 그 테스트들은 실제 버그를
-# 잡아 만들어진 것들이다(순위권 재진입 상품의 할인 감지 등).
-#
-# 테스트를 PDF·데이터 경로로 이식한 뒤 실제로 삭제한다. 그때까지는 여기서 막는다.
-EXCLUDE_HTML=(
-    'skills/commerce-intel/scripts/build_report.py'
-    'skills/commerce-intel/scripts/build_analysis_report.py'
-    'skills/commerce-intel/scripts/report_ui.py'
-    'skills/commerce-intel/scripts/lint_analysis_html.py'
-    'skills/commerce-intel/assets/*'
-    'skills/commerce-intel/references/report-spec.md'
-)
+# HTML 산출 경로는 D27로 폐기됐고 2026-08-03에 **실제로 삭제**했다(생성기 4종·템플릿
+# 2종·report-spec.md). 회귀가 그 출력을 고정하고 있던 82건은 데이터 규칙 13건으로
+# 이식했다(tests/test_intel_db.py [13]) — 나머지는 HTML 레이아웃 검증이라 함께 폐기.
+# 이제 제외할 것이 없다. **assets/는 제외하지 않는다** — own-brand.json(자사 lifecycle
+# 목록)이 현역이고, 통째 제외하던 탓에 배포 zip에서 빠져 tag-lifecycle이 팀원 환경에서
+# 실패할 참이었다(2026-08-03 발견).
 
 echo "[1/4] 권한 파일 최신 확인"
 python3 tools/gen_permissions.py --check || {
@@ -52,14 +45,8 @@ rm -rf dist
 mkdir -p dist
 find skills -name '.DS_Store' -delete
 zip -rq dist/commerce-intel-skills.zip skills \
-    -x '*.DS_Store' '*__pycache__*' '*.pyc' "${EXCLUDE_HTML[@]}"
+    -x '*.DS_Store' '*__pycache__*' '*.pyc'
 
-# 뺐어야 할 것이 새어 나갔는지 확인한다 — 조용히 새면 팀원이 HTML을 만들게 된다
-if zipinfo -1 dist/commerce-intel-skills.zip \
-   | grep -qE '\.html$|build_report\.py|report_ui\.py|build_analysis_report\.py'; then
-    echo "HTML 생성기가 패키지에 남아 있다 — EXCLUDE_HTML을 확인할 것." >&2
-    exit 1
-fi
 
 echo
 echo "완료: dist/commerce-intel-skills.zip ($(du -h dist/commerce-intel-skills.zip | cut -f1))"
