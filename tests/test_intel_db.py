@@ -39,6 +39,102 @@ def run(args, cwd, env_db):
                           capture_output=True, text=True)
 
 
+class FakeSheet:
+    """gspread 스프레드시트 흉내 — 네트워크 없이 runs 탭 조회를 검증한다."""
+
+    def __init__(self, tabs):
+        self.tabs = tabs          # {탭이름: [[헤더...], [행...]]}
+
+    def worksheet(self, title):
+        if title not in self.tabs:
+            raise Exception(f"no such worksheet: {title}")
+        sheet = self
+
+        class WS:
+            def get_all_values(self):
+                return sheet.tabs[title]
+        return WS()
+
+
+def with_fake_sheet(sh, err=None, raises=None):
+    """team_coverage가 함수 안에서 import하는 sync_sheets를 가짜로 갈아끼운다."""
+    import types
+    mod = types.ModuleType("sync_sheets")
+    mod.open_spreadsheet = lambda config, creds: (sh, err)
+
+    def fetch_tab(spreadsheet, title):
+        if raises:
+            raise Exception(raises)
+        if title not in spreadsheet.tabs:
+            return None          # 진짜 fetch_tab과 같은 규약: 없는 탭은 None
+        return _as_dicts(spreadsheet.tabs[title])
+    mod.fetch_tab = fetch_tab
+    sys.modules["sync_sheets"] = mod
+
+
+def _as_dicts(values):
+    return [dict(zip(values[0], r)) for r in values[1:] if any(c.strip() for c in r)]
+
+
+RUNS_HEADER = ["run_id", "site", "story", "target", "collected_at", "item_count"]
+
+
+def team_coverage_tests(work, db, ctx):
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    intel_db = importlib.import_module("intel_db")
+    conn = intel_db.connect(db)
+    target = ctx.split(":", 1)[1]
+    now = datetime.now()
+    recent = (now - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+    old = (now - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
+
+    def coverage(rows, **kw):
+        with_fake_sheet(FakeSheet({"runs": [RUNS_HEADER, *rows]}), **kw)
+        return intel_db.team_coverage(conn, "musinsa", ctx, 30, "cfg", "creds")
+
+    # 팀원이 방금 수집 → 중복이다
+    c = coverage([["teammate-1", "musinsa", "brand-linesheet", target, recent, "440"]])
+    check("팀원의 최근 수집을 잡아낸다", c["consulted"] and c["fresh"], c)
+    check("근거로 수집 시각을 돌려준다", c["last_collected_at"] == recent, c)
+
+    # 오래된 팀 수집분은 스킵 사유가 아니다 — 재수집이 정당하다
+    c = coverage([["teammate-1", "musinsa", "brand-linesheet", target, old, "440"]])
+    check("주기 밖 팀 수집분은 fresh=false", c["consulted"] and not c["fresh"], c)
+    check("이력 자체는 보고한다", c["run_count"] == 1, c)
+
+    # 다른 site·다른 target은 남의 일이다
+    c = coverage([["t2", "29cm", "brand-linesheet", target, recent, "1"],
+                  ["t3", "musinsa", "brand-linesheet", "다른브랜드", recent, "1"],
+                  ["t4", "musinsa", "ranking-snapshot", target, recent, "1"]])
+    check("site·story·target이 다르면 무시한다", c["run_count"] == 0 and not c["fresh"], c)
+
+    # 내가 올린 run은 팀 수집분이 아니다 (로컬 판정이 이미 봤다)
+    mine = conn.execute("SELECT run_id FROM runs LIMIT 1").fetchone()
+    if mine:
+        c = coverage([[mine[0], "musinsa", "brand-linesheet", target, recent, "440"]])
+        check("내 run_id는 팀 수집분에서 제외된다", c["run_count"] == 0 and not c["fresh"], c)
+
+    # 실패 3종 — 전부 consulted=False로 떨어지고 예외를 던지지 않는다
+    c = coverage([], err=("서비스 계정 키가 없다", 3))
+    check("시트 열기 실패는 consulted=false", not c["consulted"] and c.get("error"), c)
+    with_fake_sheet(FakeSheet({}))            # runs 탭 자체가 없다
+    c = intel_db.team_coverage(conn, "musinsa", ctx, 30, "cfg", "creds")
+    check("runs 탭 없음은 consulted=false", not c["consulted"] and "runs 탭이 없다" in c["error"], c)
+    c = coverage([], raises="quota exceeded")
+    check("조회 예외는 consulted=false로 흡수된다", not c["consulted"] and "quota" in c["error"], c)
+
+    # 폴백: 팀 조회가 실패해도 수집은 진행돼야 한다 (exit 1 = 수집 필요)
+    r = run([SCRIPTS / "intel_db.py", "check", "--site", "musinsa", "--context",
+             "brand:없는브랜드", "--cycle-minutes", "30", "--team",
+             "--config", str(work / "nope.json"), "--creds", str(work / "nope.json")],
+            work, db)
+    check("시트 미설정이어도 수집 판정은 나온다 (exit 1)", r.returncode == 1, r.stdout + r.stderr)
+    check("팀 미확인이 판정 근거에 남는다",
+          "팀 커버리지 미확인" in r.stdout, r.stdout)
+    sys.modules.pop("sync_sheets", None)
+
+
 def main():
     work = Path(tempfile.mkdtemp(prefix="intel-db-test-"))
     db = str(work / "intel.db")
@@ -231,6 +327,9 @@ def main():
              "--out", str(tpl)], work, db)
     check("템플릿 생성 성공", r.returncode == 0, r.stderr)
     check("샘플 데이터임이 화면에 명시된다", "TEMPLATE" in tpl.read_text(encoding="utf-8"))
+
+    print("[11] 팀 커버리지 조회 (check --team, D32)")
+    team_coverage_tests(work, db, ctx)
 
     shutil.rmtree(work, ignore_errors=True)
     print("-" * 56)

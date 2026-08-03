@@ -49,19 +49,53 @@ NOTICE = ("이 스프레드시트는 로컬 정본 DB(data/intel.db)의 단방�
           "여기서 고친 값은 정본에 반영되지 않고 다음 동기화 때 덮일 수 있습니다.")
 
 
-def load_gspread(creds_path):
+def open_spreadsheet(config_path, creds_path):
+    """스프레드시트를 연다. 성공 시 (sh, None), 실패 시 (None, (사유, exit_code)).
+
+    예외를 던지지도 exit하지도 않는다 — 읽기 쪽(팀 커버리지 조회)은 시트가 없어도
+    진행해야 하고, 쓰기 쪽(main)은 받은 exit_code로 스스로 끝낸다. exit 3은
+    "아직 설정 안 됨"(설치·키·설정파일), exit 1은 "설정은 됐는데 실패"다.
+    """
     try:
         import gspread
     except ImportError:
-        print("gspread가 없다. 설치: pip3 install gspread  (docs/SHEETS-SETUP.md 참조)",
-              file=sys.stderr)
-        sys.exit(3)
+        return None, ("gspread가 없다. 설치: pip3 install gspread  (docs/SHEETS-SETUP.md 참조)", 3)
     if not Path(creds_path).exists():
-        print(f"서비스 계정 키가 없다: {creds_path}\n"
-              f"발급 절차는 docs/SHEETS-SETUP.md — 미러만 밀린 것이고 수집·적재는 유효하다.",
-              file=sys.stderr)
-        sys.exit(3)
-    return gspread.service_account(filename=creds_path)
+        return None, (f"서비스 계정 키가 없다: {creds_path} — 발급 절차는 docs/SHEETS-SETUP.md", 3)
+    cfg_path = Path(config_path)
+    if not cfg_path.exists():
+        return None, (f'설정 파일이 없다: {cfg_path} — {{"spreadsheet_id": "..."}} 형태로 만든다. '
+                      f"docs/SHEETS-SETUP.md 참조", 3)
+    try:
+        spreadsheet_id = json.loads(cfg_path.read_text())["spreadsheet_id"]
+    except (ValueError, KeyError) as e:
+        return None, (f"설정 파일을 읽을 수 없다: {cfg_path} ({e})", 3)
+    try:
+        gc = gspread.service_account(filename=creds_path)
+        return gc.open_by_key(spreadsheet_id), None
+    except Exception as e:
+        return None, (f"스프레드시트 열기 실패: {e} — 서비스 계정 이메일에 시트가 공유돼 있는지 확인", 1)
+
+
+def fetch_tab(sh, title):
+    """시트 탭 하나를 [{헤더: 값}] 로 읽는다. 읽기 실패는 예외를 올린다.
+
+    탭이 없으면 None을 돌려준다 — 빈 리스트([])와 구분해야 한다. 없는 탭은
+    "아직 미러가 안 돌았다"(판정 근거 없음)이고, 빈 탭은 "미러는 돌았고 데이터가
+    0행"이다. 빈 탭은 애초에 만들지 않는 규칙이라 실제로는 전자가 대부분이다.
+
+    미러가 단방향이라는 원칙은 그대로다 — 여기서 읽은 값은 정본에 쓰지 않고
+    "이미 수집됐나" 판정에만 쓴다(D32).
+    """
+    try:
+        ws = sh.worksheet(title)
+    except Exception:
+        return None
+    values = ws.get_all_values()
+    if len(values) < 2:
+        return []
+    headers = values[0]
+    return [dict(zip(headers, row)) for row in values[1:] if any(c.strip() for c in row)]
 
 
 def rows_of(conn, table, since_rowid=None):
@@ -142,21 +176,14 @@ def main():
         "INTEL_SHEETS_CREDENTIALS", str(Path.home() / ".config/intel/service-account.json")))
     args = p.parse_args()
 
-    cfg_path = Path(args.config)
-    if not cfg_path.exists():
-        print(f"설정 파일이 없다: {cfg_path} — {{\"spreadsheet_id\": \"...\"}} 형태로 만든다. "
-              f"docs/SHEETS-SETUP.md 참조", file=sys.stderr)
-        sys.exit(3)
-    spreadsheet_id = json.loads(cfg_path.read_text())["spreadsheet_id"]
-
-    gc = load_gspread(args.creds)
+    sh, err = open_spreadsheet(args.config, args.creds)
+    if err:
+        reason, code = err
+        if code == 3:
+            reason += "\n미러만 밀린 것이고 수집·적재는 유효하다."
+        print(reason, file=sys.stderr)
+        sys.exit(code)
     conn = connect(args.db)
-    try:
-        sh = gc.open_by_key(spreadsheet_id)
-    except Exception as e:
-        print(f"스프레드시트 열기 실패: {e}\n서비스 계정 이메일에 시트가 공유돼 있는지 확인",
-              file=sys.stderr)
-        sys.exit(1)
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     existing = {ws.title: ws for ws in sh.worksheets()}

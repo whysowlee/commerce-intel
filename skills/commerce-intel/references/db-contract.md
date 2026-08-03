@@ -94,7 +94,27 @@
 | 정적 속성 | `static_verified_at` 90일 이내면 재확인하지 않는다. 만료분은 다음 수집에서 재확인 | `reuse-attrs`(수집 JSON에 채움) · `stale-static`(만료 목록) |
 | 시변 값 | 같은 (site, context) 최신 관측이 갱신 주기 이내면 수집 생략 | `check --cycle-minutes N` (exit 0 = 스킵 가능) |
 | **플랫폼 정찰** | `platforms.updated_at` 90일 이내면 channel-scout가 재정찰하지 않는다 — 오케스트레이터가 기존 정찰을 스폰 프롬프트로 넘긴다. 브랜드별 **입점 여부**는 매번 새로 확인한다(시변) | `export --table platforms --format json` |
+| **팀원 수집분** (D32) | 로컬이 신선하지 않을 때만 시트 `runs` 탭을 본다. 같은 (site, context)를 팀원이 갱신 주기 안에 수집했으면 중복. 주기 밖이면 이력만 알리고 통과 | `check --team` (내 `run_id`는 제외된다) |
 | 사용자 명시 재수집 | 두 규칙 모두 무시 | — |
 
 **스킵은 반드시 보고한다** — "마지막 관측이 N분 전이라 재수집을 생략했다. 새로 받으려면
 말해달라." 조용히 옛 데이터를 쓰지 않는다.
+
+### `check --team` 출력 읽는 법
+
+```jsonc
+{
+  "skip": true, "source": "team",          // local = 내 DB / team = 팀원 수집분
+  "team": {
+    "consulted": true,                     // false면 시트를 못 봤다 → 로컬 판정만으로 진행
+    "fresh": true,                         // 갱신 주기 이내인 팀 수집이 있다
+    "last_collected_at": "2026-08-03 11:33:17",
+    "run_count": 3                         // 내 run_id를 뺀 팀 수집 이력 건수
+  }
+}
+```
+
+- `consulted: false`는 **오류가 아니라 상태**다(키 미설정·쿼터·`runs` 탭 없음). `error`에
+  사유가 들어오고 exit 코드는 로컬 판정 그대로다 — 수집은 막히지 않는다.
+- 시트는 **완료된 수집만** 안다. `runs` 행은 적재 후 미러 때 올라가므로 "지금 수집 중"은
+  잡히지 않는다 — 중복 창이 미러 주기만큼 남는다.

@@ -167,11 +167,21 @@ def parse_ts(s):
     return None
 
 
+STORY_PREFIX = {"brand-linesheet": "brand", "market-scan": "market",
+                "ranking-snapshot": "ranking"}
+
+
 def context_of(meta):
     story = meta.get("story", "")
     target = meta.get("target", "")
-    prefix = {"brand-linesheet": "brand", "market-scan": "market", "ranking-snapshot": "ranking"}
-    return f"{prefix.get(story, story or 'adhoc')}:{target}"
+    return f"{STORY_PREFIX.get(story, story or 'adhoc')}:{target}"
+
+
+def run_context(row):
+    """runs 행(story·target) → observations의 context 문자열. context_of와 같은 규칙이다."""
+    story = (row.get("story") or "").strip()
+    target = (row.get("target") or "").strip()
+    return f"{STORY_PREFIX.get(story, story or 'adhoc')}:{target}"
 
 
 def load_file(conn, path, quiet=False):
@@ -294,6 +304,55 @@ def _upsert_product(conn, site, pid, it, seen_at):
     )
 
 
+def team_coverage(conn, site, context, cycle, config, creds):
+    """시트의 runs 탭에서 '남이 이미 수집한 것'을 찾는다(D32).
+
+    시트는 완료된 수집만 안다 — runs 행은 적재 후에 생기고 그 다음 미러 때 올라간다.
+    따라서 "지금 남이 수집 중"은 여기서 안 잡힌다. 조회에 실패하면 예외 대신
+    consulted=False를 돌려준다 — 팀 조회 실패가 수집을 막아서는 안 된다.
+    """
+    out = {"consulted": False, "fresh": False, "last_collected_at": None, "run_count": 0}
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    try:
+        from sync_sheets import fetch_tab, open_spreadsheet
+    except ImportError as e:
+        out["error"] = f"sync_sheets를 불러올 수 없다: {e}"
+        return out
+    sh, err = open_spreadsheet(config, creds)
+    if err:
+        out["error"] = err[0]
+        return out
+    try:
+        rows = fetch_tab(sh, "runs")
+    except Exception as e:
+        out["error"] = f"runs 탭 조회 실패: {e}"
+        return out
+    if rows is None:
+        out["error"] = "시트에 runs 탭이 없다 — 아직 미러가 돌지 않았다(sync_sheets.py)"
+        return out
+
+    out["consulted"] = True
+    mine = {r[0] for r in conn.execute("SELECT run_id FROM runs")}
+    cutoff = datetime.now() - timedelta(minutes=cycle)
+    latest, count = None, 0
+    for r in rows:
+        if (r.get("site") or "").strip() != site or run_context(r) != context:
+            continue
+        if (r.get("run_id") or "").strip() in mine:
+            continue        # 내가 올린 것 — 이미 로컬 판정이 봤다
+        ts = parse_ts(r.get("collected_at") or "")
+        if not ts:
+            continue
+        count += 1
+        if latest is None or ts > latest:
+            latest = ts
+    out["run_count"] = count
+    if latest:
+        out["last_collected_at"] = latest.strftime("%Y-%m-%d %H:%M:%S")
+        out["fresh"] = latest >= cutoff
+    return out
+
+
 def cmd_check(conn, args):
     """시변 값 스킵 판정. exit 0 = 스킵 가능(신선한 관측 있음), 1 = 수집 필요."""
     cycle = args.cycle_minutes or DEFAULT_CYCLE_MINUTES
@@ -305,6 +364,7 @@ def cmd_check(conn, args):
     fresh = bool(last and datetime.now() - last <= timedelta(minutes=cycle))
     result = {
         "skip": fresh,
+        "source": "local" if fresh else None,
         "last_observed_at": row["last"] if row else None,
         "cycle_minutes": cycle,
         "reason": (
@@ -312,6 +372,22 @@ def cmd_check(conn, args):
             else "신선한 관측 없음 — 수집 필요"
         ),
     }
+    if args.team and not fresh:   # 로컬이 이미 신선하면 시트를 볼 이유가 없다
+        team = team_coverage(conn, args.site, args.context, cycle, args.config, args.creds)
+        result["team"] = team
+        if not team["consulted"]:
+            print(f"팀 커버리지 조회 실패 — 로컬 DB만으로 판정한다: {team.get('error')}",
+                  file=sys.stderr)
+            result["reason"] += " (팀 커버리지 미확인)"
+        elif team["fresh"]:
+            fresh = True
+            result.update(skip=True, source="team", reason=(
+                f"팀원이 {team['last_collected_at']}에 이미 수집했다(갱신 주기 {cycle}분 이내) "
+                f"— 중복 수집이다. 시트 미러를 당겨 쓰거나 팀원 DB를 merge한다"))
+        elif team["run_count"]:
+            result["reason"] += (
+                f" (팀 수집 이력 {team['run_count']}건 있으나 최신이 {team['last_collected_at']} "
+                f"— 갱신 주기 밖이다)")
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if fresh else 1
 
@@ -524,6 +600,11 @@ def main():
     sp.add_argument("--site", required=True)
     sp.add_argument("--context", required=True)
     sp.add_argument("--cycle-minutes", type=int, default=None)
+    sp.add_argument("--team", action="store_true",
+                    help="시트 runs 탭도 조회해 팀원이 이미 수집했는지 본다 (D32)")
+    sp.add_argument("--config", default="data/sheets_config.json")
+    sp.add_argument("--creds", default=os.environ.get(
+        "INTEL_SHEETS_CREDENTIALS", str(Path.home() / ".config/intel/service-account.json")))
     sp = sub.add_parser("reuse-attrs")
     sp.add_argument("raw")
     sp.add_argument("--out")

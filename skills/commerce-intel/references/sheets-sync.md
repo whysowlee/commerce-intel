@@ -2,6 +2,10 @@
 
 정본은 로컬 `data/intel.db`이고 시트는 **사람이 보고 공유하는 창구**다(단방향, SPEC-INTEL §3).
 
+읽기 경로는 **하나뿐**이다 — `intel_db.py check --team`이 `runs` 탭을 조회해 팀원이 이미
+수집했는지 본다(D32). 단방향 원칙은 그대로다: 읽은 값은 정본에 쓰지 않고 판정에만 쓴다.
+쓰는 쪽(`sync_sheets.py`)과 읽는 쪽이 `open_spreadsheet`·`fetch_tab`을 공유한다.
+
 ## 실행
 
 ```bash
