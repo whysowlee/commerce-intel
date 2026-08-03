@@ -83,7 +83,7 @@
 | 브랜드 | `GET /{region}/brand/{slug}` | URL만 확인 | slug = 상품객체 `brandId`. 상품 임베드·총계 구조 「미검증」 |
 | 상품 상세 | `GET /{region}/products/{goodsNo}` | 확인(얇음) | CSR 껍데기(~42KB). 임베드에 `status`·`price`·`category` enum. 옵션·재고 「미검증」(§5) |
 | 검색 | `/{region}/search/*` | robots에만 확인 | 스킴 「미검증」 |
-| 랭킹 | 별도 페이지 존재 여부 「미검증」 | — | `sortCode=RANK`("Top rated in Korea")가 국내 랭킹을 참조하는 정렬로 보이나 별도 랭킹 스냅샷 경로는 미확인 |
+| **랭킹(trending)** | `GET /{region}/trending/items?category1DepthCode={대}&category2DepthCodes={중}` | **사용자 제공 스크린샷 2026-08-03** | **region마다 다른 실시간 인기 랭킹.** 카드에 순위 번호가 매겨진다. 정렬·페이지네이션·순위 필드명·갱신 주기는 실제 수집 시 확인할 「미검증」 |
 
 ### 카테고리 PLP 상세 (2026-08-03 실측)
 
@@ -150,6 +150,29 @@ PLP 임베드 상품 객체 원문(US 데님 실측):
   3. SG·AU 등 **소수점 통화 여부는 「미검증」** — 정수 전제(`int`)가 깨질 수 있다.
   → 통화 필드의 계약 편입은 SPEC-INTEL 소관이다. 여기서는 문제 제기까지만 한다.
 
+### 4-1b. ★ region이 랭킹의 feature 축이다 (사용자 지시 2026-08-03)
+
+**같은 카테고리라도 국가마다 랭킹이 다르다** — 이건 함정이 아니라 **쓸 수 있는 축**이다.
+사용자 제공 스크린샷(2026-08-03)에서 확정: `/hk/trending/items?category1DepthCode=003&
+category2DepthCodes=003002`가 홍콩 인기 랭킹이고, 카드에 순위가 매겨진다. 같은 상품이
+어느 나라에서 뜨는지가 곧 **해외 시장별 반응**이다(실측 예: 홍콩 여성 데님 랭킹 상단에
+자사 2000ARCHIVES 노출).
+
+그래서 랭킹 스냅샷은 **region을 나눠 축적한다:**
+
+- `meta.target`에 region을 넣는다 — `무신사글로벌 여성데님(HK)` 형식. 이러면 context가
+  `ranking:무신사글로벌 여성데님(HK)`로 국가마다 갈려 **시계열이 안 섞인다.**
+  HK 랭킹과 JP 랭킹을 한 축적으로 뭉개면 둘 다 못 읽는다(범위 다른 스냅샷 비교 금지, 스토리 C)
+- `meta.region`·`meta.currency`도 함께 남긴다(통화가 region마다 다르다 — §4-1)
+- 국가 비교("어느 나라에서 이 상품이 제일 잘 나가나")는 **여러 region context를 나란히**
+  분석 단에서 본다 — 각 스냅샷은 한 나라의 한 시점이다
+- **crontab 무인 축적은 하지 않는다**(D30). 사용자가 "HK 여성데님 랭킹 봐줘"라고 할 때
+  그 자리에서 스냅샷을 찍는다. 자동 주기 축적은 국내 무신사·29CM 몫이다
+
+미검증(실제 수집 때 확인): `trending/items`의 정렬 파라미터·페이지네이션·순위 필드명·
+전 region 카테고리 코드 일치 여부·랭킹 갱신 주기. category1/2DepthCode 스킴은 국내
+카테고리 코드(§2)와 같은 3자리/6자리로 **보이나** trending 경로에서의 정확한 대응은 「미검증」.
+
 ### 4-2. 쿠폰가 없음 — 국내 함정5는 글로벌에 해당 없음 (2026-08-03 실측)
 
 - 국내는 `price`/`saleRate`가 쿠폰 전 값이고 `finalPrice`/`finalDiscount`(쿠폰적용가)를
@@ -197,7 +220,7 @@ PLP 임베드 상품 객체 원문(US 데님 실측):
       (국내 `isSoldOut=true` 대응)
 - [ ] **브랜드 모드**: `/{region}/brand/{slug}` 상품 임베드 구조·`totalCount`·품절 처리
 - [ ] **검색** 엔드포인트 스킴
-- [ ] **랭킹**: 별도 랭킹 스냅샷 경로 존재 여부, `sortCode=RANK`의 의미, 갱신 주기
+- [ ] **랭킹(trending)**: 경로는 `/{region}/trending/items?category1DepthCode=…`로 확정(사용자 스크린샷 2026-08-03). 남은 미검증 — 정렬 파라미터·페이지네이션·순위 필드명·갱신 주기·전 region 카테고리 코드 일치 여부. `sortCode=RANK`("Top rated in Korea")는 trending과 별개인 정렬(국내 랭킹 참조로 보임)
       (frontmatter refresh-cycle이 unverified인 이유)
 - [ ] **옵션·재고(variants)** — 글로벌 goods-detail 계열 경로
 - [ ] 페이지당 정확한 PLP 카드 수 및 추천/큐레이션 모듈 분리 규칙
