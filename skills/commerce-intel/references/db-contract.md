@@ -73,7 +73,8 @@
 
 | 테이블 | 내용 | 키 | 갱신 |
 |---|---|---|---|
-| `products` | 정적 속성 + `attributes`(핏 등 비싼 판단) + `static_verified_at` | (site, product_id) | upsert — 새 값이 비어 있지 않을 때만 덮고, 실질 attributes는 기존 값을 지킨다 |
+| `products` | 정적 속성 + `attributes`(핏 등 비싼 판단·**하위호환용 레거시 JSON**) + `static_verified_at` | (site, product_id) | upsert — 새 값이 비어 있지 않을 때만 덮고, 실질 attributes는 기존 값을 지킨다 |
+| `product_attributes` (D35) | **동적 속성 — 축을 행으로.** attr_name(핏·컬러·소재·넥라인·시즌)·value·basis·decided_at·**ttl_days**(속성별 만료). 스키마 변경 없이 축이 늘고, proxy_cache와 같은 모양이라 AI 프록시 판정(D19)도 여기로. **판정 실패(null)는 저장하지 않는다**(재판정 차단 방지). 첫 connect에서 products.attributes JSON을 1회 멱등 이관 | (site, product_id, attr_name) | upsert (set-attrs) — 표가 JSON을 덮는다 |
 | `observations` | 시변 값 전부 + `context` | (site, product_id, observed_at, context) | **append only** |
 | `platforms` | **누적 입점처 카탈로그** — 브랜드 모드·카테고리 모드·특화 탐색 어느 경로로 발견됐든 전부 여기 쌓이고 잊히지 않는다. `recon` JSON에 정찰 결과, 카탈로그 기준 충족 여부(`fashion_catalog: true` — ①패션/해당 품목 주력 ②비로그인 열람 ③규모 확인 가능), **`specialty`(특화 품목 또는 "종합")** — 특화몰을 무관한 상품군 후보에서 거르는 데 쓴다 — 와 **생존 상태(활성/철수/폐업/차단 + 마지막 확인 시각)**. 죽은 플랫폼도 지우지 않고 상태만 바꾼다(이력도 데이터다). `skill_status`(none/candidate/recon_done/draft/ready) | platform_key | upsert |
 | `variants` | 옵션(SKU) 구성 — option_id·option_name·color·size | (site, product_id, option_id) | upsert (빈 값은 기존 값 유지) |

@@ -81,6 +81,20 @@ CREATE TABLE IF NOT EXISTS variant_observations (  -- 옵션별 재고 관측 (a
     run_id TEXT,
     PRIMARY KEY (site, product_id, option_id, observed_at)
 );
+CREATE TABLE IF NOT EXISTS product_attributes (  -- 동적 속성 (D35 — 2026-08-03)
+    -- 스키마 변경 없이 분석 축을 늘린다. 핏 하나만 담던 products.attributes(JSON)로는
+    -- 컬러·소재·넥라인·시즌을 더할 때마다 컬럼을 추가해야 했다. 축을 행으로 뺀다.
+    -- proxy_cache와 같은 모양이라, AI 프록시 판정(D19) 결과도 그대로 이 표로 들어온다.
+    site TEXT NOT NULL,
+    product_id TEXT NOT NULL,
+    attr_name TEXT NOT NULL,      -- "핏" · "컬러" · "소재" · "넥라인" …
+    value TEXT,                   -- 판정 값 (null = 판정 실패는 저장하지 않는다)
+    basis TEXT,                   -- name/detail/image/group/proxy/unknown
+    decided_at TEXT,              -- TTL 기준 시각
+    ttl_days INTEGER,             -- 속성별 만료(컬러는 안 변함=크게, 시즌은 짧게). null=기본 90
+    PRIMARY KEY (site, product_id, attr_name)
+);
+CREATE INDEX IF NOT EXISTS idx_attr_name ON product_attributes (attr_name, value);
 CREATE TABLE IF NOT EXISTS platforms (
     platform_key TEXT PRIMARY KEY,   -- 예: "musinsa" · "zigzag"
     name TEXT, url TEXT, engine TEXT,
@@ -133,6 +147,7 @@ CREATE TABLE IF NOT EXISTS sync_state (
 """
 
 STATIC_FIELDS = ("name", "url", "image_url", "brand", "category")
+ATTR_TTL_DEFAULT = 90        # 속성별 ttl_days 미지정 시 (핏 등 D7과 같은 값)
 OBS_FIELDS = (
     "price_original", "price_sale", "discount_rate", "review_count", "rating",
     "view_count", "view_count_display", "purchase_count", "purchase_count_display",
@@ -151,7 +166,47 @@ def connect(db_path):
         conn.execute("ALTER TABLE products ADD COLUMN raw_extras TEXT")
     except sqlite3.OperationalError:
         pass
+    _migrate_attrs(conn)
     return conn
+
+
+def _migrate_attrs(conn):
+    """products.attributes(JSON) → product_attributes(행) 소급 이관 (D35).
+
+    한 번만 옮기면 된다 — 이미 옮긴 (site, product_id, attr_name)은 건너뛴다(멱등).
+    **판정 실패(`null`)는 옮기지 않는다.** `{"핏": null}`은 "판정 못 함"이라 재판정
+    대상이지 저장 대상이 아니다 — 저장하면 TTL 안에 재시도가 막힌다.
+    기존 JSON은 지우지 않는다(폐기 예정 리포트가 아직 읽는다 — 하위호환).
+    """
+    done = conn.execute(
+        "SELECT COUNT(*) FROM product_attributes WHERE basis='migrated'").fetchone()[0]
+    if done:
+        return
+    rows = conn.execute(
+        "SELECT site, product_id, attributes, attributes_basis, static_verified_at "
+        "FROM products WHERE attributes IS NOT NULL AND attributes != '{}'").fetchall()
+    moved = 0
+    for r in rows:
+        try:
+            attrs = json.loads(r["attributes"] or "{}")
+        except (TypeError, ValueError):
+            continue
+        for name, value in attrs.items():
+            if value is None:
+                continue
+            conn.execute(
+                "INSERT OR IGNORE INTO product_attributes "
+                "(site, product_id, attr_name, value, basis, decided_at, ttl_days) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (r["site"], r["product_id"], name, value,
+                 r["attributes_basis"] or "migrated",
+                 r["static_verified_at"], ATTR_TTL_DEFAULT))
+            moved += 1
+    if moved:
+        # 이관 표식 — 다음 connect에서 다시 돌지 않게 (기존 basis는 보존)
+        conn.execute("UPDATE product_attributes SET basis='migrated' "
+                     "WHERE basis IS NULL")
+        conn.commit()
 
 
 def now_str():
@@ -402,10 +457,33 @@ def cmd_reuse_attrs(conn, args):
         attrs = it.get("attributes") or {}
         if any(v not in (None, "", "unknown") for v in attrs.values()):
             continue  # 이미 분류돼 있음
+        pid = str(it.get("product_id"))
+        # D35: 동적 속성 표를 먼저 본다 — 속성마다 TTL이 다르다(컬러는 안 변함, 시즌은 짧음).
+        arows = conn.execute(
+            "SELECT attr_name, value, basis, decided_at, ttl_days FROM product_attributes "
+            "WHERE site=? AND product_id=? AND value IS NOT NULL",
+            (site, pid)).fetchall()
+        picked, any_expired = {}, False
+        for a in arows:
+            ttl = a["ttl_days"] or args.ttl_days
+            a_cut = (datetime.now() - timedelta(days=ttl)).strftime("%Y-%m-%d %H:%M:%S")
+            if a["decided_at"] and a["decided_at"] < a_cut:
+                any_expired = True
+                continue
+            picked[a["attr_name"]] = (a["value"], a["basis"])
+        if picked:
+            it["attributes"] = {k: v[0] for k, v in picked.items()}
+            it["attributes_basis"] = next(iter(picked.values()))[1]
+            filled += 1
+            continue
+        if any_expired:
+            expired += 1
+            continue
+        # 폴백: 아직 표로 안 옮겨진 구버전 JSON (하위호환)
         row = conn.execute(
             "SELECT attributes, attributes_basis, static_verified_at FROM products "
             "WHERE site=? AND product_id=? AND attributes IS NOT NULL",
-            (site, str(it.get("product_id"))),
+            (site, pid),
         ).fetchone()
         if not row:
             continue
@@ -423,6 +501,51 @@ def cmd_reuse_attrs(conn, args):
     out = args.out or args.raw
     Path(out).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"속성 재사용 {filled}건, TTL 만료 {expired}건 → {out}")
+
+
+def cmd_set_attrs(conn, args):
+    """속성 판정 결과를 product_attributes에 적재한다 (D35).
+
+    입력 JSON: [{"site","product_id","attr_name","value","basis","ttl_days"?}, ...]
+    프록시 판정(D19)·핏 재분류·컬러 추출 등 **모든 속성이 이 한 통로로** 들어온다.
+    value가 null/빈값이면 건너뛴다 — 판정 실패는 저장하지 않는다(재판정을 막지 않으려고).
+    """
+    items = json.loads(Path(args.file).read_text(encoding="utf-8"))
+    now = now_str()
+    added = skipped = 0
+    for it in items:
+        val = it.get("value")
+        if val in (None, "", "unknown"):
+            skipped += 1
+            continue
+        conn.execute(
+            "INSERT INTO product_attributes "
+            "(site, product_id, attr_name, value, basis, decided_at, ttl_days) "
+            "VALUES (?,?,?,?,?,?,?) "
+            "ON CONFLICT(site, product_id, attr_name) DO UPDATE SET "
+            "value=excluded.value, basis=excluded.basis, decided_at=excluded.decided_at, "
+            "ttl_days=excluded.ttl_days",
+            (it["site"], str(it["product_id"]), it["attr_name"], val,
+             it.get("basis") or "unknown", now, it.get("ttl_days") or ATTR_TTL_DEFAULT))
+        added += 1
+    conn.commit()
+    print(f"속성 적재 {added}건, 미판정 건너뜀 {skipped}건")
+
+
+def cmd_attr_stats(conn, _args):
+    """속성별 판정 현황 — 어느 축이 얼마나 채워졌나."""
+    rows = conn.execute(
+        "SELECT attr_name, COUNT(*) n, COUNT(DISTINCT value) vals "
+        "FROM product_attributes GROUP BY attr_name ORDER BY n DESC").fetchall()
+    if not rows:
+        print("product_attributes 비어 있음")
+        return
+    for r in rows:
+        top = conn.execute(
+            "SELECT value, COUNT(*) c FROM product_attributes WHERE attr_name=? "
+            "GROUP BY value ORDER BY c DESC LIMIT 5", (r["attr_name"],)).fetchall()
+        dist = ", ".join(f"{t['value']}({t['c']})" for t in top)
+        print(f"{r['attr_name']:8} {r['n']:>7}건 · 값 {r['vals']}종 · {dist}")
 
 
 def cmd_stale_static(conn, args):
@@ -622,6 +745,9 @@ def main():
     sub.add_parser("stats")
     sp = sub.add_parser("merge")
     sp.add_argument("source", help="합칠 상대 DB 경로 (팀원이 보내준 intel.db)")
+    sp = sub.add_parser("set-attrs")   # D35 — 속성 판정 결과 적재
+    sp.add_argument("file", help="[{site,product_id,attr_name,value,basis,ttl_days?}] JSON")
+    sub.add_parser("attr-stats")       # D35 — 속성별 판정 현황
     args = p.parse_args()
 
     conn = connect(args.db)
@@ -646,6 +772,10 @@ def main():
         cmd_export(conn, args)
     elif args.cmd == "stats":
         cmd_stats(conn, args)
+    elif args.cmd == "set-attrs":
+        cmd_set_attrs(conn, args)
+    elif args.cmd == "attr-stats":
+        cmd_attr_stats(conn, args)
 
 
 if __name__ == "__main__":

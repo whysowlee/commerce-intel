@@ -126,6 +126,15 @@ def collect(db_path, contexts):
             WHERE o2.site = o.site AND o2.product_id = o.product_id{ctx_where.replace('o.context','o2.context')}
         ){ctx_where}
     """, params + params).fetchall()
+    # D35: 동적 속성 표. 축이 스키마 변경 없이 는다(컬러·소재·넥라인). 없으면 JSON 폴백.
+    dyn_attrs = {}
+    try:
+        for a in conn.execute(
+                "SELECT site, product_id, attr_name, value FROM product_attributes "
+                "WHERE value IS NOT NULL"):
+            dyn_attrs.setdefault((a["site"], a["product_id"]), {})[a["attr_name"]] = a["value"]
+    except sqlite3.OperationalError:
+        pass          # 구버전 DB — 표가 없다
     items, seen = [], set()
     for r in rows:
         key = (r["site"], r["product_id"])
@@ -134,7 +143,10 @@ def collect(db_path, contexts):
         seen.add(key)
         d = dict(r)
         attrs = json.loads(d.pop("attributes") or "{}")
+        attrs.update(dyn_attrs.get(key, {}))   # 표가 JSON을 덮는다(더 최신)
         d["fit"] = attrs.get("핏")
+        d["color"] = attrs.get("컬러")         # 컬러 축은 인프라만 — 채우는 건 8번(보류)
+        d["_attrs"] = attrs
         items.append(d)
 
     # 가격 변경 사건 — 상품별 마지막 관측 상태 대비(기존 diff 규칙과 동일 철학)
