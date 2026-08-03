@@ -19,6 +19,17 @@ cp -r skills/* ~/.claude/skills/
 cp -r skills/* <프로젝트>/.claude/skills/
 ```
 
+설치되는 스킬은 이렇게 나뉜다 — **말은 그냥 하면 되고, 어느 단계로 갈지는 알아서 정해진다.**
+
+| 스킬 | 하는 일 |
+|---|---|
+| `commerce-intel` | **여기로 말을 건다.** 요청을 읽고 아래 단계로 넘긴다 |
+| `intel-collect` | 사이트에서 모은다 |
+| `intel-store` | DB에 넣고 시트에 올린다 · 팀원 것과 합친다 |
+| `intel-explore` | 분석 전에 데이터 상태를 본다 |
+| `intel-insight` | 검증된 가설을 PDF로 낸다 |
+| `platform-*` | 사이트별 수집 방법 (무신사·29CM·자사몰·W컨셉·그 외) |
+
 **새 대화**를 열면 인식된다. Python 3.9 이상과 **패키지 하나**가 필요하다.
 
 ```bash
