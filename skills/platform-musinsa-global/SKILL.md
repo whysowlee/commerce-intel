@@ -55,6 +55,10 @@ DB 적재·분석·리포트와 공통 규칙(속도·차단 중단·추정 금�
 4. **목록 순회(경로 A)** — `GET /{region}/category/{code}?page=N`. **서버 렌더 HTML에
    상품 배열 + `totalCount`가 임베드**된다. 페이지네이션은 **`?page=N` 단순 증가**다
    (국내의 hmac nextPageUrl 체인이 아니다). 정렬은 `?sortCode=RECOMMEND|RANK|NEW|LOW_PRICE|HIGH_PRICE`.
+   **단 `sortCode=RANK`("Top rated in Korea")는 수집하지 않는다** — 무신사 글로벌은
+   지역 랭킹과 **한국 랭킹**을 함께 노출하는데, 한국 랭킹은 국내 `platform-musinsa`에서
+   이미 수집한다. 글로벌에서 RANK까지 담으면 같은 한국 데이터가 중복된다. 글로벌의
+   가치는 **지역별 랭킹**(위 §국가별 랭킹)이지 한국 랭킹의 재수집이 아니다.
 5. **총계 확보** — `source_total`은 임베드 **`totalCount`** 다(US 데님 14,858 실측).
    총계를 읽은 시점의 필터 상태(품절 포함 여부 — 미확인)를 `meta.notes`에 병기한다.
 6. **PLP 리스트만 담는다** — 한 페이지 HTML에 추천·큐레이션 모듈 상품이 섞일 수 있다.
