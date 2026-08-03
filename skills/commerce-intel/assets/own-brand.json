@@ -1,0 +1,19 @@
+{
+  "_comment": "자사(2000archives) 상품 라이프사이클 목록 (2026-08-03 MD 제공). lifecycle 태깅의 근거.",
+  "_how": "intel_db.py tag-lifecycle 이 이 목록의 스타일명을 match_key로 정규화해 products의 상품명과 대조하고, 일치분에 product_attributes(attr_name='lifecycle') 태깅한다. 색상 변형은 스타일로 접히므로 스타일명만 적는다.",
+  "brand": "2000archives",
+  "brand_aliases": ["2000archives", "2000아카이브스", "이천아카이브스"],
+  "ongoing": [
+    "ZANE SCOOP CAMI", "LYRA HALTER CAMI", "LEN CONTOUR T", "RHEA BACK SCOOP T",
+    "XEN TOP", "VON SHIRT BODYSUIT", "VEX SCOOP TANK", "AX MICRO SHORTS",
+    "LUNA BOOTCUT LEGGINGS", "CONTOUR JEANS", "SNYDER DISTRESSED DENIM",
+    "SNYDER WIDE DENIM", "ASHY JEANS"
+  ],
+  "seasonal": [
+    "RAYE DRAPED BIKINI", "MARINE BIKINI", "VELYN CORSET TOP", "HINA DRAPED HALTER TOP",
+    "DOUBLE LAYERED GARTER CAMI", "CORSET UNBALANCED TOP", "REYA LACE TOP",
+    "ASHA HENLEY BODYSUIT", "MARINE MESH TOP", "GIA DRAPED TOP", "LACE LAYERED TOP",
+    "SNYDER BOOT CUT DENIM", "LENA SNAP LAYER SKIRT", "SATIN BOXER PANTS",
+    "TEXTURED DURAG", "LACE CAP", "2000 NAPOLEON CAP", "STRIPE BOHEM TASSLE BAG"
+  ]
+}

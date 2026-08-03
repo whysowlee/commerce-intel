@@ -25,6 +25,7 @@ import os
 import sqlite3
 import sys
 import uuid
+from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -532,6 +533,62 @@ def cmd_set_attrs(conn, args):
     print(f"속성 적재 {added}건, 미판정 건너뜀 {skipped}건")
 
 
+def cmd_tag_lifecycle(conn, args):
+    """자사 상품에 lifecycle(온고잉/시즌)을 태깅한다 (D35 재활용).
+
+    lifecycle은 별도 컬럼이 아니라 product_attributes의 한 속성이다 — 방금 만든 동적
+    속성 표(D35)가 정확히 이런 용도다. 스키마를 또 늘리지 않는다.
+
+    자사 목록(assets/own-brand.json)의 스타일명을 match_key로 정규화해 products의
+    상품명과 대조한다. 색상 변형은 스타일로 접히므로 스타일명만 맞으면 된다.
+    같은 자사 상품이 여러 사이트에 있으면 각 사이트의 product_id에 각각 붙는다.
+
+    **DB에 없는 상품은 지금 태깅되지 않는다 — 그건 오류가 아니다.** 자사몰을 아직 안
+    모았으면 대부분이 DB에 없고, 수집 후 이 명령을 다시 돌리면 채워진다. lifecycle에
+    TTL을 길게 두는 이유도 이것이다(상품 성격은 잘 안 바뀐다).
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from intel_data import match_key
+
+    own_path = args.file or str(
+        Path(__file__).resolve().parents[1] / "assets" / "own-brand.json")
+    own = json.loads(Path(own_path).read_text(encoding="utf-8"))
+    want = {}
+    for lc in ("ongoing", "seasonal"):
+        for style in own.get(lc, []):
+            want[match_key(style)] = lc
+
+    # 자사 브랜드로 좁힌다 — 다른 브랜드에 같은 스타일명이 있으면 오태깅을 막는다.
+    aliases = {a.lower() for a in own.get("brand_aliases", [])}
+    rows = conn.execute("SELECT site, product_id, name, brand FROM products "
+                        "WHERE name IS NOT NULL").fetchall()
+    now = now_str()
+    tagged = defaultdict(int)
+    unmatched_styles = set(want)
+    for r in rows:
+        key = match_key(r["name"])
+        lc = want.get(key)
+        if not lc:
+            continue
+        # 브랜드가 있으면 자사 브랜드일 때만(오태깅 방지). 브랜드 미상이면 이름 일치만으로
+        if r["brand"] and aliases and r["brand"].lower() not in aliases:
+            continue
+        conn.execute(
+            "INSERT INTO product_attributes "
+            "(site, product_id, attr_name, value, basis, decided_at, ttl_days) "
+            "VALUES (?,?,?,?,?,?,?) ON CONFLICT(site, product_id, attr_name) "
+            "DO UPDATE SET value=excluded.value, decided_at=excluded.decided_at",
+            (r["site"], r["product_id"], "lifecycle", lc, "own-brand-list", now, 3650))
+        tagged[lc] += 1
+        unmatched_styles.discard(key)
+    conn.commit()
+    print("lifecycle 태깅: 온고잉 %d · 시즌 %d (자사 스타일 %d종 중 DB 매칭)"
+          % (tagged["ongoing"], tagged["seasonal"], len(want)))
+    if unmatched_styles:
+        print("  DB에 아직 없는 스타일 %d종 — 자사몰 수집 후 재실행하면 채워진다"
+              % len(unmatched_styles))
+
+
 def cmd_attr_stats(conn, _args):
     """속성별 판정 현황 — 어느 축이 얼마나 채워졌나."""
     rows = conn.execute(
@@ -748,6 +805,8 @@ def main():
     sp = sub.add_parser("set-attrs")   # D35 — 속성 판정 결과 적재
     sp.add_argument("file", help="[{site,product_id,attr_name,value,basis,ttl_days?}] JSON")
     sub.add_parser("attr-stats")       # D35 — 속성별 판정 현황
+    sp = sub.add_parser("tag-lifecycle")   # D35 — 자사 상품 온고잉/시즌 태깅
+    sp.add_argument("--file", help="자사 목록 JSON (기본 assets/own-brand.json)")
     args = p.parse_args()
 
     conn = connect(args.db)
@@ -776,6 +835,8 @@ def main():
         cmd_set_attrs(conn, args)
     elif args.cmd == "attr-stats":
         cmd_attr_stats(conn, args)
+    elif args.cmd == "tag-lifecycle":
+        cmd_tag_lifecycle(conn, args)
 
 
 if __name__ == "__main__":
