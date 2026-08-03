@@ -44,8 +44,8 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import stat_playbook as sp                                          # noqa: E402
 from eda import CAT_AXES, MIN_N, run as run_eda                     # noqa: E402
-from intel_data import (AXES, collect, matched_pairs, product_series,  # noqa: E402
-                        style_rows)
+from intel_data import (AXES, cat_axes, collect, matched_pairs,  # noqa: E402
+                        num_axes, product_series, style_rows)
 
 LABELS = dict(AXES)
 CAT_LABELS = dict(CAT_AXES)
@@ -84,6 +84,8 @@ def audience_of(*fields):
     for f in fields:
         if f in AUDIENCE_BY_FIELD:
             return AUDIENCE_BY_FIELD[f]
+        if f and f.startswith("px_"):
+            return "디자인"      # AI 프록시는 대개 상품 외형·특성 판정
     return "판매전략"
 
 
@@ -95,9 +97,25 @@ def _fmt(v):
     return "{:,}".format(v)
 
 
+def _josa(word, pair):
+    """한국어 조사 결합. 프록시 값 이름이 한글이라(영문만·혼합·평점) 받침에 따라
+    은/는·이/가를 골라야 문장이 자연스럽다. 한글 받침만 정확히 보고, 영문·기호·숫자로
+    끝나면 받침 없음으로 취급한다(그쪽은 조사 자체가 덜 어색하다).
+
+    pair: "은는" | "이가"
+    """
+    w = str(word)
+    if not w:
+        return w
+    last = w[-1]
+    has_batchim = "가" <= last <= "힣" and (ord(last) - 0xAC00) % 28 != 0
+    a, b = {"은는": ("은", "는"), "이가": ("이", "가")}[pair]
+    return w + (a if has_batchim else b)
+
+
 def _usable_metrics(eda_res):
-    return [f for f, _ in AXES
-            if next((x for x in eda_res["nulls"] if x["field"] == f), {}).get("usable")]
+    # nulls는 num_axes(data) 기준으로 만들어졌다 → numeric 프록시 축도 포함(D19·D23)
+    return [x["field"] for x in eda_res["nulls"] if x.get("usable")]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -109,7 +127,7 @@ def _usable_metrics(eda_res):
 def _chk_group(ctx):
     usable = _usable_metrics(ctx["eda"])
     axes_ok = []
-    for field, label in CAT_AXES:
+    for field, label in ctx["cat_axes"]:
         counts = defaultdict(int)
         for it in ctx["styles"]:
             if it.get(field) is not None:
@@ -272,7 +290,8 @@ def make_plan(ctx, ai_notes=None):
 def run_group(ctx):
     out = []
     usable = _usable_metrics(ctx["eda"])
-    for cat_field, cat_label in CAT_AXES:
+    labels = ctx["labels"]
+    for cat_field, cat_label in ctx["cat_axes"]:
         groups = defaultdict(list)
         for it in ctx["styles"]:          # 변형이 아니라 스타일 단위 (#7)
             if it.get(cat_field) is not None:
@@ -298,14 +317,15 @@ def run_group(ctx):
                         "method": "group_compare", "kind": "group_compare",
                         "cat_field": cat_field, "cat_label": cat_label,
                         "group_a": str(ka), "group_b": str(kb),
-                        "metric": metric, "metric_label": LABELS[metric],
+                        "metric": metric, "metric_label": labels.get(metric, metric),
                         "a": a, "b": b, "groups_truncated": truncated,
                         "effect": eff, "effect_kind": "Cliff δ",
                         "p": sp.perm_test_groups(a, b),
                         "n": len(a) + len(b), "n_a": len(a), "n_b": len(b),
                         "median_a": ma, "median_b": mb,
-                        "claim": "%s에서 %s는 %s보다 %s가 %s (중앙값 %s 대 %s)" % (
-                            cat_label, ka, kb, LABELS[metric],
+                        "claim": "%s에서 %s %s보다 %s %s (중앙값 %s 대 %s)" % (
+                            cat_label, _josa(ka, "은는"), kb,
+                            _josa(labels.get(metric, metric), "이가"),
                             "높다" if ma > mb else "낮다", _fmt(ma), _fmt(mb)),
                         "audience": audience_of(metric, cat_field),
                     })
@@ -381,11 +401,11 @@ def run_paired(ctx):
                 "method": "paired_platform", "kind": "paired", "study": res,
                 "pairs_raw": pairs,
                 "site_a": sa, "site_b": sb, "metric": metric,
-                "metric_label": LABELS[metric],
+                "metric_label": ctx["labels"].get(metric, metric),
                 "effect": res["effect"], "effect_kind": "쌍체 우세도", "p": res["p"],
                 "n": res["n_pairs"],
                 "claim": "같은 상품 %d쌍에서 %s의 %s가 %s보다 %s (중앙값 차 %s)" % (
-                    res["n_pairs"], sa, LABELS[metric], sb,
+                    res["n_pairs"], sa, ctx["labels"].get(metric, metric), sb,
                     "높다" if res["median_diff"] > 0 else "낮다",
                     _fmt(abs(res["median_diff"]))),
                 "audience": audience_of(metric),
@@ -399,7 +419,7 @@ def run_depletion(ctx):
         return []
     by_key = {r["key"]: r for r in recs}
     out = []
-    for cat_field, cat_label in CAT_AXES:
+    for cat_field, cat_label in ctx["cat_axes"]:
         groups = defaultdict(list)
         for it in ctx["items"]:
             r = by_key.get((it["site"], it["product_id"]))
@@ -421,8 +441,8 @@ def run_depletion(ctx):
                     "group_a": str(ka), "group_b": str(kb),
                     "effect": res["effect"], "effect_kind": "Cliff δ", "p": res["p"],
                     "n": res["n_a"] + res["n_b"],
-                    "claim": "%s에서 %s가 %s보다 %s 품절된다 (중앙 소진 %s 대 %s시간)" % (
-                        cat_label, ka, kb,
+                    "claim": "%s에서 %s %s보다 %s 품절된다 (중앙 소진 %s 대 %s시간)" % (
+                        cat_label, _josa(ka, "이가"), kb,
                         "빨리" if (res["km_median_a"] or 1e9) < (res["km_median_b"] or 1e9) else "늦게",
                         _fmt(res["km_median_a"]), _fmt(res["km_median_b"])),
                     "audience": "판매전략",
@@ -574,9 +594,13 @@ def analyze(db_path, contexts, ai_notes=None, plan_only=False):
     #   styles — 스타일 단위. 가격·반응처럼 색상이 같이 움직이는 것
     # 플랫폼마다 한 상품을 세는 기준이 달라서(자사몰은 색상별로, 무신사는 묶어서)
     # 변형 단위로 비교하면 n이 서로 다른 기준으로 세어진다.
+    # 프록시를 포함한 동적 축(D19·D23) — AI 자동 판정 프록시가 검정 대상에 들도록.
+    cats = cat_axes(data, CAT_AXES)
     ctx = {"items": data["items"], "styles": style_rows(data["items"]),
            "eda": eda_res, "data": data,
-           "series": product_series(db_path, contexts)}
+           "series": product_series(db_path, contexts),
+           "cat_axes": cats, "num_axes": num_axes(data),
+           "labels": dict(num_axes(data) + cats)}
 
     plan = make_plan(ctx, ai_notes)
     if plan_only:

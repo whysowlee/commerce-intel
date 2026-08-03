@@ -106,6 +106,35 @@ def numeric_axes(data):
     return [f for f in fields if any(i.get(f) is not None for i in data["items"])]
 
 
+# ── 프록시를 포함한 동적 축 (D19·D23) ──────────────────────────────────────
+# AI가 자동 정의·판정한 파생 프록시(proxy_defs)를 collect()가 상품에 px_{name}으로
+# 붙이고 meta.proxies에 목록을 담는다. **EDA·분석은 이 두 헬퍼로 축을 만들어야
+# 프록시가 검정 대상에 든다** — 고정 AXES/CAT_AXES만 순회하면 프록시가 통째로 빠진다
+# (실측: name_lang·thumb_cut·logo_presence가 판정돼 있는데 리포트에서 검정 안 됨).
+# 프록시는 사용자가 "제일 중요"하다고 한 축이다.
+
+def num_axes(data):
+    """수치축 (field, label) — 고정 AXES + numeric 프록시. judged 있는 것만."""
+    out = list(AXES)
+    for p in data["meta"].get("proxies", []):
+        if p.get("numeric") and p.get("judged"):
+            out.append(("px_" + p["name"], p["name"] + "(AI)"))
+    return out
+
+
+def cat_axes(data, base):
+    """범주축 (field, label) — base(호출자의 CAT_AXES) + 범주형 프록시.
+
+    프록시 대부분이 범주형이다(착용컷/제품컷·영문/한글·로고 유무). 이것들이 그룹 비교
+    축이 되어야 "착용컷 상품이 제품컷보다 하트가 높은가" 같은 검정이 성립한다.
+    """
+    out = list(base)
+    for p in data["meta"].get("proxies", []):
+        if not p.get("numeric") and p.get("judged"):
+            out.append(("px_" + p["name"], p["name"] + "(AI)"))
+    return out
+
+
 def collect(db_path, contexts):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
