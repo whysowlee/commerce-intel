@@ -132,18 +132,39 @@ python3 scripts/sync_sheets.py          # data/sheets_config.json + 서비스 �
 
 ### 5단계 — 리포트를 만든다
 
-두 종류다. 요청 성격으로 가른다.
+세 갈래다. 요청 성격으로 가른다.
 
 | 리포트 | 언제 | 명령 |
 |---|---|---|
-| **스토리 리포트** | 라인시트·전수조사·랭킹 diff 등 정형 산출물 | `python3 scripts/build_report.py data/raw/<파일>.json --validation data/validation.json --out output/<스토리>-<대상>-<ts>.html` |
-| **분석 대시보드 (범용)** | "전반적으로 탐색하고 싶다", 빠른 확인 | `python3 scripts/build_analysis_report.py --db data/intel.db --context "<context>" --out output/analysis-<대상>-<ts>.html` |
-| **분석 리포트 (요청 특화 — 기본)** | **특정 분석 요청** — "핏별 가격대 비교", "할인 전후 반응" 등 | AI 자유 생성(D20): `--emit-json`으로 데이터 추출 → dataviz 로드 → 요청 맞춤 HTML 작성 → `lint_analysis_html.py` 통과 → 렌더 확인. 절차는 `references/analysis-report.md` §8 |
+| **스토리 리포트** | 수집 직후 원본 JSON으로 바로 — 라인시트·전수조사·랭킹 diff | `python3 scripts/build_report.py data/raw/<파일>.json --validation data/validation.json --out output/<스토리>-<대상>-<ts>.html` |
+| **분석 리포트 (모듈 조합)** | DB에 적재된 뒤 탐색·비교. **필요한 모듈만 골라 한 리포트로** (D25) | `python3 scripts/build_analysis_report.py --db data/intel.db --context "<context>" [--modules kpi,linesheet,variants,scatter] --out output/analysis-<대상>-<ts>.html` |
+| **분석 리포트 (요청 특화)** | **특정 분석 요청** — "핏별 가격대 비교", "할인 전후 반응" 등 | AI 자유 생성(D20): `--emit-json`으로 데이터 추출 → dataviz 로드 → 요청 맞춤 HTML 작성 → `lint_analysis_html.py` 통과 → 렌더 확인. 절차는 `references/analysis-report.md` §8 |
 
-분석 리포트의 요구 스펙(변인통제 패널·축 선택·정직성 규칙)은
+**모듈은 리포트 종류가 아니라 기능이다**(D25). 기본은 전 모듈이고, 요청이 좁으면 좁혀
+쓴다. 목록은 `--list-modules`로 본다.
+
+| 모듈 | 내용 | 나오는 조건 |
+|---|---|---|
+| `kpi` | n·중위가·할인율·품절·옵션 품절률 | 항상 |
+| `scatter` | 축 선택형 산점도(색 기준·로그) | 수치 축 있음 |
+| `dist` `group` | 히스토그램 · 그룹별 박스 플롯(심슨 확인) | 수치 축 있음 |
+| `variants` | **사이즈별 재고** — 옵션 품절률·최소 판매량 | 옵션 관측 있음 |
+| `timeseries` `events` | 시계열 추이 · 가격 변경 사건 | 축적/변경 있음 |
+| `linesheet` `table` | 플랫폼 합집합 표 · 상품 표 | 플랫폼 2개 이상 / 항상 |
+
+**요청했지만 데이터가 없어 못 만든 모듈은 리포트와 콘솔에 뜬다** — 그대로 보고한다.
+"안 만든 것"과 "못 만든 것"은 다르다.
+
+분석 리포트의 요구 스펙(변인통제 패널·축 선택·모듈·정직성 규칙)은
 `references/analysis-report.md`에 있다. **요약 수치만 있는 리포트는 스펙 미달이다.**
-멀티 플랫폼 비교는 JSON을 여러 개 넘긴다(사이트당 하나). 코드 실행이 안 되는 환경이면
-`assets/report-template.html` 구조를 따라 직접 쓰되 그 사실을 리포트와 대화에 명시한다.
+스토리 리포트에서 멀티 플랫폼 비교는 JSON을 여러 개 넘긴다(사이트당 하나) — 분석 리포트는
+DB에서 합집합을 직접 만든다(`linesheet` 모듈, 매칭 규칙은 스토리 리포트와 같은 것 하나).
+코드 실행이 안 되는 환경이면 `assets/report-template.html` 구조를 따라 직접 쓰되 그 사실을
+리포트와 대화에 명시한다.
+
+두 리포트의 **조작 규약은 하나다**(D26 · `scripts/report_ui.py`) — 칩 필터(축 안 OR /
+축 간 AND)·계층 캐스케이드·묶어 보기·표 정렬·`data-tip` 도움말·불리언 수식이 양쪽에서
+같게 동작한다. 새 UI를 만들 때 이 모듈에 없는 방식을 지어내지 않는다.
 
 ## 지켜야 할 규칙
 

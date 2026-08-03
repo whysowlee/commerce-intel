@@ -1,45 +1,89 @@
-<!doctype html>
-<html lang="ko">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="referrer" content="no-referrer">
-<title>리포트 구조 템플릿</title>
-<style>
-:root {
-  color-scheme: light;
-  --page: #f9f9f7; --surface: #fcfcfb;
-  --text: #0b0b0b; --text-2: #52514e; --muted: #898781;
-  --grid: #e1e0d9; --baseline: #c3c2b7; --border: rgba(11,11,11,0.10);
-  --seq: #2a78d6;
-  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a;
-  --series-4: #eda100; --series-5: #e87ba4;
-  --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
-  --up: #006300; --down: #d03b3b;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    color-scheme: dark;
-    --page: #0d0d0d; --surface: #1a1a19;
-    --text: #ffffff; --text-2: #c3c2b7; --muted: #898781;
-    --grid: #2c2c2a; --baseline: #383835; --border: rgba(255,255,255,0.10);
-    --seq: #3987e5;
-    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70;
-    --series-4: #c98500; --series-5: #d55181;
-    --up: #0ca30c;
-  }
-}
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --page: #0d0d0d; --surface: #1a1a19;
-  --text: #ffffff; --text-2: #c3c2b7; --muted: #898781;
-  --grid: #2c2c2a; --baseline: #383835; --border: rgba(255,255,255,0.10);
-  --seq: #3987e5;
-  --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70;
-  --series-4: #c98500; --series-5: #d55181;
-  --up: #0ca30c;
-}
+#!/usr/bin/env python3
+"""리포트 공통 UI — 스토리 리포트와 분석 대시보드가 **같은 조작 규약**을 쓰게 하는 곳.
 
+두 생성기는 데이터 출처가 다르다(원본 JSON vs 정본 DB). 그래서 그리는 방식까지 같을 수는
+없지만, **읽는 사람이 배우는 규약은 하나여야 한다** — 리포트를 옮겨 다닐 때마다 필터가
+칩이었다 셀렉트였다 하면 그건 도구가 두 개인 것이다.
+
+여기 있는 것 (양쪽이 그대로 공유):
+  · 팔레트와 색 토큰 — 라이트/다크, 계열 5색 (dataviz 검증값)
+  · 컴포넌트 CSS — 칩·패싯·표·툴팁·KPI·배너·섹션·범례
+  · 툴팁 JS — `data-tip` 위임 방식(즉시 표시. `title` 속성은 1초 넘게 걸린다)
+  · 불리언 수식 컴파일러 — 플랫폼/값을 AND·OR·NOT·괄호로 조합
+  · 표 정렬·칩 필터·계층 캐스케이드 JS (DOM 기반)
+
+여기 없는 것 (구조가 달라 공유가 불가능한 것):
+  · 대시보드의 `filteredData` 재계산 파이프라인 — DOM을 숨기는 게 아니라 데이터를 다시
+    거른 뒤 전 차트를 다시 그린다. **술어(predicate)는 공유하되 적용 방식은 각자다.**
+    수식 컴파일러를 함수로 뽑아 둔 이유가 이것이다 — 양쪽이 같은 문법을 같은 의미로 읽는다.
+"""
+
+# ── dataviz 기본 팔레트 (검증 통과값) ────────────────────────────────────────
+SERIES_LIGHT = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"]
+SERIES_DARK = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181"]
+SEQ_LIGHT = "#2a78d6"
+SEQ_DARK = "#3987e5"
+
+# 계열 색은 5개다. 그 이상은 색을 늘리지 않고 **형태를 바꾼다**(작은 배수·회색 처리) —
+# 6번째 색부터는 사람이 범례와 선을 짝짓지 못한다.
+SERIES_MAX = 5
+
+# 마커 모양 — 색만으로 계열을 구분하지 않기 위한 두 번째 신호(적록색약 8%).
+MARK_SHAPES = ["circle", "tri", "sq", "dia", "cross"]
+
+_LIGHT = {"seq": SEQ_LIGHT, "s": SERIES_LIGHT}
+_DARK = {"seq": SEQ_DARK, "s": SERIES_DARK}
+
+
+def _block(lines, pad):
+    return "".join("%s%s\n" % (pad, line) for line in lines)
+
+
+def _light(pad):
+    return _block([
+        "color-scheme: light;",
+        "--page: #f9f9f7; --surface: #fcfcfb;",
+        "--text: #0b0b0b; --text-2: #52514e; --muted: #898781;",
+        "--grid: #e1e0d9; --baseline: #c3c2b7; --border: rgba(11,11,11,0.10);",
+        "--seq: %s;" % SEQ_LIGHT,
+        "--series-1: %s; --series-2: %s; --series-3: %s;" % tuple(SERIES_LIGHT[:3]),
+        "--series-4: %s; --series-5: %s;" % tuple(SERIES_LIGHT[3:]),
+        "--good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;",
+        "--up: #006300; --down: #d03b3b;",
+    ], pad)
+
+
+def _dark(pad):
+    # 다크에서는 상승색만 바꾼다 — 어두운 배경에서 #006300은 거의 검정으로 읽힌다.
+    return _block([
+        "color-scheme: dark;",
+        "--page: #0d0d0d; --surface: #1a1a19;",
+        "--text: #ffffff; --text-2: #c3c2b7; --muted: #898781;",
+        "--grid: #2c2c2a; --baseline: #383835; --border: rgba(255,255,255,0.10);",
+        "--seq: %s;" % SEQ_DARK,
+        "--series-1: %s; --series-2: %s; --series-3: %s;" % tuple(SERIES_DARK[:3]),
+        "--series-4: %s; --series-5: %s;" % tuple(SERIES_DARK[3:]),
+        "--up: #0ca30c;",
+    ], pad)
+
+
+def theme_tokens():
+    """색 토큰. 라이트가 기본이고 다크는 **시스템 설정과 `data-theme` 둘 다** 받는다.
+
+    두 리포트가 이 함수 하나를 쓴다 — 팔레트를 각자 적어 두면 한쪽만 고쳐진다.
+    """
+    return (
+        "\n:root {\n" + _light("  ") + "}\n"
+        "@media (prefers-color-scheme: dark) {\n"
+        "  :root:not([data-theme=\"light\"]) {\n" + _dark("    ") + "  }\n}\n"
+        ":root[data-theme=\"dark\"] {\n" + _dark("  ") + "}\n"
+    )
+
+
+# ── 컴포넌트 CSS ────────────────────────────────────────────────────────────
+# 두 리포트가 같은 클래스 이름과 같은 생김새를 쓴다. 여기 없는 것(스토리3 스파크라인 등)만
+# 각 생성기가 자기 CSS에 덧붙인다.
+COMPONENT_CSS = r"""
 * { box-sizing: border-box; }
 body {
   margin: 0; padding: 32px 20px 96px;
@@ -305,103 +349,13 @@ details.raw .table-wrap { margin-top: 10px; }
   transition: opacity .1s; background: var(--text); color: var(--surface);
   font-size: 12px; padding: 5px 9px; border-radius: 6px; max-width: 260px; }
 footer { max-width: 1180px; margin: 0 auto; color: var(--muted); font-size: 12px; }
-</style>
-</head>
-<body>
-<main>
-<!-- ─────────────────────────────────────────────────────────────────────
-     코드 실행이 안 되는 환경에서 리포트를 직접 쓸 때 쓰는 뼈대다.
-     이 파일은 build_report.py가 뽑아내므로 스타일이 실제 리포트와 어긋나지 않는다.
-     아래 블록을 필요한 것만 골라 복사해 채우고, 나머지는 지운다.
+"""
 
-     지켜야 할 것:
-     - 사이트가 안 준 값은 <span class="na">미노출</span>. 숫자를 지어내지 않는다.
-     - 구간 표기("300회 이상 (최근 1개월)")는 <span class="approx">문구 그대로</span>.
-     - 만족/불만족 판단은 노출된 평점·후기 수만 쓴다. 리뷰 본문을 해석하지 않는다.
-     ────────────────────────────────────────────────────────────────── -->
 
-<!-- [1] 헤더 — 항상 넣는다 -->
-<header>
-  <h1>대상 + 스토리 이름</h1>
-  <dl class="meta">
-    <div class="meta-item"><dt>사이트</dt><dd>무신사</dd></div>
-    <div class="meta-item"><dt>수집 시각</dt><dd>2026-00-00 00:00:00</dd></div>
-    <div class="meta-item"><dt>수집 항목</dt><dd>0건</dd></div>
-    <div class="meta-item"><dt>지표 노출률</dt><dd>review_count 100% · rating 100%</dd></div>
-    <div class="meta-item"><dt>이 사이트가 안 주는 지표</dt><dd>view_count</dd></div>
-  </dl>
-  <!-- 부분 수집·구조 변경 의심일 때만 남긴다. 아니면 지운다. -->
-  <div class="banner banner-critical"><strong>부분 수집 데이터다.</strong> 중단 사유를 여기 쓴다.</div>
-  <div class="banner banner-warning">필수 필드 결측률 0.0% — 기준 5%를 넘었다</div>
-  <div class="banner banner-info">스냅샷이 1개라 변화 분석을 하지 않았다.</div>
-</header>
-
-<!-- [2] KPI — 4~6개가 적당하다 -->
-<div class="kpi-row">
-  <div class="kpi">
-    <div class="kpi-label">상품 수</div>
-    <div class="kpi-value">0</div>
-    <div class="kpi-note">부연</div>
-  </div>
-</div>
-
-<!-- [3] 차트가 들어갈 자리.
-     손으로 SVG를 그리기 어려우면 차트를 빼고 표로만 간다 — 그게 정직하다.
-     비교 항목이 2개 이하면 막대그래프 대신 이 목록을 쓴다. -->
-<section>
-  <h2>플랫폼별 인기</h2>
-  <p class="section-note">사이트가 노출하는 지표만 싣는다. 미노출 지표는 만들지 않는다.</p>
-  <ul class="mini-list">
-    <li><strong>11,951</strong> 상품명 <span class="na">브랜드</span></li>
-  </ul>
-</section>
-
-<!-- [4] 상품 표 — 행마다 이 구조를 반복한다.
-     data-k는 정렬 키다. 값이 없으면 빈 문자열로 두면 정렬 시 뒤로 밀린다.
-     전수조사(스토리2) 표는 이미지 열(col-img)을 통째로 뺀다 — 1만 행 규모 대비. -->
-<section>
-  <h2>전 상품</h2>
-  <div class="table-tools">
-    <input class="filter" type="search" placeholder="상품명·브랜드로 거르기" data-for="t-main">
-    <span class="table-count" id="t-main-count">0행</span>
-  </div>
-  <div class="table-wrap">
-    <table id="t-main" class="grid">
-      <thead>
-        <tr>
-          <th class="col-img" data-sort="none">이미지</th>
-          <th class="col-name" data-sort="text">상품명</th>
-          <th data-sort="text">브랜드</th>
-          <th class="col-num" data-sort="num">가격</th>
-          <th class="col-num" data-sort="num">후기</th>
-          <th class="col-num" data-sort="num">평점</th>
-          <th class="col-num" data-sort="num">조회수</th>
-          <th class="col-num" data-sort="num">좋아요</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td class="col-img" data-k=""><a href="#" target="_blank" rel="noopener"><img class="thumb"
-            src="https://" alt="" loading="lazy" referrerpolicy="no-referrer"></a></td>
-          <td class="col-name" data-k="상품명"><a href="#" target="_blank" rel="noopener">상품명</a>
-            <span class="tag tag-out">품절</span></td>
-          <td data-k="브랜드">브랜드</td>
-          <td class="col-num" data-k="97890"><span class="price-sale">97,890원</span><br>
-            <span class="price-was">139,900원</span> <span class="tag tag-off">30%</span></td>
-          <td class="col-num" data-k="212">212</td>
-          <td class="col-num" data-k="4.8">4.8</td>
-          <td class="col-num" data-k=""><span class="approx">300회 이상 (최근 1개월)</span></td>
-          <td class="col-num" data-k="">
-            <span class="na">미노출</span></td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-</section>
-</main>
-<footer>코드 실행이 없는 환경에서 이 구조를 따라 직접 채운다. 사이트가 안 준 값은 미노출로 두고 추정하지 않는다.</footer>
-<div id="tip" role="status"></div>
-<script>
+# ── 공통 JS ─────────────────────────────────────────────────────────────────
+# `data-tip` 툴팁 · 표 정렬 · 칩 다중선택 · 불리언 수식 · 계층 캐스케이드.
+# 원시 문자열이다 — 안의 정규식 이스케이프가 JS로 그대로 나가야 한다.
+COMMON_JS = r"""
 (function () {
   var tip = document.getElementById('tip');
   document.addEventListener('mouseover', function (e) {
@@ -776,368 +730,4 @@ window.initGroupViews = function () {
   });
 };
 window.initGroupViews();
-
-// ── 스토리3 추이 렌더 ───────────────────────────────────────────────────────
-// 계열 데이터는 문서에 한 번만 심겨 있고(#series-data) 스파크라인·추이 차트·
-// 행 펼침 상세가 그 하나를 같이 쓴다. 같은 데이터를 세 번 그리지 않는다.
-(function () {
-  var holder = document.getElementById('series-data');
-  if (!holder) return;
-  var SD;
-  try { SD = JSON.parse(holder.textContent); } catch (e) { return; }
-  var STAMPS = SD.stamps || [], PROD = SD.products || {};
-  var N = Math.max(1, STAMPS.length - 1);
-  var RMIN = SD.rankMin || 1, RMAX = SD.rankMax || 1;
-  var RSPAN = Math.max(1, RMAX - RMIN);
-  var GLYPH = SD.glyph || {};
-
-  function esc(t) {
-    return String(t == null ? '' : t).replace(/[&<>"]/g, function (c) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
-    });
-  }
-  function won(v) {
-    return v == null ? '-' : v.toLocaleString('ko-KR') + '원';
-  }
-  // 연속한 시점끼리만 잇는다. 순위권 밖이던 구간은 선을 끊는다 —
-  // 이어 그리면 그 구간에도 순위가 있었다고 주장하는 것이다.
-  function segments(pts) {
-    var out = [], cur = [];
-    for (var i = 0; i < pts.length; i++) {
-      if (cur.length && pts[i][0] - cur[cur.length - 1][0] > 1) { out.push(cur); cur = []; }
-      cur.push(pts[i]);
-    }
-    if (cur.length) out.push(cur);
-    return out;
-  }
-  function pathOf(seg, xf, yf) {
-    var d = '';
-    for (var i = 0; i < seg.length; i++) {
-      d += (i ? 'L' : 'M') + xf(seg[i]).toFixed(1) + ' ' + yf(seg[i]).toFixed(1);
-    }
-    return d;
-  }
-
-  // ── 스파크라인 ────────────────────────────────────────────────────────────
-  function spark(host) {
-    var d = PROD[host.dataset.pid];
-    if (!d) return;
-    var kind = host.dataset.spark, pts = d.p, W = 104, H = 24, pad = 2;
-    if (!pts.length) { host.innerHTML = ''; return; }
-    var xf = function (p) { return pad + p[0] / N * (W - pad * 2); };
-    var yf, body = '';
-    if (kind === 'rank') {
-      // 순위 축은 전 행이 같은 범위다 — 행끼리 모양을 비교할 수 있어야 한다.
-      yf = function (p) { return pad + (p[1] - RMIN) / RSPAN * (H - pad * 2); };
-    } else {
-      var vals = pts.filter(function (p) { return p[2] != null; }).map(function (p) { return p[2]; });
-      if (!vals.length) { host.innerHTML = '<svg viewBox="0 0 104 24"></svg>'; return; }
-      var lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
-      if (hi === lo) {   // 값이 하나면 가운데 — 바닥에 그리면 '최저'로 오해된다
-        yf = function () { return H / 2; };
-      } else {
-        yf = function (p) { return pad + (1 - (p[2] - lo) / (hi - lo)) * (H - pad * 2); };
-      }
-      // 할인 구간을 뒤에 띠로 깐다 (가격이 내려간 구간과 겹쳐 보인다)
-      var runs = [], open = null;
-      for (var i = 0; i < pts.length; i++) {
-        var on = pts[i][3] != null && pts[i][3] > 0;
-        if (on && open === null) open = pts[i][0];
-        if (!on && open !== null) { runs.push([open, pts[i][0]]); open = null; }
-      }
-      if (open !== null) runs.push([open, pts[pts.length - 1][0]]);
-      for (var r = 0; r < runs.length; r++) {
-        var x0 = pad + runs[r][0] / N * (W - pad * 2);
-        var x1 = pad + runs[r][1] / N * (W - pad * 2);
-        body += '<rect class="spark-band" x="' + x0.toFixed(1) + '" y="0" width="' +
-                Math.max(1.5, x1 - x0).toFixed(1) + '" height="' + H + '"/>';
-      }
-    }
-    var segs = segments(pts.filter(function (p) { return kind === 'rank' || p[2] != null; }));
-    for (var s2 = 0; s2 < segs.length; s2++) {
-      if (segs[s2].length > 1) {
-        body += '<path class="spark-line" d="' + pathOf(segs[s2], xf, yf) + '"/>';
-      } else {
-        body += '<circle class="spark-dot" cx="' + xf(segs[s2][0]).toFixed(1) +
-                '" cy="' + yf(segs[s2][0]).toFixed(1) + '" r="1.8"/>';
-      }
-    }
-    host.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-hidden="true">' +
-                     body + '</svg>';
-  }
-  document.querySelectorAll('[data-spark]').forEach(spark);
-
-  // ── 상품 1개 패널 — 순위(좌축) + 가격(우축) + 할인 띠 ─────────────────────
-  function panel(pid, W, H, opts) {
-    opts = opts || {};
-    var d = PROD[pid];
-    if (!d) return '';
-    var pts = d.p;
-    var padL = 34, padR = 46, padT = 12, padB = 24;
-    var pw = W - padL - padR, ph = H - padT - padB;
-    if (!pts.length) return '<p class="empty">관측된 순위가 없다</p>';
-    var xf = function (p) { return padL + p[0] / N * pw; };
-    var ry = function (p) { return padT + (p[1] - RMIN) / RSPAN * ph; };
-    var pv = pts.filter(function (p) { return p[2] != null; }).map(function (p) { return p[2]; });
-    var lo = pv.length ? Math.min.apply(null, pv) : 0;
-    var hi = pv.length ? Math.max.apply(null, pv) : 1;
-    var py = hi === lo
-      ? function () { return padT + ph / 2; }
-      : function (p) { return padT + (1 - (p[2] - lo) / (hi - lo)) * ph; };
-    var out = '<svg class="chart" viewBox="0 0 ' + W + ' ' + H + '" role="img" ' +
-              'preserveAspectRatio="xMinYMin meet" aria-label="순위·가격 추이">';
-
-    // 할인 구간 띠
-    var runs = [], open = null;
-    for (var i = 0; i < pts.length; i++) {
-      var on = pts[i][3] != null && pts[i][3] > 0;
-      if (on && open === null) open = pts[i][0];
-      if (!on && open !== null) { runs.push([open, pts[i][0]]); open = null; }
-    }
-    if (open !== null) runs.push([open, pts[pts.length - 1][0]]);
-    for (var r = 0; r < runs.length; r++) {
-      var x0 = padL + runs[r][0] / N * pw, x1 = padL + runs[r][1] / N * pw;
-      out += '<rect class="spark-band" x="' + x0.toFixed(1) + '" y="' + padT +
-             '" width="' + Math.max(2, x1 - x0).toFixed(1) + '" height="' + ph + '"/>';
-    }
-    // 순위 축 (좌) — 3칸
-    for (var g = 0; g < 3; g++) {
-      var rv = RMIN + RSPAN * g / 2, gy = padT + (rv - RMIN) / RSPAN * ph;
-      out += '<line class="grid" x1="' + padL + '" y1="' + gy.toFixed(1) + '" x2="' +
-             (padL + pw) + '" y2="' + gy.toFixed(1) + '"/>';
-      out += '<text class="axis" x="' + (padL - 6) + '" y="' + (gy + 4).toFixed(1) +
-             '" text-anchor="end">' + Math.round(rv) + '위</text>';
-    }
-    // 가격 축 (우)
-    if (pv.length && hi !== lo) {
-      out += '<text class="axis axis-right" x="' + (padL + pw + 6) + '" y="' + (padT + 4) +
-             '">' + Math.round(hi / 1000) + '천</text>';
-      out += '<text class="axis axis-right" x="' + (padL + pw + 6) + '" y="' + (padT + ph) +
-             '">' + Math.round(lo / 1000) + '천</text>';
-    } else if (pv.length) {
-      out += '<text class="axis axis-right" x="' + (padL + pw + 6) + '" y="' + (padT + ph / 2 + 4) +
-             '">' + Math.round(hi / 1000) + '천</text>';
-    }
-    // 변화 표식
-    for (var m = 0; m < d.e.length; m++) {
-      var ev = d.e[m], gl = GLYPH[ev.k] || '◆';
-      if (ev.x) {
-        var ex = padL + ev.t / N * pw;
-        out += '<line class="event-line" x1="' + ex.toFixed(1) + '" y1="' + padT + '" x2="' +
-               ex.toFixed(1) + '" y2="' + (padT + ph) + '" style="stroke:var(--series-4)" ' +
-               'data-tip="' + esc(ev.l + ' · 시점 확정') + '"/>';
-        out += '<text class="event-tick" x="' + ex.toFixed(1) + '" y="' + (padT - 3) +
-               '" text-anchor="middle" style="fill:var(--series-4)">' + gl + '</text>';
-      } else {
-        var bx = padL + ev.f / N * pw, bw = Math.max(3, (ev.t - ev.f) / N * pw);
-        out += '<rect class="event-band" x="' + bx.toFixed(1) + '" y="' + padT + '" width="' +
-               bw.toFixed(1) + '" height="' + ph + '" style="fill:var(--series-4)" ' +
-               'data-tip="' + esc(ev.l + ' · 구간으로만 아는 변화') + '"/>';
-        out += '<text class="event-tick" x="' + (bx + bw / 2).toFixed(1) + '" y="' + (padT - 3) +
-               '" text-anchor="middle" style="fill:var(--series-4)">' + gl + '</text>';
-      }
-    }
-    // 가격 선 (우축, 점선)
-    if (hi !== lo) {
-      var pseg = segments(pts.filter(function (p) { return p[2] != null; }));
-      for (var q = 0; q < pseg.length; q++) {
-        if (pseg[q].length > 1) out += '<path class="price-line" d="' + pathOf(pseg[q], xf, py) + '"/>';
-      }
-    }
-    // 순위 선 (좌축, 실선) + 점
-    var rseg = segments(pts);
-    for (var t = 0; t < rseg.length; t++) {
-      if (rseg[t].length > 1) {
-        out += '<path class="line" d="' + pathOf(rseg[t], xf, ry) + '" style="stroke:var(--seq)"/>';
-      }
-    }
-    for (var u = 0; u < pts.length; u++) {
-      var p = pts[u];
-      var tip = STAMPS[p[0]] + ' · ' + p[1] + '위' + (p[2] != null ? ' · ' + won(p[2]) : '') +
-                (p[3] ? ' · 할인 ' + p[3] + '%' : '') +
-                (p[4] != null ? ' · 보는 중 ' + p[4] + '명' : '');
-      out += '<circle class="dot" cx="' + xf(p).toFixed(1) + '" cy="' + ry(p).toFixed(1) +
-             '" r="3" style="fill:var(--seq)" data-tip="' + esc(tip) + '"/>';
-    }
-    // x축
-    var every = Math.max(1, Math.ceil(STAMPS.length / (opts.wide ? 7 : 3)));
-    var lastDate = null;
-    for (var v = 0; v < STAMPS.length; v += every) {
-      var st = STAMPS[v] || '', dt = st.slice(5, 10), ck = st.slice(11, 16);
-      var lab = dt === lastDate ? ck : dt + ' ' + ck;
-      lastDate = dt;
-      out += '<text class="axis" x="' + (padL + v / N * pw).toFixed(1) + '" y="' +
-             (H - padB + 15) + '" text-anchor="middle">' + esc(lab) + '</text>';
-    }
-    out += '<line class="baseline" x1="' + padL + '" y1="' + (padT + ph) + '" x2="' +
-           (padL + pw) + '" y2="' + (padT + ph) + '"/></svg>';
-
-    var head = '<h4>' + (d.u ? '<a href="' + esc(d.u) + '" target="_blank" rel="noopener">' +
-               esc(d.n) + '</a>' : esc(d.n)) + '</h4>';
-    var ranks = pts.map(function (p) { return p[1]; });
-    var note = '<p class="panel-note">최고 ' + Math.min.apply(null, ranks) + '위 · 마지막 ' +
-               ranks[ranks.length - 1] + '위 · ' + pts.length + '/' + STAMPS.length + '회 관측' +
-               (pv.length ? ' · ' + won(pv[pv.length - 1]) : '') + '</p>';
-    return '<div class="panel">' + head + note + out + '</div>';
-  }
-
-  // ── 겹쳐 보기 (계열 5개까지) ──────────────────────────────────────────────
-  function overlay(pids) {
-    var W = 720, H = 300, padL = 44, padR = 20, padT = 16, padB = 30;
-    var pw = W - padL - padR, ph = H - padT - padB;
-    var out = '<svg class="chart" viewBox="0 0 ' + W + ' ' + H + '" role="img" ' +
-              'preserveAspectRatio="xMinYMin meet" aria-label="순위 추이">';
-    for (var g = 0; g < 4; g++) {
-      var rv = RMIN + RSPAN * g / 3, gy = padT + (rv - RMIN) / RSPAN * ph;
-      out += '<line class="grid" x1="' + padL + '" y1="' + gy.toFixed(1) + '" x2="' +
-             (padL + pw) + '" y2="' + gy.toFixed(1) + '"/>';
-      out += '<text class="axis" x="' + (padL - 8) + '" y="' + (gy + 4).toFixed(1) +
-             '" text-anchor="end">' + Math.round(rv) + '위</text>';
-    }
-    var every = Math.max(1, Math.ceil(STAMPS.length / 8)), lastDate = null;
-    for (var v = 0; v < STAMPS.length; v += every) {
-      var st = STAMPS[v] || '', dt = st.slice(5, 10), ck = st.slice(11, 16);
-      var lab = dt === lastDate ? ck : dt + ' ' + ck;
-      lastDate = dt;
-      out += '<text class="axis" x="' + (padL + v / N * pw).toFixed(1) + '" y="' + (H - padB + 16) +
-             '" text-anchor="middle">' + esc(lab) + '</text>';
-    }
-    var legend = '';
-    for (var i = 0; i < pids.length; i++) {
-      var d = PROD[pids[i]];
-      if (!d || !d.p.length) continue;
-      var color = 'var(--series-' + ((i % 5) + 1) + ')';
-      var xf = function (p) { return padL + p[0] / N * pw; };
-      var yf = function (p) { return padT + (p[1] - RMIN) / RSPAN * ph; };
-      for (var m = 0; m < d.e.length; m++) {
-        var ev = d.e[m], gl = GLYPH[ev.k] || '◆';
-        if (ev.x) {
-          var ex = padL + ev.t / N * pw;
-          out += '<line class="event-line" x1="' + ex.toFixed(1) + '" y1="' + padT + '" x2="' +
-                 ex.toFixed(1) + '" y2="' + (padT + ph) + '" style="stroke:' + color +
-                 '" data-tip="' + esc(d.n + ' · ' + ev.l + ' · 시점 확정') + '"/>';
-        } else {
-          var bx = padL + ev.f / N * pw, bw = Math.max(4, (ev.t - ev.f) / N * pw);
-          out += '<rect class="event-band" x="' + bx.toFixed(1) + '" y="' + padT + '" width="' +
-                 bw.toFixed(1) + '" height="' + ph + '" style="fill:' + color +
-                 '" data-tip="' + esc(d.n + ' · ' + ev.l + ' · 구간으로만 아는 변화') + '"/>';
-        }
-        out += '<text class="event-tick" x="' +
-               (ev.x ? padL + ev.t / N * pw : padL + (ev.f + (ev.t - ev.f) / 2) / N * pw).toFixed(1) +
-               '" y="' + (padT - 3) + '" text-anchor="middle" style="fill:' + color + '">' + gl + '</text>';
-      }
-      var segs = segments(d.p);
-      for (var s2 = 0; s2 < segs.length; s2++) {
-        if (segs[s2].length > 1) {
-          out += '<path class="line" d="' + pathOf(segs[s2], xf, yf) + '" style="stroke:' + color + '"/>';
-        }
-      }
-      for (var u = 0; u < d.p.length; u++) {
-        var p = d.p[u];
-        var tip = d.n + ' · ' + STAMPS[p[0]] + ' · ' + p[1] + '위' +
-                  (p[2] != null ? ' · ' + won(p[2]) : '');
-        out += '<circle class="dot" cx="' + xf(p).toFixed(1) + '" cy="' + yf(p).toFixed(1) +
-               '" r="3.5" style="fill:' + color + '" data-tip="' + esc(tip) + '"/>';
-      }
-      legend += '<span class="legend-item" style="color:' + color + '">' +
-                '<span class="legend-swatch"></span><span class="legend-name">' +
-                esc(d.n) + '</span></span>';
-    }
-    out += '<line class="baseline" x1="' + padL + '" y1="' + (padT + ph) + '" x2="' +
-           (padL + pw) + '" y2="' + (padT + ph) + '"/></svg>';
-    return '<div class="chart-solo">' + out +
-           '<p class="legend legend-series">' + legend + '</p>' +
-           '<p class="legend"><span class="legend-item"><span class="legend-swatch dashed"></span>' +
-           '시점 확정된 가격·할인 변화</span>' +
-           '<span class="legend-item"><span class="legend-swatch band"></span>' +
-           '구간으로만 아는 변화</span></p></div>';
-  }
-
-  // ── 표의 현재 정렬·필터를 따른다 ─────────────────────────────────────────
-  var table = document.getElementById('t-move');
-  var host = document.getElementById('trend-host');
-  var nInput = document.getElementById('trend-n');
-  var modeSel = document.getElementById('trend-mode');
-  var pickOnly = document.getElementById('trend-picked');
-  var status = document.getElementById('trend-status');
-  if (!table || !host) return;
-
-  function visiblePids() {
-    var rows = Array.prototype.slice.call(table.tBodies[0].rows);
-    var out = [];
-    for (var i = 0; i < rows.length; i++) {
-      var r = rows[i];
-      if (r.hidden || r.classList.contains('detail-row')) continue;
-      if (pickOnly && pickOnly.checked) {
-        var box = r.querySelector('.pick');
-        if (!box || !box.checked) continue;
-      }
-      if (r.dataset.pid) out.push(r.dataset.pid);
-    }
-    return out;
-  }
-
-  function render() {
-    var want = Math.max(1, Math.min(100, parseInt(nInput.value, 10) || 1));
-    var pool = visiblePids();
-    var pids = pool.slice(0, want);
-    var mode = modeSel.value;
-    if (mode === 'auto') mode = pids.length <= 5 ? 'overlay' : 'grid';
-    if (!pids.length) {
-      host.innerHTML = '<p class="empty">' +
-        (pickOnly && pickOnly.checked ? '표에서 고른 행이 없다' : '거를 조건에 맞는 상품이 없다') +
-        '</p>';
-      status.textContent = '';
-      return;
-    }
-    if (mode === 'overlay') {
-      var shown = pids.slice(0, 5);
-      host.innerHTML = overlay(shown);
-      status.textContent = '대상 ' + pool.length + '개 중 ' + shown.length + '개 · 겹쳐 보기' +
-        (pids.length > 5 ? ' (겹쳐 보기는 5개까지 — 나머지는 나란히 보기로)' : '');
-    } else {
-      host.innerHTML = '<div class="panel-grid">' + pids.map(function (p) {
-        return panel(p, 300, 150, {});
-      }).join('') + '</div>';
-      status.textContent = '대상 ' + pool.length + '개 중 ' + pids.length + '개 · 나란히 보기' +
-        (want > pool.length ? ' (요청 ' + want + '개, 대상이 ' + pool.length + '개다)' : '');
-    }
-  }
-
-  nInput.addEventListener('input', render);
-  nInput.addEventListener('change', render);
-  modeSel.addEventListener('change', render);
-  if (pickOnly) pickOnly.addEventListener('change', render);
-  table.addEventListener('click', function (e) {
-    if (e.target.classList && e.target.classList.contains('pick')) render();
-  });
-  // 정렬·필터가 바뀌면 차트도 따라간다
-  document.addEventListener('tableview', render);
-
-  // ── 행을 누르면 그 상품의 상세를 펼친다 ──────────────────────────────────
-  table.tBodies[0].addEventListener('click', function (e) {
-    if (e.target.closest('a') || e.target.classList.contains('pick')) return;
-    var row = e.target.closest('tr');
-    if (!row || !row.dataset.pid || row.classList.contains('detail-row')) return;
-    var next = row.nextElementSibling;
-    if (next && next.classList.contains('detail-row')) {
-      next.remove();
-      row.classList.remove('is-open');
-      return;
-    }
-    var span = row.cells.length;
-    var tr = document.createElement('tr');
-    tr.className = 'detail-row';
-    var td = document.createElement('td');
-    td.colSpan = span;
-    td.innerHTML = panel(row.dataset.pid, 700, 240, { wide: true });
-    tr.appendChild(td);
-    row.parentNode.insertBefore(tr, row.nextSibling);
-    row.classList.add('is-open');
-  });
-
-  render();
-})();
-</script>
-</body>
-</html>
+"""

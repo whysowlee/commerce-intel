@@ -26,11 +26,9 @@ import re
 import sys
 from datetime import datetime
 
-# ── dataviz 기본 팔레트 (검증 통과값) ────────────────────────────────────────
-SERIES_LIGHT = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"]
-SERIES_DARK = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181"]
-SEQ_LIGHT = "#2a78d6"
-SEQ_DARK = "#3987e5"
+# 색 토큰·컴포넌트 CSS·공통 조작 JS는 report_ui가 갖는다 — 분석 대시보드와 같은 것을 쓴다.
+# 팔레트를 두 파일에 각각 적어 두면 한쪽만 고쳐져 리포트끼리 색이 어긋난다.
+import report_ui as ui
 
 STORY_LABEL = {
     "brand-linesheet": "브랜드 라인시트",
@@ -156,18 +154,24 @@ def rounded_end_bar(x, y, width, height, radius=4):
     )
 
 
-def hbar_chart(rows, unit="", max_rows=10):
+def axis_note(text):
+    """차트가 무엇을 어떤 단위로 재는지 한 줄로 적는다. 축 라벨·단위는 생략하지 않는다."""
+    return '<p class="chart-axis-note">%s</p>' % esc(text) if text else ""
+
+
+def hbar_chart(rows, unit="", max_rows=10, note=None):
     """가로 막대 — 크기 비교. 한 가지 색(sequential)만 쓴다.
 
     rows: [(label, value, subtitle)]
     항목이 2개 이하면 막대그래프를 그리지 않는다 — 비교할 게 없는 차트는 형태가 틀렸다.
+    `note`는 축이 무엇을 재는지 적는 한 줄이다(막대 끝 숫자만으로는 단위를 모른다).
     """
     rows = [r for r in rows if is_num(r[1])][:max_rows]
     if not rows:
         return '<p class="empty">표시할 값이 없다 (해당 지표가 모두 미노출)</p>'
 
     if len(rows) <= 2:
-        return '<ul class="mini-list">%s</ul>' % "".join(
+        return axis_note(note) + '<ul class="mini-list">%s</ul>' % "".join(
             "<li><strong>%s%s</strong> %s%s</li>"
             % (
                 format(int(value), ","),
@@ -177,6 +181,16 @@ def hbar_chart(rows, unit="", max_rows=10):
             )
             for label, value, subtitle in rows
         )
+
+    # 전 항목이 0이면 막대는 전부 같은 길이의 토막이 된다 — 차트가 아무 말도 못 한다.
+    # '차이가 없다'는 발견 자체는 문장으로 말하는 편이 정확하다.
+    if all(value == 0 for _, value, _ in rows):
+        return ('<p class="empty">비교한 %d개 항목이 전부 0이다 — 그릴 차이가 없다</p>'
+                % len(rows)) + axis_note(note)
+
+    # 음수가 섞이면 0 기준 단방향 막대로는 그릴 수 없다 — 척도가 뒤집힌다.
+    if any(value < 0 for _, value, _ in rows):
+        return diverging_hbar_chart(rows, unit) + axis_note(note)
 
     top = max(r[1] for r in rows) or 1
     row_h, gap, label_w = 24, 6, 140
@@ -211,11 +225,84 @@ def hbar_chart(rows, unit="", max_rows=10):
         '<line class="baseline" x1="%d" y1="0" x2="%d" y2="%d"/>' % (label_w, label_w, height - 8)
     )
     parts.append("</svg>")
+    return "".join(parts) + axis_note(note)
+
+
+def diverging_hbar_chart(rows, unit=""):
+    """부호가 있는 값의 가로 막대 — **0을 가운데 기준선**에 둔다.
+
+    '품목별 평균 판매가 차이'처럼 음수가 나오는 값을 단방향 막대로 그리면 척도가 뒤집힌다:
+    최댓값이 음수면 `value / top`이 양수가 되어 **가장 작은 값이 가장 긴 막대**가 된다.
+    방향은 색만으로 말하지 않는다 — 막대가 뻗는 쪽과 값 앞의 부호로도 읽힌다(색각 이상 대비).
+    """
+    span = max(abs(value) for _, value, _ in rows) or 1
+    row_h, gap, label_w = 24, 6, 140
+    width, pad_side = 520, 62
+    plot_h = len(rows) * (row_h + gap) - gap + 8
+    height = plot_h + 14        # 기준선 아래 `0` 라벨 자리
+    plot_w = width - label_w - pad_side
+    half = plot_w / 2
+    zero_x = label_w + half
+
+    parts = [
+        '<svg class="chart" viewBox="0 0 %d %d" role="img" '
+        'preserveAspectRatio="xMinYMin meet" aria-label="0 기준 좌우 비교 %d개">'
+        % (width, height, len(rows))
+    ]
+    for idx, (label, value, subtitle) in enumerate(rows):
+        y = idx * (row_h + gap)
+        bar_w = max(1.5, abs(value) / span * half)
+        x = zero_x if value >= 0 else zero_x - bar_w
+        sign = "+" if value > 0 else ("−" if value < 0 else "")
+        shown = "%s%s%s" % (sign, format(int(abs(value)), ","), unit)
+        tip = "%s — %s" % (label, shown)
+        if subtitle:
+            tip += " · %s" % subtitle
+        parts.append(
+            '<text class="bar-label" x="%d" y="%.1f" text-anchor="end">%s</text>'
+            % (label_w - 10, y + row_h * 0.68, esc(clip(label, 13)))
+        )
+        parts.append(
+            '<rect class="bar%s" x="%.1f" y="%.1f" width="%.1f" height="%d" rx="3" '
+            'data-tip="%s"><title>%s</title></rect>'
+            % (" bar-neg" if value < 0 else "", x, y + 3, bar_w, row_h - 6,
+               esc(tip), esc(tip))
+        )
+        # 값 라벨은 막대 바깥에 두되, 자리가 없으면 막대 **안쪽**에 넣는다.
+        # 바깥에 그대로 두면 가장 긴 막대에서 품목 이름 위에 겹쳐 찍힌다.
+        text_w = len(shown) * 6.4
+        ty = y + row_h * 0.68
+        if value < 0:
+            outside = x - 6 - text_w > label_w
+            parts.append(
+                '<text class="bar-value%s" x="%.1f" y="%.1f" text-anchor="%s">%s</text>'
+                % ("" if outside else " bar-value-in",
+                   x - 6 if outside else x + 6, ty, "end" if outside else "start", esc(shown))
+            )
+        else:
+            outside = x + bar_w + 6 + text_w < width
+            parts.append(
+                '<text class="bar-value%s" x="%.1f" y="%.1f"%s>%s</text>'
+                % ("" if outside else " bar-value-in",
+                   x + bar_w + 6 if outside else x + bar_w - 6, ty,
+                   "" if outside else ' text-anchor="end"', esc(shown))
+            )
+    parts.append(
+        '<line class="baseline" x1="%.1f" y1="0" x2="%.1f" y2="%d"/>'
+        % (zero_x, zero_x, plot_h)
+    )
+    parts.append('<text class="axis" x="%.1f" y="%d" text-anchor="middle">0</text>'
+                 % (zero_x, plot_h + 11))
+    parts.append("</svg>")
     return "".join(parts)
 
 
-def dist_chart(buckets, unit="개"):
-    """세로 막대 — 분포. buckets: [(label, count)]"""
+def dist_chart(buckets, unit="개", note=None):
+    """세로 막대 — 분포. buckets: [(label, count)]
+
+    `note`는 가로축이 무엇의 구간인지 적는다. 가격 구간 라벨은 **구간 하한**이라
+    적어 두지 않으면 '3만'을 대푯값으로 읽는다.
+    """
     buckets = [b for b in buckets if is_num(b[1])]
     if not buckets:
         return '<p class="empty">분포를 계산할 값이 없다</p>'
@@ -256,7 +343,7 @@ def dist_chart(buckets, unit="개"):
     parts.append('<line class="baseline" x1="%d" y1="%.1f" x2="%d" y2="%.1f"/>'
                  % (pad_l, pad_t + plot_h, width - 12, pad_t + plot_h))
     parts.append("</svg>")
-    return "".join(parts)
+    return "".join(parts) + axis_note(note)
 
 
 # 추이 요약 규칙 (2026-07-29 확정): 시점이 48개를 넘으면 균등 구간의 마지막 스냅샷만 그린다.
@@ -301,105 +388,6 @@ def time_axis_labels(stamps, max_labels=8):
     return labels
 
 
-def series_legend(series_list):
-    """계열 이름을 차트 아래 범례로 낸다.
-
-    선 끝에 직접 붙이는 게 원래는 읽기 좋지만, 랭킹은 상품이 서로 다른 시점에
-    순위권 밖으로 빠져서 선 끝 x가 흩어진다 — 라벨이 서로 겹치고 이름이 잘린다.
-    범례로 내리면 이름을 온전히 싣고 플롯 폭도 넓게 쓴다.
-    """
-    if not series_list:
-        return ""
-    items = "".join(
-        '<span class="legend-item" style="color: var(--series-%d)">'
-        '<span class="legend-swatch"></span>'
-        '<span class="legend-name">%s</span></span>' % (idx + 1, esc(series["name"]))
-        for idx, series in enumerate(series_list)
-    )
-    return '<p class="legend legend-series">%s</p>' % items
-
-
-def segments_of(points):
-    """연속한 시점끼리만 이어 붙인 구간 목록.
-
-    순위권 밖으로 나갔던 구간은 값이 없으므로 **선을 끊는다.** 이어 그리면 그 구간에도
-    순위가 있었다고 주장하는 셈이다(report-spec: "중간에 순위권 밖으로 나갔던 구간은 끊긴다").
-    """
-    segments, current = [], []
-    for point in points:
-        if current and point[2] - current[-1][2] > 1:
-            segments.append(current)
-            current = []
-        current.append(point)
-    if current:
-        segments.append(current)
-    return segments
-
-
-def polyline(points):
-    return " ".join(
-        ("M%.1f %.1f" if i == 0 else "L%.1f %.1f") % (p[0], p[1])
-        for i, p in enumerate(points)
-    )
-
-
-def value_trend_chart(series_list, stamps, unit="명"):
-    """실시간 지표 등 일반 수치의 추이 선그래프. 0을 기준선으로 둔다. 최대 5개 계열."""
-    series_list = [s for s in series_list if any(is_num(p) for p in s["points"])][:5]
-    if not series_list or len(stamps) < 2:
-        return None
-
-    top = max(p for s in series_list for p in s["points"] if is_num(p))
-    if top <= 0:
-        return None
-
-    width, height = 720, 260
-    pad_l, pad_r, pad_t, pad_b = 52, 20, 16, 44
-    plot_w = width - pad_l - pad_r
-    plot_h = height - pad_t - pad_b
-    step = plot_w / max(1, len(stamps) - 1)
-
-    def y_of(value):
-        return pad_t + (1 - value / top) * plot_h
-
-    parts = ['<svg class="chart" viewBox="0 0 %d %d" role="img" '
-             'preserveAspectRatio="xMinYMin meet" aria-label="실시간 지표 추이">' % (width, height)]
-    for i in range(4):
-        value = top * (3 - i) / 3
-        gy = pad_t + plot_h * i / 3
-        parts.append('<line class="grid" x1="%d" y1="%.1f" x2="%.1f" y2="%.1f"/>'
-                     % (pad_l, gy, pad_l + plot_w, gy))
-        parts.append('<text class="axis" x="%d" y="%.1f" text-anchor="end">%s</text>'
-                     % (pad_l - 8, gy + 4, format(int(round(value)), ",")))
-    for idx, text in time_axis_labels(stamps):
-        parts.append('<text class="axis" x="%.1f" y="%d" text-anchor="middle">%s</text>'
-                     % (pad_l + idx * step, height - pad_b + 18, esc(text)))
-
-    for s_idx, series in enumerate(series_list):
-        color_var = "var(--series-%d)" % (s_idx + 1)
-        pts = [
-            (pad_l + idx * step, y_of(value), idx, value)
-            for idx, value in enumerate(series["points"])
-            if is_num(value)
-        ]
-        if not pts:
-            continue
-        for segment in segments_of(pts):
-            if len(segment) > 1:
-                parts.append('<path class="line" d="%s" style="stroke:%s"/>'
-                             % (polyline(segment), color_var))
-        for x, y, idx, value in pts:
-            tip = "%s · %s · %s%s" % (series["name"], stamps[idx], format(int(value), ","), unit)
-            parts.append(
-                '<circle class="dot" cx="%.1f" cy="%.1f" r="4" style="fill:%s" '
-                'data-tip="%s"><title>%s</title></circle>' % (x, y, color_var, esc(tip), esc(tip))
-            )
-    parts.append('<line class="baseline" x1="%d" y1="%.1f" x2="%.1f" y2="%.1f"/>'
-                 % (pad_l, pad_t + plot_h, pad_l + plot_w, pad_t + plot_h))
-    parts.append("</svg>")
-    return "".join(parts) + series_legend(series_list)
-
-
 def nearest_stamp_index(stamps, at):
     """추이 차트가 요약된 시점만 그릴 수 있으므로, 변화 시점을 가장 가까운 시점에 붙인다.
 
@@ -416,111 +404,6 @@ def nearest_stamp_index(stamps, at):
     return idx
 
 
-def rank_trend_chart(series_list, stamps, events=None):
-    """순위 추이 선그래프. 순위는 작을수록 위로 간다. 최대 5개 계열.
-
-    events가 있으면 같은 좌표계 위에 가격·할인 변화 시점을 세로선으로 겹쳐 그린다 —
-    "할인을 시작하니 순위가 올랐는가"를 표 두 개 왕복 없이 보게 하려는 것이다.
-    인과를 주장하는 게 아니라 두 시계열을 한 축에 놓는 것뿐이다.
-    """
-    series_list = series_list[:5]
-    if not series_list or len(stamps) < 2:
-        return '<p class="empty">추이를 그리려면 스냅샷이 2개 이상 필요하다</p>'
-
-    ranks = [p for s in series_list for p in s["points"] if is_num(p)]
-    if not ranks:
-        return '<p class="empty">순위 값이 없다</p>'
-    worst = max(ranks)
-    best = min(ranks)
-    span = max(1, worst - best)
-
-    width, height = 720, 300
-    pad_l, pad_r, pad_t, pad_b = 44, 20, 16, 44
-    plot_w = width - pad_l - pad_r
-    plot_h = height - pad_t - pad_b
-    step = plot_w / max(1, len(stamps) - 1)
-
-    def y_of(rank):
-        return pad_t + (rank - best) / span * plot_h
-
-    parts = ['<svg class="chart" viewBox="0 0 %d %d" role="img" '
-             'preserveAspectRatio="xMinYMin meet" aria-label="순위 추이">' % (width, height)]
-    for i in range(4):
-        rank = best + span * i / 3
-        gy = y_of(rank)
-        parts.append('<line class="grid" x1="%d" y1="%.1f" x2="%.1f" y2="%.1f"/>'
-                     % (pad_l, gy, pad_l + plot_w, gy))
-        parts.append('<text class="axis" x="%d" y="%.1f" text-anchor="end">%d위</text>'
-                     % (pad_l - 8, gy + 4, round(rank)))
-    for idx, text in time_axis_labels(stamps):
-        parts.append('<text class="axis" x="%.1f" y="%d" text-anchor="middle">%s</text>'
-                     % (pad_l + idx * step, height - pad_b + 18, esc(text)))
-
-    # 가격·할인 변화 시점을 선 아래 레이어에 먼저 깔아 순위 선을 가리지 않게 한다.
-    #
-    # 시점이 스냅샷 1칸으로 확정된 사건만 세로 점선으로 찍는다. 상품이 순위권 밖에 있던
-    # 구간에 걸친 사건은 **띠**로 그린다 — 정확한 x에 선을 그으면 없는 정밀도를 주장하는 셈이다.
-    for event in events or []:
-        i_to = nearest_stamp_index(stamps, event.get("to_at") or event.get("at"))
-        if i_to is None:
-            continue
-        x_to = pad_l + i_to * step
-        color_var = "var(--series-%d)" % (event.get("series_idx", 0) + 1)
-        label = PRICE_CHANGE_LABEL.get(event.get("kind"), event.get("kind"))
-        mark = EVENT_MARK.get(event.get("kind"), "◆")
-
-        if event.get("exact_at"):
-            tip = "%s · %s · %s" % (event.get("name") or "", event.get("to_at"), label)
-            parts.append(
-                '<line class="event-line" x1="%.1f" y1="%d" x2="%.1f" y2="%.1f" style="stroke:%s" '
-                'data-tip="%s"><title>%s</title></line>'
-                % (x_to, pad_t, x_to, pad_t + plot_h, color_var, esc(tip), esc(tip))
-            )
-            tick_x = x_to
-        else:
-            i_from = nearest_stamp_index(stamps, event.get("from_at"))
-            x_from = pad_l + (i_from if i_from is not None else i_to) * step
-            band_w = max(4.0, x_to - x_from)
-            tip = "%s · %s ~ %s 사이 · %s (스냅샷 %s개 결석)" % (
-                event.get("name") or "", event.get("from_at"), event.get("to_at"),
-                label, event.get("gap_snapshots"),
-            )
-            parts.append(
-                '<rect class="event-band" x="%.1f" y="%d" width="%.1f" height="%.1f" '
-                'style="fill:%s" data-tip="%s"><title>%s</title></rect>'
-                % (x_from, pad_t, band_w, plot_h, color_var, esc(tip), esc(tip))
-            )
-            tick_x = x_from + band_w / 2
-        parts.append(
-            '<text class="event-tick" x="%.1f" y="%d" text-anchor="middle" style="fill:%s" '
-            'data-tip="%s">%s</text>'
-            % (tick_x, pad_t - 4, color_var, esc(tip), esc(mark))
-        )
-
-    for s_idx, series in enumerate(series_list):
-        color_var = "var(--series-%d)" % (s_idx + 1)
-        pts = []
-        for idx, rank in enumerate(series["points"]):
-            if not is_num(rank):
-                continue
-            pts.append((pad_l + idx * step, y_of(rank), idx, rank))
-        if not pts:
-            continue
-        # 순위권 밖이던 구간은 선을 끊는다 — 이어 그으면 없던 순위를 만들어내는 것이다
-        for segment in segments_of(pts):
-            if len(segment) > 1:
-                parts.append('<path class="line" d="%s" style="stroke:%s"/>'
-                             % (polyline(segment), color_var))
-        for x, y, idx, rank in pts:
-            tip = "%s · %s · %d위" % (series["name"], stamps[idx], rank)
-            parts.append(
-                '<circle class="dot" cx="%.1f" cy="%.1f" r="4.5" style="fill:%s" '
-                'data-tip="%s"><title>%s</title></circle>' % (x, y, color_var, esc(tip), esc(tip))
-            )
-    parts.append("</svg>")
-    return "".join(parts) + series_legend(series_list)
-
-
 def clip(text, limit):
     text = "" if text is None else str(text)
     return text if len(text) <= limit else text[: limit - 1] + "…"
@@ -534,6 +417,10 @@ def price_label(value):
         man = value / 10000.0
         return "%.0f만" % man if abs(man - round(man)) < 0.05 else "%.1f만" % man
     return format(int(value), ",")
+
+
+# 가격 분포의 가로축 라벨은 구간의 **하한**이다 — 안 적으면 대푯값으로 읽힌다.
+PRICE_DIST_AXIS = "가로: 판매가 구간(라벨은 구간 하한, 원) · 세로: 상품 수(개)"
 
 
 def nice_buckets(values, target=8):
@@ -654,7 +541,11 @@ def facet_block(items, facets, table_id):
             groups.append(
                 '<div class="facet-group facet-expr" data-for="%s" data-facet="%d">'
                 '<span class="facet-label">입점 수식</span>'
-                '<span class="expr-hint" title="플랫폼을 AND·OR·NOT·괄호로 조합한다. 예: (A AND B) OR C · A AND NOT B">?</span>'
+                # `title` 속성은 브라우저가 1초 넘게 기다렸다 띄운다 — 도움말이 안 뜬 걸로 읽힌다.
+                # 리포트 자체 툴팁(data-tip)은 hover 즉시 뜬다. 도움말은 전부 이쪽을 쓴다.
+                '<span class="expr-hint" data-tip="플랫폼 이름을 AND·OR·NOT·괄호로 조합한다. '
+                '예: (무신사 AND 29CM) OR 자사몰 · 무신사 AND NOT 29CM. '
+                '아래 칩을 누르면 커서 위치에 끼워 넣는다">?</span>'
                 '<span class="expr-chips">%s%s'
                 '<button type="button" class="chip expr-clear" data-ins="">지우기</button></span>'
                 '<input type="text" class="expr-input" placeholder="예: %s AND %s" spellcheck="false">'
@@ -693,7 +584,7 @@ def facet_block(items, facets, table_id):
         # 동작이 다른 축이므로 화면에 그 사실을 적는다 — 안 적으면 OR로 읽는다.
         # 배지는 `facet-label` **밖**에 둔다. 안에 넣으면 라벨 텍스트가 오염된다.
         mode_badge = (
-            '<span class="facet-mode" title="여러 개를 켜면 그 플랫폼에 모두 있는 상품만 남는다">모두 만족</span>'
+            '<span class="facet-mode" data-tip="여러 개를 켜면 그 플랫폼에 모두 있는 상품만 남는다">모두 만족</span>'
             if match == "all" else ""
         )
         casc = facet.get("cascade")   # (level:int, key:str) — 계층 캐스케이드 축
@@ -720,7 +611,7 @@ def th_label(col):
 
 
 def product_table(items, columns, table_id, facets=None, placeholder="상품명·브랜드로 거르기",
-                  row_id=None, selectable=False):
+                  row_id=None, selectable=False, group_by=None):
     head = "".join(
         '<th class="%s" data-sort="%s">%s</th>' % (col.get("cls", ""), col["type"], th_label(col))
         for col in columns
@@ -745,13 +636,14 @@ def product_table(items, columns, table_id, facets=None, placeholder="상품명�
         if row_id is not None:
             attrs += ' data-pid="%s"' % esc(row_id(item))
         rows.append("<tr%s>%s</tr>" % (attrs, "".join(cells)))
+    tool, table_attr = group_tool(columns, table_id, group_by, offset=1 if selectable else 0)
     return (
         "%s"
         '<div class="table-tools">'
         '<input class="filter" type="search" placeholder="%s" '
         'data-for="%s" aria-label="표 거르기">'
-        '<span class="table-count" id="%s-count">%d행</span></div>'
-        '<div class="table-wrap"><table id="%s" class="grid"><thead><tr>%s</tr></thead>'
+        '<span class="table-count" id="%s-count">%d행</span>%s</div>'
+        '<div class="table-wrap"><table id="%s" class="grid"%s><thead><tr>%s</tr></thead>'
         "<tbody>%s</tbody></table></div>"
         % (
             facet_block(items, facets, table_id),
@@ -759,11 +651,52 @@ def product_table(items, columns, table_id, facets=None, placeholder="상품명�
             table_id,
             table_id,
             len(items),
+            tool,
             table_id,
+            table_attr,
             head,
             "".join(rows),
         )
     )
+
+
+# 묶어 보기 단계 — 카테고리 문자열 `대 > 중 > 소`의 깊이다.
+GROUP_LEVELS = [(0, "안 묶음"), (1, "대분류"), (2, "중분류"), (3, "소분류")]
+
+# 단일 사이트 표(라인시트·전수조사)의 묶어 보기. 가격은 중위값, 반응은 합이다 —
+# 가격을 합치면 뜻이 없고 하트를 중위로 내면 품목 규모가 사라진다.
+LINE_GROUP_BY = {
+    "col": "카테고리",
+    "aggs": [("중위가", "가격", "median-won"), ("후기 합", "후기", "sum"),
+             ("좋아요 합", "좋아요", "sum")],
+}
+
+
+def group_tool(columns, table_id, group_by, offset=0):
+    """계층 묶어 보기 조작부와 표에 붙일 설정.
+
+    `group_by`: {"col": 열이름, "aggs": [(라벨, 열이름, "sum"|"median"|"median-won")]}
+    열 인덱스는 **열 이름으로 찾는다** — 열 구성이 사이트 수에 따라 달라지므로
+    숫자를 손으로 적으면 조용히 어긋난다. 없는 열은 조용히 건너뛴다.
+    """
+    if not group_by:
+        return "", ""
+    index = {col["label"]: i + offset for i, col in enumerate(columns)}
+    cat = index.get(group_by["col"])
+    if cat is None:
+        return "", ""
+    aggs = [[label, index[name], kind]
+            for label, name, kind in group_by.get("aggs", []) if name in index]
+    cfg = {"cat": cat, "aggs": aggs, "span": len(columns) + offset}
+    options = "".join(
+        '<option value="%d">%s</option>' % (depth, esc(name)) for depth, name in GROUP_LEVELS)
+    tool = (
+        '<span class="group-tool"><label for="%s-group">묶어 보기</label>'
+        '<select id="%s-group" class="group-level" data-for="%s">%s</select>'
+        '<span class="th-tip" data-tip="카테고리를 대/중/소 단계로 접는다. 집계 행에는 '
+        '지금 필터를 통과한 행만 들어가고, 행을 누르면 그 품목만 펼쳐진다">?</span></span>'
+        % (table_id, table_id, table_id, options))
+    return tool, " data-groupby='%s'" % json.dumps(cfg, ensure_ascii=False)
 
 
 def _cat_prefix(v, depth):
@@ -826,21 +759,30 @@ def union_sold_out(row, sites):
     return all(bool(r.get("sold_out")) for r in records)
 
 
-def attribute_facets(items):
-    """스토리2 속성(핏 등)을 축마다 하나씩 다중 선택 필터로 만든다."""
+def attribute_keys(items):
+    """상품에 붙은 속성 축 이름을 **처음 나온 순서대로** 모은다.
+
+    필터 축(attribute_facets)과 표의 열(attr_column)이 같은 순서를 봐야 칩과 열이
+    어긋나지 않는다 — 두 곳에서 따로 세지 않는다.
+    """
     keys = []
     for item in items:
         attrs = item.get("attributes")
         if isinstance(attrs, dict):
             for key in attrs:
-                if key not in keys:
+                if str(key) not in keys:
                     keys.append(str(key))
+    return keys
+
+
+def attribute_facets(items):
+    """스토리2 속성(핏 등)을 축마다 하나씩 다중 선택 필터로 만든다."""
     return [
         {
             "label": key,
             "values": (lambda i, k=key: [str((i.get("attributes") or {}).get(k) or "unknown")]),
         }
-        for key in keys
+        for key in attribute_keys(items)
     ]
 
 
@@ -907,15 +849,8 @@ LIVE_COLUMNS = [
 
 
 def attr_column(items):
-    keys = []
-    for item in items:
-        attrs = item.get("attributes")
-        if isinstance(attrs, dict):
-            for key in attrs:
-                if key not in keys:
-                    keys.append(str(key))
     columns = []
-    for key in keys:
+    for key in attribute_keys(items):
         columns.append(
             {
                 "label": key,
@@ -1195,7 +1130,9 @@ def category_popularity_body(datasets):
             if rows:
                 bars.append(
                     '<div class="chart-block"><h3>%s — 품목별 %s (상위 8)</h3>%s</div>'
-                    % (esc(label), esc(metric_label), hbar_chart(rows, max_rows=8))
+                    % (esc(label), esc(metric_label),
+                       hbar_chart(rows, max_rows=8,
+                                  note="가로: %s(개, 노출값 합) · 값 큰 순" % metric_label))
                 )
         for metric, metric_label in (("like", "상품당 하트"), ("review", "상품당 후기")):
             rows = sorted(
@@ -1210,7 +1147,10 @@ def category_popularity_body(datasets):
             if rows:
                 bars.append(
                     '<div class="chart-block"><h3>%s — 품목별 %s (상위 8)</h3>%s</div>'
-                    % (esc(label), esc(metric_label), hbar_chart(rows, max_rows=8))
+                    % (esc(label), esc(metric_label),
+                       hbar_chart(rows, max_rows=8,
+                                  note="가로: %s(개) — 그 지표가 노출된 상품 수로만 나눴다"
+                                       % metric_label))
                 )
         if bars:
             parts.append('<div class="chart-grid">%s</div>' % "".join(bars))
@@ -1646,7 +1586,8 @@ def coverage_gap_block(union, sites, axis, table_id):
         if prices:
             charts.append(
                 '<div class="chart-block"><h3>%s 단독 — 판매가 분포</h3>%s</div>'
-                % (esc(site_name(site)), dist_chart(nice_buckets(prices))))
+                % (esc(site_name(site)),
+                   dist_chart(nice_buckets(prices), note=PRICE_DIST_AXIS)))
     head = kpi_tiles(tiles) if tiles else ""
     chart = '<div class="chart-grid">%s</div>' % "".join(charts) if charts else ""
     return head + chart + product_table(rows, columns, table_id, placeholder="품목명으로 거르기")
@@ -1764,7 +1705,10 @@ def response_strength_block(union, sites, axis, table_id):
                 bars.append(
                     '<div class="chart-block"><h3>%s 배율 — %s ÷ %s (상위 8)</h3>%s</div>'
                     % (esc(metric_label), esc(site_name(a)), esc(site_name(b)),
-                       hbar_chart(ranked, unit="배", max_rows=8))
+                       hbar_chart(ranked, unit="배", max_rows=8,
+                                  note="가로: %s 합의 배율(배, 1.0 = 두 플랫폼이 같음) · "
+                                       "플랫폼 규모 차이는 표의 '기준 대비' 열로 걷어낸다"
+                                       % metric_label))
                 )
     chart = '<div class="chart-grid">%s</div>' % "".join(bars) if bars else ""
     return chart + product_table(rows, columns, table_id, placeholder="품목명으로 거르기")
@@ -1854,10 +1798,16 @@ def price_gap_summary(union, sites, axis):
     )
     chart = ""
     if cat_rows:
+        # 부호가 있는 값이라 0을 가운데 둔 좌우 막대로 그린다(hbar_chart가 자동으로 넘긴다).
+        # 오른쪽이 `a가 더 비싸다`, 왼쪽이 `b가 더 비싸다`이며 0이 같은 값이다.
         chart = (
             '<div class="chart-grid"><div class="chart-block">'
             '<h3>품목별 평균 판매가 차이 (%s − %s)</h3>%s</div></div>'
-            % (esc(site_name(a)), esc(site_name(b)), hbar_chart(cat_rows, unit="원", max_rows=10))
+            % (esc(site_name(a)), esc(site_name(b)),
+               hbar_chart(cat_rows, unit="원", max_rows=10,
+                          note="가로: 매칭 상품 평균 판매가 차이(원) · 0 기준 · "
+                               "오른쪽(+)이면 %s가 비싸고 왼쪽(−)이면 %s가 비싸다"
+                               % (site_name(a), site_name(b))))
         )
     note = (
         '<p class="section-note">매칭 %s개 중 <strong>판매가가 같은 상품 %s개</strong>, '
@@ -1928,7 +1878,9 @@ def platform_compare_body(union, sites, axis):
 
     if union["collisions"]:
         out.append(banner(
-            "warn",
+            # CSS에 있는 종류는 critical·warning·info뿐이다. `warn`으로 쓰면 클래스가
+            # 매치되지 않아 경고가 무채색 기본 배너로 조용히 내려앉는다.
+            "warning",
             "한 사이트 안에서 정규화 상품명이 겹치는 레코드가 <strong>%d건</strong> 있다. "
             "첫 레코드를 대표로 썼고 나머지는 표에 나오지 않는다 — 동명이품인지 중복 수집인지 확인이 필요하다."
             % union["collisions"],
@@ -2041,6 +1993,11 @@ def linesheet_body(datasets):
                     facets=[sold_out_facet(union["rows"], lambda r, s=sites: union_sold_out(r, s)),
                             price_gap_facet(union["rows"], sites),
                             presence_facet(sites)] + union_category_facet(sites, axis),
+                    # 합집합 표는 사이트 수만큼 열이 붙어 길다 — 품목 단계로 접어 볼 수 있게 한다.
+                    # 집계는 사이트별 중위 판매가다(합산은 뜻이 없다).
+                    group_by={"col": "품목",
+                              "aggs": [("%s 중위가" % site_name(s), "%s 가격" % site_name(s),
+                                        "median-won") for s in sites]},
                 ),
                 note="<strong>%s개 행</strong> = 플랫폼 합집합이다. 양쪽에 있는 상품은 1행이고 "
                 "플랫폼별 값이 나란히 들어간다. 한쪽에만 있는 칸은 <span class=\"na\">—</span>다 "
@@ -2061,6 +2018,7 @@ def linesheet_body(datasets):
                 product_table(
                     all_items, CORE_COLUMNS, "t-linesheet",
                     facets=[sold_out_facet(all_items)] + category_facet(all_items),
+                    group_by=LINE_GROUP_BY,
                 ),
                 note="<strong>기본은 판매 중만</strong> 보여준다 — 품절을 함께 수집하면 표가 두 배로 길어져 "
                 "훑기 어렵다. <code>판매</code> 칩으로 품절을 켜면 된다(건수는 칩에 찍힌다). "
@@ -2093,7 +2051,9 @@ def market_scan_body(datasets):
             [
                 ("상품 수", format(len(all_items), ","), None),
                 ("후기 합계", format(review_total, ","), "노출된 값만 합산"),
-                ("중위 가격", won(sorted(prices)[len(prices) // 2]) if prices else MISSING, None),
+                # 중위값 정의는 리포트 전체에서 하나다 — 여기만 따로 계산하면 짝수 개수에서
+                # 다른 섹션(품목 성적표·단독 중위가)과 값이 어긋난다.
+                ("중위 가격", won(median(prices)), None),
                 (
                     "평균 평점",
                     "%.2f" % stats["weighted_avg"] if stats["weighted_avg"] is not None else MISSING,
@@ -2111,13 +2071,15 @@ def market_scan_body(datasets):
     charts = []
     if prices:
         charts.append(
-            '<div class="chart-block"><h3>판매가 분포</h3>%s</div>' % dist_chart(nice_buckets(prices))
+            '<div class="chart-block"><h3>판매가 분포</h3>%s</div>'
+            % dist_chart(nice_buckets(prices), note=PRICE_DIST_AXIS)
         )
     if any(count for _, count in stats["dist"]):
         charts.append(
             '<div class="chart-block"><h3>상품 평점 분포</h3>%s%s</div>'
             % (
-                dist_chart(stats["dist"], unit="개"),
+                dist_chart(stats["dist"], unit="개",
+                           note="가로: 평균 평점 구간 · 세로: 상품 수(개)"),
                 '<p class="section-note">평점 미노출 상품 %s개는 제외했다.</p>'
                 % format(stats["hidden"], ",")
                 if stats["hidden"] else "",
@@ -2126,7 +2088,8 @@ def market_scan_body(datasets):
     for key, counts in attrs.items():
         charts.append(
             '<div class="chart-block"><h3>%s 분포</h3>%s</div>'
-            % (esc(key), dist_chart([(k, v) for k, v in counts]))
+            % (esc(key), dist_chart([(k, v) for k, v in counts],
+                                    note="가로: %s 분류값 · 세로: 상품 수(개)" % key))
         )
     out.append(
         section(
@@ -2142,7 +2105,8 @@ def market_scan_body(datasets):
         section(
             "전 상품",
             product_table(
-                all_items, SCAN_COLUMNS + attr_column(all_items), "t-scan", facets=facets
+                all_items, SCAN_COLUMNS + attr_column(all_items), "t-scan", facets=facets,
+                group_by=LINE_GROUP_BY,
             ),
             note="<strong>기본은 판매 중만</strong>이다 — <code>판매</code> 칩으로 품절을 켤 수 있다. "
             "속성 칩은 여러 개를 켜면 OR로 걸리고, 서로 다른 축끼리는 AND로 걸린다. "
@@ -2326,7 +2290,7 @@ def spark_cell(row, kind, tail):
     )
 
 
-def rank_price_body(diff, rows, changes, threshold, stamps):
+def rank_price_body(rows, changes):
     """상품별 추이 표 — 한 행 = 한 상품.
 
     구 구조는 신규 진입 표 · 이탈 표 · 순위 변동 표 · 가격 변화 표를 따로 뒀는데,
@@ -2551,11 +2515,11 @@ def timeline_strip(snapshots):
         '<details class="raw"><summary>스냅샷 %s개 원자료</summary>'
         '<div class="table-wrap"><table class="grid"><thead><tr><th>수집 시각</th>'
         "<th>항목 수</th><th>비고</th></tr></thead><tbody>%s</tbody></table></div></details>"
-        % (parts and "".join(parts), format(len(snapshots), ","), rows)
+        % ("".join(parts), format(len(snapshots), ","), rows)
     )
 
 
-def trend_controls(row_count):
+def trend_controls():
     """계열 수를 사용자가 정한다(1~100). 대상은 표의 현재 정렬·필터 순서다."""
     return (
         '<div class="trend-tools">'
@@ -2759,7 +2723,7 @@ def ranking_diff_body(diff):
     out.append(
         section(
             "상품별 추이",
-            rank_price_body(diff, rows, changes, threshold, stamps),
+            rank_price_body(rows, changes),
             note="한 행 = 한 상품. 기간에 순위권에 오른 상품 <strong>%s개 전부</strong>가 들어 있다 "
             "(신규 진입·이탈도 <code>끝점</code> 칩으로 거른다 — 표를 따로 두지 않는다). "
             "<strong>랭킹 체류</strong>는 스냅샷 몇 번 중 몇 번 순위권에 있었나이고, "
@@ -2790,7 +2754,7 @@ def ranking_diff_body(diff):
     out.append(
         section(
             "추이 차트",
-            trend_controls(len(rows)),
+            trend_controls(),
             note="<strong>위 표의 현재 정렬·필터 순서대로 상위 N개</strong>를 그린다 — "
             "차트가 따로 선택 규칙을 갖지 않는다. 표를 정렬하거나 칩을 바꾸면 차트도 따라 바뀐다. "
             "계열 수는 1~100이고, <strong>5개까지는 겹쳐</strong> 그려 상품끼리 비교하고 "
@@ -2815,549 +2779,11 @@ def ranking_diff_body(diff):
 
 # ── 문서 조립 ───────────────────────────────────────────────────────────────
 
-CSS = """
-:root {
-  color-scheme: light;
-  --page: #f9f9f7; --surface: #fcfcfb;
-  --text: #0b0b0b; --text-2: #52514e; --muted: #898781;
-  --grid: #e1e0d9; --baseline: #c3c2b7; --border: rgba(11,11,11,0.10);
-  --seq: %(seq_light)s;
-  --series-1: %(s1l)s; --series-2: %(s2l)s; --series-3: %(s3l)s;
-  --series-4: %(s4l)s; --series-5: %(s5l)s;
-  --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
-  --up: #006300; --down: #d03b3b;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    color-scheme: dark;
-    --page: #0d0d0d; --surface: #1a1a19;
-    --text: #ffffff; --text-2: #c3c2b7; --muted: #898781;
-    --grid: #2c2c2a; --baseline: #383835; --border: rgba(255,255,255,0.10);
-    --seq: %(seq_dark)s;
-    --series-1: %(s1d)s; --series-2: %(s2d)s; --series-3: %(s3d)s;
-    --series-4: %(s4d)s; --series-5: %(s5d)s;
-    --up: #0ca30c;
-  }
-}
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --page: #0d0d0d; --surface: #1a1a19;
-  --text: #ffffff; --text-2: #c3c2b7; --muted: #898781;
-  --grid: #2c2c2a; --baseline: #383835; --border: rgba(255,255,255,0.10);
-  --seq: %(seq_dark)s;
-  --series-1: %(s1d)s; --series-2: %(s2d)s; --series-3: %(s3d)s;
-  --series-4: %(s4d)s; --series-5: %(s5d)s;
-  --up: #0ca30c;
-}
+CSS = ui.theme_tokens() + ui.COMPONENT_CSS
 
-* { box-sizing: border-box; }
-body {
-  margin: 0; padding: 32px 20px 96px;
-  background: var(--page); color: var(--text);
-  font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
-}
-main { max-width: 1180px; margin: 0 auto; }
-h1 { font-size: 26px; margin: 0 0 14px; letter-spacing: -0.01em; }
-h2 { font-size: 18px; margin: 0 0 12px; }
-h3 { font-size: 14px; margin: 0 0 8px; color: var(--text-2); font-weight: 600; }
-h4 { font-size: 14px; margin: 0 0 6px; }
-a { color: inherit; text-decoration: none; }
-a:hover { text-decoration: underline; }
-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em;
-  background: var(--grid); padding: 1px 5px; border-radius: 4px; }
-
-header { background: var(--surface); border: 1px solid var(--border);
-  border-radius: 12px; padding: 20px 22px; margin-bottom: 20px; }
-.meta { display: flex; flex-wrap: wrap; gap: 8px 32px; margin: 0; }
-.meta-item dt { font-size: 12px; color: var(--muted); margin: 0; }
-.meta-item dd { margin: 2px 0 0; font-size: 14px; font-variant-numeric: tabular-nums; }
-
-.banner { margin-top: 14px; padding: 10px 14px; border-radius: 8px; font-size: 14px;
-  border-left: 3px solid var(--muted); background: var(--page); }
-.banner-critical { border-left-color: var(--critical); }
-.banner-warning { border-left-color: var(--warning); }
-.banner-info { border-left-color: var(--series-1); }
-
-.kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-  gap: 12px; margin-bottom: 24px; }
-.kpi { background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
-  padding: 14px 16px; }
-.kpi-label { font-size: 12px; color: var(--muted); }
-.kpi-value { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; margin-top: 2px; }
-.kpi-note { font-size: 12px; color: var(--text-2); margin-top: 2px; }
-
-section { background: var(--surface); border: 1px solid var(--border);
-  border-radius: 12px; padding: 20px 22px; margin-bottom: 20px; }
-.section-note { font-size: 13px; color: var(--muted); margin: -6px 0 14px; }
-details.section-note > summary { cursor: pointer; list-style: none; font-size: 12px;
-  color: var(--muted); width: fit-content; }
-details.section-note > summary::-webkit-details-marker { display: none; }
-details.section-note[open] > summary { margin-bottom: 6px; }
-.empty { color: var(--muted); font-size: 14px; margin: 4px 0; }
-
-/* auto-fill이어야 블록이 1개일 때 트랙이 합쳐지지 않는다.
-   auto-fit은 빈 트랙을 접어서 520px 차트를 컨테이너 폭까지 늘려 버린다 — 옆 섹션과
-   크기가 안 맞는 원인이었다(2026-07-30). */
-.chart-grid { display: grid; gap: 26px;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%%, 440px), 1fr)); }
-.chart-block { min-width: 0; }
-/* 그리드 밖에 홀로 놓이는 차트(추이 등)도 본문 폭까지 늘어나지 않게 묶는다. */
-.chart-solo { max-width: 880px; }
-.mini-list { list-style: none; margin: 4px 0 0; padding: 0; }
-.mini-list li { padding: 5px 0; border-bottom: 1px solid var(--grid); font-size: 14px; }
-.mini-list li:last-child { border-bottom: 0; }
-.mini-list strong { font-variant-numeric: tabular-nums; margin-right: 8px; }
-.chart { width: 100%%; height: auto; overflow: visible; }
-.bar { fill: var(--seq); }
-.bar:hover { fill-opacity: 0.82; }
-.bar-label { font-size: 11px; fill: var(--text-2); }
-.bar-value { font-size: 11px; fill: var(--text-2); font-variant-numeric: tabular-nums; }
-.axis { font-size: 10px; fill: var(--muted); font-variant-numeric: tabular-nums; }
-.grid { stroke: var(--grid); stroke-width: 1; }
-.baseline { stroke: var(--baseline); stroke-width: 1; }
-.line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
-.dot { stroke: var(--surface); stroke-width: 2; }
-.series-label { font-size: 11px; fill: var(--text-2); }
-
-.table-tools { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
-.filter { flex: 0 1 300px; padding: 7px 10px; font: inherit; font-size: 13px;
-  border: 1px solid var(--border); border-radius: 7px;
-  background: var(--page); color: var(--text); }
-.table-count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
-
-/* 다중 선택 필터 — 여러 개를 켜면 OR, 서로 다른 그룹끼리는 AND로 걸린다. */
-.facets { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
-.facet-group { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
-.facet-expr { align-items: center; }
-.facet-expr .expr-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; }
-.chip.expr-op { font-weight: 600; color: var(--accent); }
-.chip.expr-ins { background: color-mix(in srgb, var(--accent) 10%%, transparent); }
-.expr-input { flex: 1; min-width: 240px; font: inherit; font-size: 13px; padding: 4px 8px;
-  border: 1px solid var(--grid); border-radius: 6px; background: var(--surface); color: var(--text); }
-.expr-status { font-size: 12px; color: var(--muted); }
-.expr-status.err { color: var(--down); }
-.expr-hint { display: inline-flex; width: 15px; height: 15px; align-items: center;
-  justify-content: center; border-radius: 50%%; background: var(--grid); color: var(--muted);
-  font-size: 10px; cursor: help; }
-.facet-group.cascade-collapsed .chip:not(.chip-all) { display: none; }
-.facet-group.cascade-collapsed::after {
-  content: "상위를 고르면 나옵니다"; font-size: 11px; color: var(--muted); }
-.facet-label { font-size: 12px; color: var(--muted); margin-right: 4px;
-  flex: 0 0 auto; min-width: 52px; }
-.chip { font: inherit; font-size: 12px; padding: 3px 9px; border-radius: 999px;
-  border: 1px solid var(--border); background: var(--page); color: var(--text-2);
-  cursor: pointer; white-space: nowrap; }
-.chip:hover { color: var(--text); border-color: var(--baseline); }
-.chip.is-on { background: var(--seq); border-color: var(--seq); color: #fff; }
-.facet-mode { margin-left: 6px; padding: 1px 6px; border-radius: 8px;
-  background: var(--line); color: var(--muted); font-size: 11px; font-weight: 600; }
-.chip em { font-style: normal; opacity: 0.65; margin-left: 4px;
-  font-variant-numeric: tabular-nums; }
-.table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
-table.grid { border-collapse: collapse; width: 100%%; font-size: 13px; }
-table.grid th, table.grid td { padding: 8px 10px; text-align: left;
-  border-bottom: 1px solid var(--grid); vertical-align: middle; }
-table.grid thead th { position: sticky; top: 0; background: var(--surface);
-  font-size: 12px; color: var(--text-2); font-weight: 600; white-space: nowrap; z-index: 1; }
-/* 정렬 가능한 열은 눌러 보기 전에도 눌리는 줄 알아야 한다 — 중립 화살표를 늘 띄운다. */
-table.grid th[data-sort]:not([data-sort="none"]) { cursor: pointer; user-select: none; }
-table.grid th[data-sort]:not([data-sort="none"])::after {
-  content: " \\2195"; font-size: 10px; opacity: 0.3; }
-table.grid th[data-sort]:not([data-sort="none"]):hover { color: var(--text); }
-table.grid th[data-sort]:not([data-sort="none"]):hover::after { opacity: 0.7; }
-table.grid th.sorted-asc::after { content: " \\25B2"; font-size: 9px; opacity: 1; }
-table.grid th.sorted-desc::after { content: " \\25BC"; font-size: 9px; opacity: 1; }
-/* 이름만으로 뜻이 안 통하는 열은 점선 밑줄로 표시하고 hover에 풀이를 붙인다 */
-.th-tip { text-decoration: underline dotted; text-decoration-color: var(--muted);
-  text-underline-offset: 3px; cursor: help; }
-
-/* 스토리3 — 표 안 스파크라인. 그리기는 인라인 JS가 하고 여기선 자리와 크기만 잡는다. */
-.col-spark { width: 124px; }
-.col-spark .vs { white-space: nowrap; }
-.col-pick { width: 30px; text-align: center; }
-.spark { display: block; width: 104px; height: 24px; }
-.spark svg { display: block; width: 100%%; height: 100%%; overflow: visible; }
-.spark-line { fill: none; stroke: var(--seq); stroke-width: 1.6;
-  stroke-linejoin: round; stroke-linecap: round; }
-.spark-dot { fill: var(--seq); }
-.spark-band { fill: color-mix(in srgb, var(--critical) 9%%, transparent); }
-.spark-empty { fill: var(--muted); }
-.chart-strip { height: 54px; }
-.dot-warn { fill: var(--warning) !important; }
-
-/* 추이 차트 조작부 */
-.trend-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px;
-  margin-bottom: 14px; }
-.trend-field { display: inline-flex; align-items: center; gap: 6px; font-size: 13px;
-  color: var(--text-2); }
-.trend-n { width: 72px; padding: 5px 8px; font: inherit; font-size: 13px;
-  border: 1px solid var(--border); border-radius: 7px;
-  background: var(--page); color: var(--text); }
-.trend-mode { padding: 5px 8px; font: inherit; font-size: 13px;
-  border: 1px solid var(--border); border-radius: 7px;
-  background: var(--page); color: var(--text); }
-.trend-check { gap: 5px; }
-.trend-status { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.trend-host { min-height: 40px; }
-.panel-grid { display: grid; gap: 18px;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%%, 300px), 1fr)); }
-.panel { min-width: 0; }
-.panel h4 { font-size: 12px; margin: 0 0 2px; font-weight: 600; }
-.panel h4 a { color: inherit; }
-.panel .panel-note { font-size: 11px; color: var(--muted); margin: 0 0 4px;
-  font-variant-numeric: tabular-nums; }
-.axis-right { fill: var(--series-2); }
-.price-line { fill: none; stroke: var(--series-2); stroke-width: 1.6;
-  stroke-dasharray: 4 2; stroke-linejoin: round; }
-.detail-row > td { background: var(--page); padding: 14px 16px; }
-tr.is-open { background: var(--page); }
-table.grid tbody tr:hover { background: var(--page); }
-.col-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.col-name { min-width: 240px; max-width: 380px; }
-.col-img { width: 64px; }
-.thumb { width: 52px; height: 66px; object-fit: cover; border-radius: 5px;
-  background: var(--grid); display: block; }
-.thumb-missing { background: repeating-linear-gradient(45deg, var(--grid),
-  var(--grid) 4px, var(--surface) 4px, var(--surface) 8px); }
-.na { color: var(--muted); font-size: 12px; }
-.col-variant { text-align: left; white-space: normal; min-width: 150px; }
-.vopts { display: flex; flex-wrap: wrap; gap: 3px; }
-.vopt { font-size: 11px; padding: 1px 6px; border-radius: 5px; background: var(--grid);
-  color: var(--text-1); white-space: nowrap; }
-.vopt sub { color: var(--muted); font-size: 9px; margin-left: 2px; vertical-align: baseline; }
-.vopt-out { text-decoration: line-through; color: var(--muted); opacity: 0.7; }
-.approx { color: var(--text-2); font-size: 12px; }
-.price-sale { font-weight: 600; }
-.price-was { color: var(--muted); text-decoration: line-through; font-size: 12px; }
-.tag { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 4px;
-  background: var(--grid); color: var(--text-2); margin-left: 4px; white-space: nowrap; }
-.tag-out { background: var(--grid); color: var(--text-2); }
-.tag-off { background: color-mix(in srgb, var(--critical) 16%%, transparent); color: var(--critical); }
-.tag-stay { background: color-mix(in srgb, var(--seq) 14%%, transparent); color: var(--seq); }
-.tag-in { background: color-mix(in srgb, var(--good) 16%%, transparent); color: var(--up); }
-.tag-out2 { background: color-mix(in srgb, var(--critical) 14%%, transparent); color: var(--down); }
-.tag-mid { background: var(--grid); color: var(--muted); }
-.delta-up { color: var(--up); } .delta-down { color: var(--down); } .delta-flat { color: var(--muted); }
-.arrow { color: var(--muted); }
-/* 규모 대비 반응 지수 — 1.0이 '규모만큼'이다. 과대/과소만 표시하고 색으로 단정하지 않는다. */
-.idx { font-variant-numeric: tabular-nums; }
-.idx-over { color: var(--up); font-weight: 600; }
-.idx-under { color: var(--down); }
-.vs { display: block; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
-
-/* 입점 칼럼 — 어느 플랫폼에 있는 상품인지. 색으로 우열을 매기지 않는다(사실 표기다). */
-.col-presence { white-space: nowrap; }
-.tag-presence { display: inline-block; font-size: 11px; padding: 2px 7px; border-radius: 10px;
-  background: var(--grid); color: var(--text-2); white-space: nowrap; margin: 0; }
-/* 전 플랫폼 입점만 채워서 구분한다. 단독 입점은 결함이 아니라 유통 사실이라 중립색이다. */
-.tag-presence.is-all { background: color-mix(in srgb, var(--seq) 18%%, transparent);
-  color: var(--seq); font-weight: 600; }
-
-/* 품목 대응 근거 — 통합축을 독자가 검증할 수 있게 접어서 싣는다. */
-details.axis-map { margin-top: 10px; }
-details.axis-map > summary { cursor: pointer; font-size: 13px; color: var(--text-2);
-  user-select: none; }
-details.axis-map ul { margin: 8px 0 0; padding-left: 18px; columns: 2; column-gap: 28px;
-  font-size: 12px; color: var(--text-2); }
-details.axis-map li { margin: 2px 0; break-inside: avoid; }
-details.axis-map code { font-size: 11px; background: var(--grid); padding: 1px 4px;
-  border-radius: 3px; }
-@media (max-width: 720px) { details.axis-map ul { columns: 1; } }
-
-/* 시점별 원자료 — 통합 표 아래에 접어 둔다. */
-details.raw { margin-top: 14px; border-top: 1px solid var(--grid); padding-top: 10px; }
-details.raw > summary { cursor: pointer; font-size: 13px; color: var(--text-2);
-  user-select: none; }
-details.raw > summary:hover { color: var(--text); }
-details.raw > summary::marker { color: var(--muted); }
-details.raw .table-wrap { margin-top: 10px; }
-
-/* 순위 추이 위에 겹치는 할인 시점 마커.
-   점선 = 시점 확정, 띠 = 순위권 밖이라 구간으로만 아는 사건. */
-.event-line { stroke-width: 1.5; stroke-dasharray: 3 3; opacity: 0.75; }
-.event-band { opacity: 0.10; }
-.event-tick { font-size: 9px; }
-.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 8px 0 0;
-  font-size: 12px; color: var(--text-2); }
-.legend-item { display: inline-flex; align-items: center; gap: 6px; }
-.legend-swatch { width: 22px; height: 0; border-top: 2px solid currentColor; flex: 0 0 auto; }
-.legend-swatch.dashed { border-top-style: dashed; }
-.legend-swatch.band { height: 11px; border-top: 0;
-  background: color-mix(in srgb, currentColor 20%%, transparent); }
-/* 계열 범례 — 이름은 본문 색으로 읽고 색은 스와치만 쓴다 */
-.legend-series { gap: 4px 18px; }
-.legend-series .legend-name { color: var(--text-2); }
-
-#tip { position: fixed; z-index: 20; pointer-events: none; opacity: 0;
-  transition: opacity .1s; background: var(--text); color: var(--surface);
-  font-size: 12px; padding: 5px 9px; border-radius: 6px; max-width: 260px; }
-footer { max-width: 1180px; margin: 0 auto; color: var(--muted); font-size: 12px; }
-""" % {
-    "seq_light": SEQ_LIGHT, "seq_dark": SEQ_DARK,
-    "s1l": SERIES_LIGHT[0], "s2l": SERIES_LIGHT[1], "s3l": SERIES_LIGHT[2],
-    "s4l": SERIES_LIGHT[3], "s5l": SERIES_LIGHT[4],
-    "s1d": SERIES_DARK[0], "s2d": SERIES_DARK[1], "s3d": SERIES_DARK[2],
-    "s4d": SERIES_DARK[3], "s5d": SERIES_DARK[4],
-}
-
-JS = """
-(function () {
-  var tip = document.getElementById('tip');
-  document.addEventListener('mouseover', function (e) {
-    var t = e.target.closest('[data-tip]');
-    if (!t) { tip.style.opacity = 0; return; }
-    tip.textContent = t.getAttribute('data-tip');
-    tip.style.opacity = 1;
-  });
-  document.addEventListener('mousemove', function (e) {
-    if (tip.style.opacity === '0' || tip.style.opacity === '') return;
-    var x = e.clientX + 14, y = e.clientY + 14;
-    if (x + tip.offsetWidth > window.innerWidth - 8) x = e.clientX - tip.offsetWidth - 14;
-    if (y + tip.offsetHeight > window.innerHeight - 8) y = e.clientY - tip.offsetHeight - 14;
-    tip.style.left = x + 'px'; tip.style.top = y + 'px';
-  });
-
-  document.querySelectorAll('table.grid thead th[data-sort]').forEach(function (th) {
-    if (th.dataset.sort === 'none') return;
-    th.addEventListener('click', function () {
-      var table = th.closest('table');
-      var idx = Array.prototype.indexOf.call(th.parentNode.children, th);
-      var asc = !th.classList.contains('sorted-asc');
-      table.querySelectorAll('th').forEach(function (o) {
-        o.classList.remove('sorted-asc', 'sorted-desc');
-      });
-      th.classList.add(asc ? 'sorted-asc' : 'sorted-desc');
-      var body = table.tBodies[0];
-      var rows = Array.prototype.slice.call(body.rows).filter(function (r) {
-        return !r.classList.contains('detail-row');   // 펼친 상세는 정렬 대상이 아니다
-      });
-      body.querySelectorAll('tr.detail-row').forEach(function (r) { r.remove(); });
-      body.querySelectorAll('tr.is-open').forEach(function (r) { r.classList.remove('is-open'); });
-      var numeric = th.dataset.sort === 'num';
-      rows.sort(function (a, b) {
-        var x = a.cells[idx].dataset.k, y = b.cells[idx].dataset.k;
-        if (x === '' && y === '') return 0;
-        if (x === '') return 1;           // 값 없는 행은 방향과 무관하게 뒤로
-        if (y === '') return -1;
-        if (numeric) return asc ? x - y : y - x;
-        return asc ? x.localeCompare(y, 'ko') : y.localeCompare(x, 'ko');
-      });
-      rows.forEach(function (r) { body.appendChild(r); });
-      // 정렬이 바뀌면 '표 순서대로 상위 N'을 따르는 차트도 다시 그려야 한다
-      document.dispatchEvent(new CustomEvent('tableview'));
-    });
-  });
-
-  // 텍스트 검색과 칩 필터를 한 곳에서 합쳐 적용한다.
-  // 같은 그룹의 칩 여러 개 = OR, 서로 다른 그룹 = AND.
-  var state = {};   // tableId -> {q: '', picked: {facetIdx: Set}}
-
-  function stateOf(id) {
-    if (!state[id]) state[id] = { q: '', picked: {}, mode: {}, expr: {} };
-    return state[id];
-  }
-
-  // 입점 수식 — 플랫폼 이름을 AND·OR·NOT·괄호로 조합. 행의 입점 집합에 대해 평가한다.
-  // shunting-yard로 RPN을 만들고 행마다 평가한다(NOT>AND>OR, 괄호). 오류면 null(필터 미적용).
-  function compileExpr(src, plats) {
-    if (!src.trim()) return { rpn: null };
-    var names = plats.slice().sort(function (a, b) { return b.length - a.length; });
-    var s = src, i = 0, toks = [];
-    while (i < s.length) {
-      var c = s[i];
-      if (/\s/.test(c)) { i++; continue; }
-      if (c === '(' || c === ')') { toks.push(c); i++; continue; }
-      var rest = s.slice(i);
-      var op = /^(AND|OR|NOT)\\b/i.exec(rest) || /^(&&|\|\||&|\||!)/.exec(rest);
-      if (op) {
-        var o = op[0].toUpperCase();
-        o = (o === '&&' || o === '&') ? 'AND' : (o === '||' || o === '|') ? 'OR' : (o === '!') ? 'NOT' : o;
-        toks.push(o); i += op[0].length; continue;
-      }
-      var found = null;
-      for (var k = 0; k < names.length; k++) {
-        if (rest.slice(0, names[k].length).toLowerCase() === names[k].toLowerCase()) { found = names[k]; break; }
-      }
-      if (found) { toks.push({ p: found }); i += found.length; continue; }
-      return { error: '알 수 없는 항목: "' + rest.slice(0, 14) + '"' };
-    }
-    var prec = { NOT: 3, AND: 2, OR: 1 }, out = [], ops = [];
-    for (var t = 0; t < toks.length; t++) {
-      var tk = toks[t];
-      if (typeof tk === 'object') out.push(tk);
-      else if (tk === '(') ops.push(tk);
-      else if (tk === ')') {
-        while (ops.length && ops[ops.length - 1] !== '(') out.push(ops.pop());
-        if (!ops.length) return { error: '괄호가 안 맞습니다' };
-        ops.pop();
-      } else {
-        while (ops.length && ops[ops.length - 1] !== '(' &&
-               prec[ops[ops.length - 1]] >= prec[tk] && tk !== 'NOT') out.push(ops.pop());
-        ops.push(tk);
-      }
-    }
-    while (ops.length) { var op2 = ops.pop(); if (op2 === '(') return { error: '괄호가 안 맞습니다' }; out.push(op2); }
-    return { rpn: out };
-  }
-  function evalRpn(rpn, present) {
-    var st = [];
-    for (var i = 0; i < rpn.length; i++) {
-      var t = rpn[i];
-      if (typeof t === 'object') st.push(present.has(t.p));
-      else if (t === 'NOT') st.push(!st.pop());
-      else if (t === 'AND') { var b = st.pop(), a = st.pop(); st.push(a && b); }
-      else if (t === 'OR') { var b2 = st.pop(), a2 = st.pop(); st.push(a2 || b2); }
-    }
-    return st.length === 1 ? !!st[0] : true;
-  }
-
-  function apply(id) {
-    var table = document.getElementById(id);
-    if (!table) return;
-    var st = stateOf(id);
-    var counter = document.getElementById(id + '-count');
-    var shown = 0;
-    Array.prototype.forEach.call(table.tBodies[0].rows, function (row) {
-      if (row.classList.contains('detail-row')) { row.hidden = false; return; }
-      var hit = !st.q || row.textContent.toLowerCase().indexOf(st.q) !== -1;
-      if (hit) {
-        for (var idx in st.picked) {
-          var picked = st.picked[idx];
-          if (!picked || !picked.length) continue;
-          var have = row.getAttribute('data-f' + idx) || '';
-          // 축 기본은 OR. 입점 축처럼 data-match="all"인 축만 AND다.
-          var test = function (v) { return have.indexOf('|' + v + '|') !== -1; };
-          var ok = st.mode[idx] === 'all' ? picked.every(test) : picked.some(test);
-          if (!ok) { hit = false; break; }
-        }
-      }
-      if (hit) {   // 입점 수식 축
-        for (var eidx in st.expr) {
-          var rpn = st.expr[eidx];
-          if (!rpn) continue;
-          var raw = row.getAttribute('data-f' + eidx) || '';
-          var present = new Set(raw.split('|').filter(Boolean));
-          if (!evalRpn(rpn, present)) { hit = false; break; }
-        }
-      }
-      row.hidden = !hit;
-      if (hit) shown++;
-    });
-    if (counter) counter.textContent = shown + '행';
-    document.dispatchEvent(new CustomEvent('tableview'));
-  }
-
-  document.querySelectorAll('.filter').forEach(function (input) {
-    var id = input.dataset.for;
-    if (!document.getElementById(id)) return;
-    input.addEventListener('input', function () {
-      stateOf(id).q = input.value.trim().toLowerCase();
-      apply(id);
-    });
-  });
-
-  // 입점 수식 축 — 삽입 칩·연산자 버튼·텍스트 입력을 잇는다.
-  document.querySelectorAll('.facet-group.facet-expr').forEach(function (group) {
-    var id = group.dataset.for, idx = group.dataset.facet;
-    var input = group.querySelector('.expr-input');
-    var status = group.querySelector('.expr-status');
-    var plats = Array.prototype.map.call(group.querySelectorAll('.expr-ins'),
-      function (b) { return b.dataset.ins; });
-    function recompile() {
-      var res = compileExpr(input.value, plats);
-      if (res.error) { status.textContent = '⚠ ' + res.error; status.className = 'expr-status err';
-        stateOf(id).expr[idx] = null; }
-      else { stateOf(id).expr[idx] = res.rpn;
-        status.textContent = res.rpn ? '유효' : ''; status.className = 'expr-status'; }
-      apply(id);
-    }
-    group.addEventListener('click', function (e) {
-      var b = e.target.closest('[data-ins]');
-      if (!b) return;
-      if (b.classList.contains('expr-clear')) { input.value = ''; }
-      else {
-        var v = b.dataset.ins, pos = input.selectionStart || input.value.length;
-        input.value = input.value.slice(0, pos) + v + input.value.slice(input.selectionEnd || pos);
-        input.focus();
-      }
-      recompile();
-    });
-    input.addEventListener('input', recompile);
-  });
-
-  var pending = {};
-  document.querySelectorAll('.facet-group:not(.facet-expr)').forEach(function (group) {
-    var id = group.dataset.for;
-    var idx = group.dataset.facet;
-    var all = group.querySelector('.chip-all');
-    if (group.dataset.match === 'all') stateOf(id).mode[idx] = 'all';
-    group.addEventListener('click', function (e) {
-      var chip = e.target.closest('.chip');
-      if (!chip) return;
-      if (chip === all) {
-        group.querySelectorAll('.chip').forEach(function (c) { c.classList.remove('is-on'); });
-        all.classList.add('is-on');
-      } else {
-        chip.classList.toggle('is-on');
-        var on = group.querySelectorAll('.chip:not(.chip-all).is-on');
-        all.classList.toggle('is-on', on.length === 0);
-      }
-      var picked = [];
-      group.querySelectorAll('.chip:not(.chip-all).is-on').forEach(function (c) {
-        picked.push(c.dataset.v);
-      });
-      stateOf(id).picked[idx] = picked;
-      apply(id);
-    });
-    // 서버가 미리 켜 둔 칩(기본 필터)을 로드 시점에 실제로 적용한다.
-    var preset = [];
-    group.querySelectorAll('.chip:not(.chip-all).is-on').forEach(function (c) {
-      preset.push(c.dataset.v);
-    });
-    if (preset.length) {
-      stateOf(id).picked[idx] = preset;
-      pending[id] = true;
-    }
-  });
-  Object.keys(pending).forEach(apply);
-
-  // 계층 카테고리 캐스케이드: 대분류 → 중분류 → 소분류. 상위를 골라야 하위 칩이 나온다.
-  // 하위 칩은 data-parent가 바로 위 단계의 선택값과 맞을 때만 보인다. 체인으로 전파한다.
-  (function () {
-    var chains = {};   // (for|ckey) → { level: groupEl }
-    document.querySelectorAll('.facet-group[data-ckey]').forEach(function (g) {
-      var k = g.dataset.for + '|' + g.dataset.ckey;
-      (chains[k] = chains[k] || {})[+g.dataset.clevel] = g;
-    });
-    Object.keys(chains).forEach(function (k) {
-      var byLevel = chains[k];
-      var levels = Object.keys(byLevel).map(Number).sort(function (a, b) { return a - b; });
-      function selVals(g) {
-        var out = [];
-        g.querySelectorAll('.chip:not(.chip-all).is-on').forEach(function (c) { out.push(c.dataset.v); });
-        return out;
-      }
-      function sync() {
-        for (var i = 1; i < levels.length; i++) {
-          var parent = byLevel[levels[i - 1]], child = byLevel[levels[i]];
-          var sel = selVals(parent);
-          var anyParent = sel.length > 0;
-          child.classList.toggle('cascade-collapsed', !anyParent);
-          child.querySelectorAll('.chip:not(.chip-all)').forEach(function (c) {
-            var show = anyParent && sel.indexOf(c.dataset.parent) >= 0;
-            c.style.display = show ? '' : 'none';
-            if (!show && c.classList.contains('is-on')) c.click();  // 끄며 상태·필터 갱신
-          });
-        }
-      }
-      levels.forEach(function (L) {
-        byLevel[L].addEventListener('click', function () { setTimeout(sync, 0); });
-      });
-      sync();
-    });
-  })();
-})();
-
+# 원시 문자열이다 — 안의 `\s`·`\|`·`\b`는 **JS 정규식 그대로** 나가야 한다.
+# 일반 문자열이면 파이썬이 `\s`를 모르는 이스케이프로 보고 3.12+에서 SyntaxWarning을 낸다.
+JS = ui.COMMON_JS + r"""
 // ── 스토리3 추이 렌더 ───────────────────────────────────────────────────────
 // 계열 데이터는 문서에 한 번만 심겨 있고(#series-data) 스파크라인·추이 차트·
 // 행 펼침 상세가 그 하나를 같이 쓴다. 같은 데이터를 세 번 그리지 않는다.
