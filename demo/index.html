@@ -41,6 +41,9 @@
   table.mon input[type=datetime-local] { border: 1px solid #cfd4dd; border-radius: 5px;
     padding: 2px 6px; font: inherit; font-size: 12px; }
   button.mini { padding: 3px 9px; font-size: 12px; }
+  /* 이어서 말하기 — 같은 Claude 세션을 --resume으로 이어간다 */
+  .followup { border-top: 1px dashed #cfd4dd; padding-top: 8px; }
+  .followup input[type=text] { flex: 1; width: auto; }
   a.report { display: inline-block; margin-top: 10px; font-weight: 600; color: #2b56d9; }
 </style>
 </head>
@@ -58,9 +61,13 @@
     <button id="b1">요청 실행</button>
     <button id="c1" class="ghost" style="display:none">취소</button>
   </div>
-  <p class="hint">자연어 요청을 Claude 헤드리스가 해석합니다 — 재사용 판정(TTL·스킵 창)이 먼저고,
-    스킵 창을 벗어났을 때만 실제로 수집합니다. 랭킹 스냅샷·브랜드 라인시트를 지원합니다(전수조사는 대기 상태).</p>
+  <p class="hint">자연어 요청을 Claude가 해석합니다 — 재사용 판정(TTL·스킵 창)이 먼저고,
+    스킵 창을 벗어났을 때만 실제로 수집합니다. 라인시트·전수조사·랭킹을 지원합니다.</p>
   <pre class="log" id="l1"></pre>
+  <div class="row followup" id="f1" style="display:none">
+    <input type="text" id="k1" placeholder="이어서 말하기 — 예: 무신사랑 바이모노만 수집해줘 / 자사몰도 추가해줘">
+    <button id="b1c">보내기</button>
+  </div>
 </section>
 
 <section id="mon">
@@ -87,9 +94,13 @@
   <textarea id="q3" placeholder="예: 모자 랭킹에서 가격대별 분포가 어떤지 분석해줘"></textarea>
   <div class="row"><button id="b3">요청 실행</button>
     <button id="c3" class="ghost" style="display:none">취소</button></div>
-  <p class="hint">Claude 헤드리스가 DB의 관측 문맥을 골라 데이터를 뽑고 핵심 소견을 요약합니다.
+  <p class="hint">Claude가 DB의 관측 문맥을 골라 데이터를 뽑고 핵심 소견을 요약합니다.
     분석 대상을 생략하면 ①의 수집 요청 주제를 승계해 해석합니다.</p>
   <pre class="log" id="l3"></pre>
+  <div class="row followup" id="f3" style="display:none">
+    <input type="text" id="k3" placeholder="이어서 말하기 — 예: 그럼 플랫폼별로 나눠서 봐줘 / 품절 상품은 빼고">
+    <button id="b3c">보내기</button>
+  </div>
 </section>
 
 <section id="s4">
@@ -128,14 +139,14 @@ function setBadge(step, status, text) {
   b.textContent = text;
 }
 
-async function poll(step, jobId, onDone) {
+async function poll(step, jobId, onDone, prefix) {
   const logEl = $("l" + step), cancel = $("c" + step);
   logEl.style.display = "block";
   if (cancel) { cancel.style.display = "inline-block";
     cancel.onclick = () => fetch(`/api/job/${jobId}/cancel`, {method: "POST"}); }
   while (true) {
     const r = await (await fetch(`/api/job/${jobId}`)).json();
-    logEl.textContent = r.log.join("\n");
+    logEl.textContent = (prefix || "") + r.log.join("\n");
     logEl.scrollTop = logEl.scrollHeight;
     if (r.status !== "running") {
       if (cancel) cancel.style.display = "none";
@@ -147,8 +158,11 @@ async function poll(step, jobId, onDone) {
   }
 }
 
-async function start(step, url, body, onDone, btnId) {
+async function start(step, url, body, onDone, btnId, keepLog) {
   const btn = $(btnId || ("b" + step));   // ②는 버튼이 둘이라 id를 따로 받는다
+  // 이어서 말하기는 앞 대화를 지우지 않고 아래로 붙인다
+  const prior = $("l" + step).textContent;
+  const prefix = (keepLog && prior) ? prior + "\n\n──────── 이어서 ────────\n" : "";
   btn.disabled = true;
   setBadge(step, "running", "실행 중…");
   try {
@@ -156,7 +170,7 @@ async function start(step, url, body, onDone, btnId) {
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({...(body || {}), sid: SID})})).json();   // 모든 단계에 탭 ID 동봉
     if (r.error) { setBadge(step, "error", r.error); return; }
-    await poll(step, r.job, onDone);
+    await poll(step, r.job, onDone, prefix);
   } catch (e) {
     setBadge(step, "error", "요청 실패: " + e);
   } finally {
@@ -208,7 +222,27 @@ async function loadMonitors() {
 loadMonitors();
 setInterval(loadMonitors, 20000);
 
-$("b1").onclick = () => start(1, "/api/step1", {text: $("q1").value}, loadMonitors);
+// ①③은 대화다 — 잡이 끝나면 같은 세션을 이어갈 입력창이 열린다(서버가 --resume으로 잇는다)
+function afterStep1(res) {
+  loadMonitors();
+  if (res && res.can_continue) $("f1").style.display = "flex";
+}
+function afterStep3(res) {
+  if (res && res.contexts) $("q4").value = res.contexts.join(", ");
+  if (res && res.can_continue) $("f3").style.display = "flex";
+}
+function sendFollowup(step, inputId, btnId, onDone) {
+  const el = $(inputId), text = el.value.trim();
+  if (!text) return;
+  el.value = "";
+  start(step, `/api/step${step}/continue`, {text}, onDone, btnId, true);
+}
+
+$("b1").onclick = () => start(1, "/api/step1", {text: $("q1").value}, afterStep1);
+$("b1c").onclick = () => sendFollowup(1, "k1", "b1c", afterStep1);
+$("k1").onkeydown = (e) => { if (e.key === "Enter") $("b1c").click(); };
+$("b3c").onclick = () => sendFollowup(3, "k3", "b3c", afterStep3);
+$("k3").onkeydown = (e) => { if (e.key === "Enter") $("b3c").click(); };
 
 // 정본 적재가 끝나야 시트 업로드 버튼이 열린다 (서버에서도 같은 조건을 검사한다)
 $("b2").onclick = () => start(2, "/api/step2", null, () => {
@@ -218,8 +252,7 @@ $("b2").onclick = () => start(2, "/api/step2", null, () => {
 });
 $("b2s").onclick = () => start(2, "/api/step2-sheets", null, null, "b2s");
 
-$("b3").onclick = () => start(3, "/api/step3", {text: $("q3").value},
-  (res) => { if (res && res.contexts) $("q4").value = res.contexts.join(", "); });
+$("b3").onclick = () => start(3, "/api/step3", {text: $("q3").value}, afterStep3);
 
 $("b4").onclick = () => start(4, "/api/step4", {
   contexts: $("q4").value.split(",").map(s => s.trim()).filter(Boolean),

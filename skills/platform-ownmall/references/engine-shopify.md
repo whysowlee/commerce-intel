@@ -9,7 +9,7 @@
 
 | 항목 | 결과 | 실측 일자 | 스토어 |
 |---|---|---|---|
-| robots.txt | 스토어마다 다르다 — **반드시 먼저 읽는다.** thisisneverthat INTL은 `User-agent: * Allow: /` 전면 허용. **LEWKIN은 ClaudeBot·GPTBot 등 AI 봇을 `Disallow: /` 전면 차단**(WebFetch 403 실측) → 그 스토어는 수집하지 않는다(우회·UA 위장 금지) | 2026-07-31 | 양쪽 |
+| robots.txt | 스토어마다 다르다 — **반드시 먼저 읽는다.** thisisneverthat INTL은 `User-agent: * Allow: /` 전면 허용. **LEWKIN은 ClaudeBot·GPTBot 등 AI 봇을 `Disallow: /` 전면 차단**(WebFetch 403 실측) → 그 스토어는 수집하지 않는다 | 2026-07-31 | 양쪽 |
 | `/products.json` | **동작 확인** — `?limit=250&page=N`, 빈 페이지가 종료 신호(950건 = 250×3+200). **단 200 상태 코드만 믿으면 안 된다** — 본문이 JSON인지 확인(헤드리스 프런트는 아무 경로나 200+HTML 셸) | 2026-07-31 | thisisneverthat INTL |
 | 컬렉션 구조 | `/collections/all/products.json` 동작 확인. **`/products.json` 전량과 컬렉션 전수의 일치 여부는 미검증** — 총계가 없어 단정할 수 없다. Cafe24 `ALL` 23% 누락 같은 함정이 있는지는 남은 실측 과제 | 2026-07-31 | thisisneverthat INTL |
 | 총계 | **어디에도 없다** — `source_total`은 `null`, 완전성 근거는 "products.json 빈 페이지 도달"로 세우고 `meta.notes`에 남긴다. product sitemap으로 근사만 가능(LEWKIN ≈7,000) | 2026-07-31 | 양쪽 |

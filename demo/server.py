@@ -75,7 +75,24 @@ commerce-intel 저장소에서 실행 중인 데모 수집 세션이다. 아래 
 로 시변 스킵 창을 판정한다. 주기: 랭킹은 무신사 30·29CM 60, 라인시트·전수조사는 옵션 생략(기본 24시간). \
 단, 사용자가 "지금"·"다시"·"새로" 등 명시적 재수집을 요구하면 판정을 건너뛰고 수집한다.
 3. skip=true면 수집하지 않는다 — 어떤 문맥을 언제 수집한 몇 건짜리 관측으로 재사용하는지 summary에 보고한다.
-4. 수집이 필요한 경우:
+4. 수집이 필요하면 — **아래 공통 규칙이 스토리와 무관하게 먼저 걸린다.**
+   - **㉠ 미완 작업을 남기고 세션을 끝내지 마라.** 이 세션이 끝나는 순간의 결과만 남는다. \
+안 끝난 작업이 있으면 이 턴에서 끝까지 처리하고, **정말 못 기다리겠으면 어디까지 됐고 \
+무엇을 어디서 기다리는지 summary에 정확히 적어라** — 데모가 같은 세션을 `--resume`으로 \
+이어서 물어본다(①은 대화형이다). 애매하게 "진행 중입니다"로 끝내면 그 작업은 버려진다.
+     - 부연: **백그라운드(`&`·백그라운드 실행)로 띄우고 기다리는 방식은 쓰지 마라.** \
+헤드리스 세션에는 "완료 알림을 받을 다음 턴"이 자기 안에 없다 — 대화형과 다른 지점이고, \
+후속 턴은 **사용자가 열어줄 때만** 생긴다. 실측 2건: 프랜틱서비스 자사몰 상세 197건은 \
+백그라운드에서 정상 완료됐는데 세션이 40초 먼저 끝나 계약 JSON을 못 만들었고, \
+여성 니트 전수조사 8.6만 건은 백그라운드 프로세스가 세션과 함께 죽어 통째로 사라졌다.
+   - **㉡ 길면 나눠 돌리고 구간마다 저장한다** (SKILL.md 1단계: "수집하면서 페이지 단위로 \
+`data/raw/`에 저장한다 — 중단 시 이어서"). 한 번에 다 모아 마지막에 저장하면 중간에 끊길 때 \
+**0건**이다. 사이트별·페이지 구간별로 끊어 돌리고 **구간이 끝날 때마다 파일로 저장**해 \
+그 지점까지는 디스크에 남게 하라. 한 명령이 지나치게 길면 실행 하네스가 그것을 \
+백그라운드로 넘겨버리므로, ㉠을 지키려면 배치가 짧아야 한다.
+   - **㉢ 저장한 파일은 무조건 `files`에 담는다**(6번 참조) — 미완이어도 빼지 마라.
+
+   스토리별 절차:
    - **랭킹 스냅샷**: `python3 data/.tools/snap_ranking_any.py --site {{musinsa|29cm}} --target <카테고리이름>` \
 (타겟이 불확실하면 --list). 사이트 미지정이면 카탈로그에 있는 쪽, 둘 다 있으면 둘 다 수집한다.
      - **성별 지정이 있으면**(여자·여성·남자·남성) 무신사는 `--gender F`(여성)·`--gender M`(남성)을 \
@@ -112,19 +129,25 @@ commerce-intel 저장소에서 실행 중인 데모 수집 세션이다. 아래 
 `caller=BRAND` totalCount=0은 상품 없음의 근거가 아니다(`caller=SEARCH` 대조). \
 어느 사이트에도 없으면 그 사실을 보고하고 멈춘다 — 비슷한 브랜드로 대체하지 마라.
      - 품절 포함이 기본이고, 완전성은 독립 총계 대조로 판정한다. 한 사이트가 실패해도 나머지는 끝낸다.
-     - **수집을 백그라운드(`&`)로 띄우고 기다리지 마라.** 세션이 끝나면 그 작업은 결과를 못 남기고 \
-증발한다 — 실측(2026-07-31): 자사몰 상세 197건이 백그라운드에서 정상 완료됐는데 세션이 40초 먼저 \
-끝나 계약 JSON을 못 만들었다. **포그라운드로 끝까지 돌려라.** 한 번에 오래 걸리면 사이트별·배치별로 \
-나눠 **순차 실행**하고, 배치 하나가 끝날 때마다 파일로 저장해 둔다.
      - 산출물은 사이트마다 따로 `data/raw/{{site}}-brand-linesheet-{{브랜드}}-{{YYYYMMDD-HHMM}}.json`에 \
 데이터 계약 JSON으로 저장한다(`meta.story`는 `brand-linesheet`). 기존 파일 \
 `data/raw/29cm-brand-linesheet-로우클래식-*.json`이 형식 참고용이다.
      - 저장 후 `python3 skills/commerce-intel/scripts/validate_data.py <파일>` 로 검증한다.
-   - **전수조사**: 절차는 `skills/commerce-intel/references/story-catalog.md` §B다 — 먼저 읽어라. \
-수집기는 `python3 data/.tools/scan_market_any.py --site {{musinsa|29cm}} --target <카테고리> …`이고, \
-**규모부터 `--count-only`로 본 뒤 예상 소요를 보고하고 진행한다**(규모 상한은 없다 — D22로 폐지됐다). \
-사이트에 해당 카테고리가 없으면 `--keyword` ∩ 상위 카테고리로 범위를 잡는다(가드 G1~G3이 자동으로 걸린다). \
-성별 지정은 무신사 `--gender F|M`, 29CM은 경로형 타겟이다.
+   - **전수조사**: 절차는 `skills/commerce-intel/references/story-catalog.md` §B다 — 먼저 읽어라.
+     - **§B-0이 첫 단계다. 플랫폼이 지정 안 됐으면 임의로 고르지 마라.** \
+`channel-scout`를 **카테고리 모드**로 스폰해(누적 카탈로그 `intel_db.py export --table platforms` 를 \
+프롬프트에 넘긴다) 플랫폼별 해당 상품군 규모를 확인하고, **규모와 함께 제시해 사용자가 고르게 한다.** \
+**무신사·29CM으로 좁히지 마라** — 카탈로그에 있는 특화몰·편집숍·자사몰이 전부 후보다(실측: \
+`market:데님팬츠(남성)`에 bymono.com 389건이 이 경로로 들어와 있다). 데모는 되묻기가 어려우므로, \
+사용자 요청에 플랫폼이 없으면 **수집하지 말고 후보 목록·규모·권장안을 summary에 담아 보고하고 멈춘다.** \
+그 다음 요청에서 사용자가 고르면 수집한다.
+     - **선택된 플랫폼별로 수집 경로가 갈린다.** 무신사·29CM은 \
+`python3 data/.tools/scan_market_any.py --site {{musinsa|29cm}} --target <카테고리> …`(성별은 무신사 \
+`--gender F|M`, 29CM은 경로형 타겟). **그 밖의 플랫폼은 `platform-generic`으로 정찰 후 수집한다** — \
+전용 스킬도 카탈로그 코드도 없다는 것은 수집 불가 사유가 아니다.
+     - **규모부터 본 뒤**(무신사·29CM은 `--count-only`, 그 외는 목록 첫 페이지 총계) \
+**예상 소요를 보고하고 진행한다**(규모 상한은 없다 — D22로 폐지됐다). 0건이면 중단 보고. \
+사이트에 해당 카테고리가 없으면 `--keyword` ∩ 상위 카테고리로 범위를 잡는다(가드 G1~G3).
      - **임의 샘플링은 금지다** — 묻지 않고 상위 N개만 모으는 것이 최악의 실패다(D21). \
 사용자가 "표본으로"·"샘플링해서"라고 **명시했을 때만** §B-표본 절차를 쓴다: \
 `python3 skills/commerce-intel/scripts/plan_sample.py plan --population <총계> --per-stratum <n>`으로 \
@@ -164,6 +187,30 @@ commerce-intel 저장소에서 실행 중인 데모 분석 세션이다. 아래 
 """
 
 
+PROMPT_FOLLOWUP_COLLECT = """\
+{text}
+
+(commerce-intel 데모 ①단계의 **후속 메시지**다. 앞 턴에서 읽은 절차·규칙·수집 결과는
+그대로 유효하니 다시 읽지 말고 이어서 수행하라. 사용자가 플랫폼·범위를 고른 것이면
+그 선택대로 진행한다.)
+
+마지막 출력 줄에 JSON 한 줄만 출력하라(다른 텍스트 금지):
+{{"files": ["<이번 턴에 저장한 파일 경로>", ...], "summary": "<한두 문장>"}}
+files에는 **이번 턴에 새로 저장한 파일만** 담는다(앞 턴에서 이미 보고한 것은 뺀다).
+저장한 파일이 없으면 빈 배열이다.
+"""
+
+PROMPT_FOLLOWUP_ANALYZE = """\
+{text}
+
+(commerce-intel 데모 ③단계의 **후속 메시지**다. 앞 턴에서 확인한 데이터·문맥은 그대로
+유효하니 이어서 답하라. DB 수정·수집·시트 미러는 여전히 금지고 읽기만 한다.)
+
+마지막 출력 줄에 JSON 한 줄만 출력하라(다른 텍스트 금지):
+{{"contexts": ["<이번 답변의 대상 문맥>", ...], "findings": "<불릿 소견 전문>"}}
+"""
+
+
 def log(job, line, display=True):
     """화면 표시 여부를 제어. display=False는 로그 파일에만 남고 UI에 안 뜬다."""
     with JOBS_LOCK:
@@ -195,10 +242,17 @@ def tail_json(text):
     return None
 
 
-def run_claude(job, prompt):
-    """claude -p 스트리밍 실행. 최종 result 텍스트를 반환한다."""
+def run_claude(job, prompt, resume=None):
+    """claude -p 스트리밍 실행. 최종 result 텍스트를 반환한다.
+
+    resume에 세션 id를 주면 `--resume`으로 **같은 대화를 이어간다** — 앞 턴의 문맥·
+    수집 결과를 그대로 기억한다. 이게 「이어서 말하기」의 근간이다.
+    """
     cmd = [CLAUDE, "-p", prompt, "--output-format", "stream-json", "--verbose",
-           "--model", CLAUDE_MODEL, "--allowedTools"] + CLAUDE_ALLOWED_TOOLS
+           "--model", CLAUDE_MODEL]
+    if resume:
+        cmd += ["--resume", resume]
+    cmd += ["--allowedTools"] + CLAUDE_ALLOWED_TOOLS
     proc = subprocess.Popen(cmd, cwd=REPO, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True)
     with JOBS_LOCK:
@@ -306,21 +360,36 @@ def new_job(fn, step, meta):
 
 # ── 4단계 구현 ──────────────────────────────────────────────
 
-def step1(text, sid):
+def step1(text, sid, resume=False):
+    """①. resume=True면 이 탭의 직전 수집 세션을 이어간다(「이어서 말하기」)."""
     s = sess(sid)
+    prev = s.get("session1") if resume else None
 
     def run(job):
-        log(job, "▶ 수집 요청 해석 시작 (재사용 판정 → 필요하면 수집)")
-        final = run_claude(job, PROMPT_COLLECT_LIVE.format(text=text, db=DB))
+        if prev:
+            log(job, f"▶ 직전 수집 대화를 이어간다 (세션 {prev[:8]})")
+            prompt = PROMPT_FOLLOWUP_COLLECT.format(text=text)
+        else:
+            log(job, "▶ 수집 요청 해석 시작 (재사용 판정 → 필요하면 수집)")
+            prompt = PROMPT_COLLECT_LIVE.format(text=text, db=DB)
+        final = run_claude(job, prompt, resume=prev)
         parsed = tail_json(final) or {}
         files = parsed.get("files") or []
         summary = parsed.get("summary") or (final.strip()[:300] if final else "(응답 없음)")
-        s["collected_files"] = files
+        # 이어말하기는 앞 턴의 수집물을 덮지 않는다 — ②가 전부 적재해야 한다
+        if prev:
+            merged = list(s.get("collected_files") or [])
+            merged += [f for f in files if f not in merged]
+            s["collected_files"] = merged
+        else:
+            s["collected_files"] = files
+        s["session1"] = job.get("claude_session_id") or prev
         s["step1"] = {"text": text, "summary": summary}
         with JOBS_LOCK:
-            job["result"] = {"files": files, "summary": summary}
+            job["result"] = {"files": files, "summary": summary,
+                             "can_continue": bool(s.get("session1"))}
         log(job, f"✅ 파일 {len(files)}개 — {summary}")
-    return new_job(run, 1, {"text": text, "sid": s["sid"]})
+    return new_job(run, 1, {"text": text, "sid": s["sid"], "resumed": bool(prev)})
 
 
 def unloaded_raw_files():
@@ -435,26 +504,37 @@ def _step2_body(job, s):
                  + " — 구글 시트 업로드 버튼이 열렸다")
 
 
-def step3(text, sid):
+def step3(text, sid, resume=False):
+    """③. resume=True면 이 탭의 직전 분석 세션을 이어간다(「이어서 말하기」)."""
     s = sess(sid)
+    prior = s.get("session3") if resume else None
 
     def run(job):
-        p1 = s.get("step1")
-        prev = (f'직전 수집 요청(①단계): "{p1["text"]}"\n'
-                f'직전 수집 결과 요약: {p1["summary"]}') if p1 else "(직전 수집 요청 없음)"
-        log(job, "▶ 분석 요청 해석 시작"
-                 + (f" — 직전 수집 문맥 승계: {p1['text']}" if p1 else ""))
-        # 추출 파일은 잡마다 따로 — 고정 경로면 동시에 도는 ③끼리 서로 덮어쓴다
-        emit = f"output/demo-analysis-emit-{job['id']}.json"
-        final = run_claude(job, PROMPT_ANALYZE.format(text=text, db=DB, prev=prev, emit=emit))
+        if prior:
+            log(job, f"▶ 직전 분석 대화를 이어간다 (세션 {prior[:8]})")
+            prompt = PROMPT_FOLLOWUP_ANALYZE.format(text=text)
+        else:
+            p1 = s.get("step1")
+            prev = (f'직전 수집 요청(①단계): "{p1["text"]}"\n'
+                    f'직전 수집 결과 요약: {p1["summary"]}') if p1 else "(직전 수집 요청 없음)"
+            log(job, "▶ 분석 요청 해석 시작"
+                     + (f" — 직전 수집 문맥 승계: {p1['text']}" if p1 else ""))
+            # 추출 파일은 잡마다 따로 — 고정 경로면 동시에 도는 ③끼리 서로 덮어쓴다
+            emit = f"output/demo-analysis-emit-{job['id']}.json"
+            prompt = PROMPT_ANALYZE.format(text=text, db=DB, prev=prev, emit=emit)
+        final = run_claude(job, prompt, resume=prior)
         parsed = tail_json(final) or {}
         contexts = parsed.get("contexts") or []
         findings = parsed.get("findings") or (final.strip()[:1000] if final else "(응답 없음)")
-        s["contexts"] = contexts
+        if contexts or not prior:      # 후속 답이 문맥을 안 주면 앞 턴 선정을 유지한다
+            s["contexts"] = contexts
+        s["session3"] = job.get("claude_session_id") or prior
         with JOBS_LOCK:
-            job["result"] = {"contexts": contexts, "findings": findings}
-        log(job, f"✅ 문맥 {len(contexts)}개 선정: {', '.join(contexts) or '(없음 — 전체 DB)'}")
-    return new_job(run, 3, {"text": text, "sid": s["sid"]})
+            job["result"] = {"contexts": s.get("contexts") or [], "findings": findings,
+                             "can_continue": bool(s.get("session3"))}
+        log(job, f"✅ 문맥 {len(s.get('contexts') or [])}개 선정: "
+                 + (', '.join(s.get('contexts') or []) or '(없음 — 전체 DB)'))
+    return new_job(run, 3, {"text": text, "sid": s["sid"], "resumed": bool(prior)})
 
 
 def _slug(s):
@@ -691,12 +771,16 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "bad json"}, 400)
             return
         sid = body.get("sid")
-        if self.path == "/api/step1":
+        if self.path in ("/api/step1", "/api/step1/continue"):
             text = (body.get("text") or "").strip()
             if not text:
                 self._json({"error": "요청 문장을 입력하세요"}, 400)
                 return
-            self._json({"job": step1(text, sid)})
+            resume = self.path.endswith("/continue")
+            if resume and not sess(sid).get("session1"):
+                self._json({"error": "이어갈 수집 대화가 없습니다 — 먼저 요청을 실행하세요"}, 400)
+                return
+            self._json({"job": step1(text, sid, resume=resume)})
         elif self.path == "/api/step2":
             self._json({"job": step2(sid)})
         elif self.path == "/api/step2-sheets":
@@ -705,12 +789,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "정본 DB 업데이트를 먼저 실행하세요"}, 400)
                 return
             self._json({"job": step2_sheets(sid)})
-        elif self.path == "/api/step3":
+        elif self.path in ("/api/step3", "/api/step3/continue"):
             text = (body.get("text") or "").strip()
             if not text:
                 self._json({"error": "요청 문장을 입력하세요"}, 400)
                 return
-            self._json({"job": step3(text, sid)})
+            resume = self.path.endswith("/continue")
+            if resume and not sess(sid).get("session3"):
+                self._json({"error": "이어갈 분석 대화가 없습니다 — 먼저 요청을 실행하세요"}, 400)
+                return
+            self._json({"job": step3(text, sid, resume=resume)})
         elif self.path == "/api/step4":
             contexts = [c.strip() for c in (body.get("contexts") or []) if c.strip()]
             self._json({"job": step4(contexts, sid)})
