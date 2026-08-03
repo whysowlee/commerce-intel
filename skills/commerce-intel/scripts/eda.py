@@ -27,7 +27,7 @@ import sys
 from collections import Counter, defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from intel_data import AXES, cat_axes, collect, num_axes  # noqa: E402
+from intel_data import cat_axes, collect, num_axes  # noqa: E402
 
 # ── 임계값 (programmatic-eda/references/quality_thresholds.md 차용) ──────────
 NULL_WARN, NULL_FAIL = 5.0, 30.0      # 결측률 % — db-contract와 같은 값
@@ -233,9 +233,11 @@ def check_correlations(data, nulls):
     (D27) 이 확인은 여기서 자동으로 한다.
     """
     items = data["items"]
-    usable = [f for f, _ in num_axes(data)
+    num = num_axes(data)                        # 한 번만 계산 (쌍 루프 안에서 재호출 금지)
+    cats = cat_axes(data, CAT_AXES)
+    usable = [f for f, _ in num
               if next((x for x in nulls if x["field"] == f), {}).get("usable")]
-    labels = dict(num_axes(data))
+    labels = dict(num)
     out = []
     for a, bfield in [(usable[i], usable[j])
                       for i in range(len(usable)) for j in range(i + 1, len(usable))]:
@@ -247,7 +249,7 @@ def check_correlations(data, nulls):
         if r is None:
             continue
         seg_flips = []
-        for seg_field, seg_label in cat_axes(data, CAT_AXES):
+        for seg_field, seg_label in cats:
             groups = defaultdict(list)
             for i in items:
                 if i.get(a) is not None and i.get(bfield) is not None and i.get(seg_field) is not None:

@@ -44,11 +44,8 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import stat_playbook as sp                                          # noqa: E402
 from eda import CAT_AXES, MIN_N, run as run_eda                     # noqa: E402
-from intel_data import (AXES, cat_axes, collect, matched_pairs,  # noqa: E402
+from intel_data import (cat_axes, collect, matched_pairs,  # noqa: E402
                         num_axes, product_series, style_rows)
-
-LABELS = dict(AXES)
-CAT_LABELS = dict(CAT_AXES)
 
 # ── 관문 임계 ───────────────────────────────────────────────────────────────
 # 임계는 2026-08-03에 한 번 완화했다. 우리가 모으는 데이터는 표본이 크지 않고
@@ -596,7 +593,8 @@ def analyze(db_path, contexts, ai_notes=None, plan_only=False):
     # 변형 단위로 비교하면 n이 서로 다른 기준으로 세어진다.
     # 프록시를 포함한 동적 축(D19·D23) — AI 자동 판정 프록시가 검정 대상에 들도록.
     cats = cat_axes(data, CAT_AXES)
-    ctx = {"items": data["items"], "styles": style_rows(data["items"]),
+    ctx = {"items": data["items"],
+           "styles": style_rows(data["items"], proxies=data["meta"].get("proxies")),
            "eda": eda_res, "data": data,
            "series": product_series(db_path, contexts),
            "cat_axes": cats, "num_axes": num_axes(data),

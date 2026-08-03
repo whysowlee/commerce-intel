@@ -20,6 +20,7 @@ import json
 import re
 import sqlite3
 import statistics as st
+from collections import Counter
 from datetime import datetime
 
 # ── 동일 상품 매칭 ──────────────────────────────────────────────────────────
@@ -210,6 +211,11 @@ def collect(db_path, contexts):
         defs = []
     for d in defs:
         pn, mat = d["proxy_name"], d["material"]
+        try:
+            space = json.loads(d["value_space"]) if d["value_space"] else None
+        except (TypeError, ValueError):
+            space = d["value_space"]
+        is_numeric = space == "numeric"
         cache = {(r["site"], r["product_id"]): (r["fingerprint"], r["value"])
                  for r in conn.execute(
                      "SELECT site, product_id, fingerprint, value FROM proxy_cache "
@@ -220,14 +226,18 @@ def collect(db_path, contexts):
             hit = cache.get((it["site"], it["product_id"]))
             fp_now = it.get(fp_field) if fp_field else None
             valid = hit and (fp_field is None or hit[0] == fp_now)
-            it["px_" + pn] = hit[1] if valid else None
-            judged += 1 if valid else 0
-        try:
-            space = json.loads(d["value_space"]) if d["value_space"] else None
-        except (TypeError, ValueError):
-            space = d["value_space"]
+            val = hit[1] if valid else None
+            # proxy_cache.value는 TEXT다. 수치 프록시는 float로 되살려야 산술이 죽지 않는다.
+            # proxy-load가 이미 캐스팅을 강제하지만, 구버전 DB에 문자열이 남았을 수 있어 방어한다.
+            if is_numeric and val is not None:
+                try:
+                    val = float(val)
+                except (TypeError, ValueError):
+                    val = None
+            it["px_" + pn] = val
+            judged += 1 if val is not None else 0
         proxies.append({"name": pn, "question": d["question"], "method": d["method"],
-                        "numeric": space == "numeric",
+                        "numeric": is_numeric,
                         "judged": judged, "unjudged": len(items) - judged})
 
     # 시계열 — 축적 관측이 있는 상품의 시점별 지표. 시점이 2개 이상인 상품만.
@@ -455,18 +465,34 @@ def style_groups(items):
     return groups
 
 
-def style_rows(items, numeric_fields=None):
+STYLE_NUMERIC_BASE = [
+    "price_original", "price_sale", "discount_rate", "review_count", "rating",
+    "purchase_count", "like_count", "viewers_now", "opt_out_rate", "opt_total"]
+
+
+def style_rows(items, numeric_fields=None, proxies=None):
     """상품 목록을 **스타일 단위**로 접는다.
 
     수치는 변형들의 **중앙값**을 쓴다. 첫 건을 쓰면 어느 색이 먼저 수집됐느냐에 따라
     값이 달라져 재현되지 않고, 평균을 쓰면 한 색만 세일 중일 때 끌려간다.
 
+    **수치형 프록시(px_*)도 중앙값 집계 대상이다** — 넣지 않으면 첫 변형(members[0])
+    값을 그대로 써서, 첫 변형이 미판정(None)이면 스타일 전체가 결측이 되고 DB 반환
+    순서에 따라 값이 달라진다(이 docstring이 경계하는 바로 그 문제의 재발). 그래서
+    호출부는 `proxies=data["meta"]["proxies"]`를 넘겨 수치 프록시를 목록에 더한다.
+
     `variant_n`(변형 수)과 `variant_price_spread`(변형 간 가격 폭)를 함께 남긴다 —
     접었다는 사실과 접으면서 버린 정보량을 리포트가 밝힐 수 있어야 한다.
     """
-    numeric_fields = numeric_fields or [
-        "price_original", "price_sale", "discount_rate", "review_count", "rating",
-        "purchase_count", "like_count", "viewers_now", "opt_out_rate", "opt_total"]
+    if numeric_fields is None:
+        numeric_fields = list(STYLE_NUMERIC_BASE)
+        for p in (proxies or []):
+            if p.get("numeric"):
+                numeric_fields.append("px_" + p["name"])
+    # 범주형 프록시(px_thumb_cut 등)는 첫 변형이 아니라 **최빈값**으로 접는다.
+    # 같은 스타일이라도 색상 변형마다 대표 이미지가 달라 판정이 갈릴 수 있어서,
+    # members[0]을 그대로 쓰면 DB 반환 순서에 따라 값이 달라진다(수치 중앙값과 같은 이유).
+    cat_proxy_fields = ["px_" + p["name"] for p in (proxies or []) if not p.get("numeric")]
     out = []
     for (site, key), members in style_groups(items).items():
         rep = dict(members[0])
@@ -475,6 +501,14 @@ def style_rows(items, numeric_fields=None):
         for f in numeric_fields:
             vals = [m[f] for m in members if m.get(f) is not None]
             rep[f] = st.median(vals) if vals else None
+        for f in cat_proxy_fields:
+            vals = [m[f] for m in members if m.get(f) is not None]
+            # 최빈값. 동률이면 값 오름차순 첫 값 — 결정적이라 members 순서와 무관하게 재현된다
+            if vals:
+                c = Counter(vals)
+                rep[f] = min(c, key=lambda v: (-c[v], str(v)))
+            else:
+                rep[f] = None
         prices = [m["price_sale"] for m in members if m.get("price_sale") is not None]
         rep["variant_price_spread"] = (max(prices) - min(prices)) if len(prices) > 1 else 0
         # 하나라도 재고가 있으면 그 스타일은 살아 있다 — 전부 품절일 때만 품절이다

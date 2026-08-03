@@ -671,16 +671,27 @@ def _proxy_load_one(conn, data):
         (d["proxy_name"], d.get("question"), d.get("material"),
          json.dumps(d.get("value_space"), ensure_ascii=False), d.get("method"), now_str()))
     space = d.get("value_space")
+    is_numeric = space == "numeric"
     new = dup = bad = 0
     for j in data.get("judgments", []):
-        if isinstance(space, list) and j.get("value") not in space:
+        val = j.get("value")
+        if isinstance(space, list) and val not in space:
             bad += 1  # 값 공간 밖 판정은 버린다 — 정의가 계약이다
             continue
+        if is_numeric and val is not None:
+            # 수치 프록시는 float로 강제 캐스팅한다. 판정기가 "4.5" 같은 문자열을 주면
+            # proxy_cache(TEXT)에 문자열로 들어가고, 리포트 산술(pstdev·Cliff δ)이
+            # TypeError로 죽는다. 캐스팅 실패는 거부한다 — 정의가 numeric이면 값도 numeric이다.
+            try:
+                val = float(val)
+            except (TypeError, ValueError):
+                bad += 1
+                continue
         try:
             conn.execute(
                 "INSERT INTO proxy_cache VALUES (?,?,?,?,?,?,?)",
                 (d["proxy_name"], j.get("site"), str(j.get("product_id")),
-                 j.get("fingerprint"), j.get("value"), j.get("basis"), now_str()))
+                 j.get("fingerprint"), val, j.get("basis"), now_str()))
             new += 1
         except sqlite3.IntegrityError:
             dup += 1
