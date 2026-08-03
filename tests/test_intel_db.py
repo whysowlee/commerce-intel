@@ -281,6 +281,22 @@ def main():
     check("px_ 열이 주입된다", '"px_name_lang"' in html)
     check("AI 판정 표기·미판정 구분이 있다", "AI 판정" in html and "(미판정)" in html)
 
+    # [6b] 새 파이프라인(eda/analyze)에서도 프록시가 축이 되는지 — D39 회귀 방어.
+    # 위 [6]은 폐기 예정 HTML(build_analysis_report)만 봐서, D27 리팩터링 때 새
+    # 파이프라인의 프록시 소비가 끊긴 것을 111건 회귀가 아무것도 못 잡았다. 그 구멍을 막는다.
+    sys.path.insert(0, str(SCRIPTS))
+    import intel_data
+    data = intel_data.collect(db, None)
+    check("collect가 프록시를 items에 주입한다 (px_name_lang)",
+          any("px_name_lang" in it for it in data["items"]))
+    cats = [f for f, _ in intel_data.cat_axes(data, [("site", "플랫폼")])]
+    check("cat_axes가 범주 프록시를 축에 넣는다 (D39 — analyze 그룹 비교의 축)",
+          "px_name_lang" in cats,
+          "cat_axes 결과: %s" % cats)
+    nums = [f for f, _ in intel_data.num_axes(data)]
+    check("num_axes는 범주 프록시를 수치축에 넣지 않는다 (name_lang은 범주형)",
+          "px_name_lang" not in nums)
+
     print("[7] AI 생성 모드 도구 (--emit-json · 린터)")
     ej = work / "analysis.json"
     r = run([SCRIPTS / "build_analysis_report.py", "--db", db, "--emit-json",

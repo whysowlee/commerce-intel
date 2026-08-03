@@ -148,7 +148,10 @@ CREATE TABLE IF NOT EXISTS sync_state (
 """
 
 STATIC_FIELDS = ("name", "url", "image_url", "brand", "category")
-ATTR_TTL_DEFAULT = 90        # 속성별 ttl_days 미지정 시 (핏 등 D7과 같은 값)
+# 속성별 ttl_days는 **명시된 것만 저장한다(미지정=NULL)**. NULL이면 reuse-attrs의
+# 전역 --ttl-days(기본 90=STATIC_TTL_DAYS)를 따른다 — 그래야 --ttl-days 0 같은 명시
+# 전역값이 무시되지 않는다(2026-08-03 버그 수정). 긴 TTL이 필요한 속성(컬러·lifecycle)은
+# set-attrs/tag-lifecycle이 ttl_days를 명시해 넣는다.
 OBS_FIELDS = (
     "price_original", "price_sale", "discount_rate", "review_count", "rating",
     "view_count", "view_count_display", "purchase_count", "purchase_count_display",
@@ -168,6 +171,16 @@ def connect(db_path):
     except sqlite3.OperationalError:
         pass
     _migrate_attrs(conn)
+    # 구버전 마이그레이션·set-attrs가 속성에 ttl_days=90을 강제로 넣었다 — 그러면
+    # reuse-attrs의 전역 --ttl-days(예: 0)가 무시된다. 90을 NULL로 정리해 전역 TTL을
+    # 따르게 한다. 멱등(이미 NULL이면 no-op). 명시 TTL(lifecycle 3650·컬러 등)은 90이
+    # 아니라 건드리지 않는다. 현행 코드는 90을 강제하지 않으므로(미지정=NULL) 앞으로
+    # 90은 생기지 않는다 — 이 정리는 구 데이터용 일회성이다.
+    try:
+        conn.execute("UPDATE product_attributes SET ttl_days=NULL WHERE ttl_days=90")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
     return conn
 
 
@@ -201,7 +214,7 @@ def _migrate_attrs(conn):
                 "VALUES (?,?,?,?,?,?,?)",
                 (r["site"], r["product_id"], name, value,
                  r["attributes_basis"] or "migrated",
-                 r["static_verified_at"], ATTR_TTL_DEFAULT))
+                 r["static_verified_at"], None))   # ttl_days NULL — 전역 reuse TTL을 따른다
             moved += 1
     if moved:
         # 이관 표식 — 다음 connect에서 다시 돌지 않게 (기존 basis는 보존)
@@ -466,7 +479,9 @@ def cmd_reuse_attrs(conn, args):
             (site, pid)).fetchall()
         picked, any_expired = {}, False
         for a in arows:
-            ttl = a["ttl_days"] or args.ttl_days
+            # 속성별 TTL이 명시돼 있으면(컬러 3650·lifecycle 3650 등) 그것, 없으면(NULL)
+            # reuse의 전역 --ttl-days. `or`는 0을 falsy로 흘려 0일 TTL을 무시했다.
+            ttl = a["ttl_days"] if a["ttl_days"] is not None else args.ttl_days
             a_cut = (datetime.now() - timedelta(days=ttl)).strftime("%Y-%m-%d %H:%M:%S")
             if a["decided_at"] and a["decided_at"] < a_cut:
                 any_expired = True
@@ -527,7 +542,7 @@ def cmd_set_attrs(conn, args):
             "value=excluded.value, basis=excluded.basis, decided_at=excluded.decided_at, "
             "ttl_days=excluded.ttl_days",
             (it["site"], str(it["product_id"]), it["attr_name"], val,
-             it.get("basis") or "unknown", now, it.get("ttl_days") or ATTR_TTL_DEFAULT))
+             it.get("basis") or "unknown", now, it.get("ttl_days")))   # 미지정이면 NULL
         added += 1
     conn.commit()
     print(f"속성 적재 {added}건, 미판정 건너뜀 {skipped}건")
@@ -671,16 +686,27 @@ def _proxy_load_one(conn, data):
         (d["proxy_name"], d.get("question"), d.get("material"),
          json.dumps(d.get("value_space"), ensure_ascii=False), d.get("method"), now_str()))
     space = d.get("value_space")
+    is_numeric = space == "numeric"
     new = dup = bad = 0
     for j in data.get("judgments", []):
-        if isinstance(space, list) and j.get("value") not in space:
+        val = j.get("value")
+        if isinstance(space, list) and val not in space:
             bad += 1  # 값 공간 밖 판정은 버린다 — 정의가 계약이다
             continue
+        if is_numeric and val is not None:
+            # 수치 프록시는 float로 강제 캐스팅한다. 판정기가 "4.5" 같은 문자열을 주면
+            # proxy_cache(TEXT)에 문자열로 들어가고, 리포트 산술(pstdev·Cliff δ)이
+            # TypeError로 죽는다. 캐스팅 실패는 거부한다 — 정의가 numeric이면 값도 numeric이다.
+            try:
+                val = float(val)
+            except (TypeError, ValueError):
+                bad += 1
+                continue
         try:
             conn.execute(
                 "INSERT INTO proxy_cache VALUES (?,?,?,?,?,?,?)",
                 (d["proxy_name"], j.get("site"), str(j.get("product_id")),
-                 j.get("fingerprint"), j.get("value"), j.get("basis"), now_str()))
+                 j.get("fingerprint"), val, j.get("basis"), now_str()))
             new += 1
         except sqlite3.IntegrityError:
             dup += 1
