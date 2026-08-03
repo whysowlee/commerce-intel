@@ -28,6 +28,7 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import analyze as an                                        # noqa: E402
 from intel_db import connect as db_connect                  # noqa: E402
+import chart                                                # noqa: E402
 from pdf_doc import Doc                                     # noqa: E402
 
 STRONG_MAX = 5
@@ -250,6 +251,9 @@ def build_detail_pdf(res, out_path, target):
     d.h2("데이터 프로파일 (EDA)")
     d.h3("결측")
     d.para("미노출(값이 없음)과 0은 다르다. 아래 결측률은 **사이트가 보여주지 않은** 비율이다.")
+    d.figure(chart.missing_bar(res["eda"]["nulls"]),
+             caption="결측률 상위 축. 미노출과 0은 다른 값이라 한 막대에 쌓지 않았다 — "
+                     "0 건수는 아래 표에 있다.")
     d.table(["지표", "결측", "결측률", "0인 건수", "판정"],
             [[n["label"], "{:,}".format(n["missing"]), "%.1f%%" % n["missing_pct"],
               "{:,}".format(n["zeros"]), n["status"]] for n in res["eda"]["nulls"]],
@@ -296,6 +300,11 @@ def _detail_body(d, h):
             h["cat_label"], h["group_a"], h["n_a"], h["group_b"], h["n_b"])])
         rows.insert(1, ["중앙값", "%s 대 %s" % (_fmt(h["median_a"]), _fmt(h["median_b"]))])
     d.table(["항목", "값"], rows, widths=[24, 76])
+    if h["kind"] == "group_compare" and h.get("a") and h.get("b"):
+        d.figure(chart.dist_compare(h["a"], h["b"], h["group_a"], h["group_b"],
+                                    h.get("metric_label", "")),
+                 caption="두 그룹의 분포. 중앙값이 갈려도 상자가 크게 겹치면 차이가 "
+                         "약하다는 뜻이다 — 효과 크기와 함께 읽어라.")
     if h["kind"] == "group_compare" and h["cat_field"] in ("category", "brand"):
         # 사이트가 준 문자열을 그대로 쓴다(없는 정규화를 만들지 않는다는 원칙). 그 대가로
         # 카테고리는 상위·하위 레벨이 섞이고, 브랜드는 같은 브랜드가 표기만 다르게
@@ -312,11 +321,21 @@ def _detail_body(d, h):
     if h["kind"] == "correlation" and h.get("trend"):
         d.h3("구간별 추이")
         d.para("상관계수는 방향만 말한다. **어느 구간인지**는 아래를 본다.")
+        d.figure(chart.bins_bar(h["trend"], h["x_label"], "%s 중앙값" % h["y_label"]),
+                 caption="구간별 %s. 막대는 0에서 시작한다." % h["y_label"])
         d.table(["%s 구간" % h["x_label"], "n", "%s 중앙값" % h["y_label"]],
                 [["%s ~ %s" % (_fmt(t["from"]), _fmt(t["to"])), "{:,}".format(t["n"]),
                   _fmt(t["median"])] for t in h["trend"]],
                 widths=[48, 20, 32], align_right=(1, 2))
 
+    if h["kind"] == "dose_response" and h.get("study", {}).get("bins"):
+        st_ = h["study"]
+        d.figure(chart.bins_bar(st_["bins"], "할인 폭(%)", "하트 증분 중앙값"),
+                 caption="할인 폭 구간별 반응. **하트 증분은 판매량이 아니다** — 대리 지표다.")
+        d.table(["할인 폭", "n", "증분 중앙값"],
+                [["%s~%s%%" % (_fmt(b["from"]), _fmt(b["to"]) if b.get("to") else ""),
+                  "{:,}".format(b["n"]), _fmt(b["median"])] for b in st_["bins"]],
+                widths=[40, 24, 36], align_right=(1, 2))
     if h["kind"] == "event_study" and h.get("study"):
         s = h["study"]
         d.h3("사건 연구")
