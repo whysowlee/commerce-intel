@@ -317,6 +317,71 @@ def data_rule_tests():
 
 
 
+def hierarchy_tests():
+    """카테고리 계층 판정 (D42) — 대등하지 않은 쌍을 검정에서 뺀다.
+
+    실측 카탈로그가 근거다. 사이트에 붙지 않고 인라인 카탈로그로 검증한다 —
+    `ranking_targets.json`이 갱신돼도 이 테스트는 규칙만 본다.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import intel_data
+
+    work = Path(tempfile.mkdtemp(prefix="hier-"))
+    cat = work / "catalog.json"
+    cat.write_text(json.dumps({"29cm": {"entries": [
+        {"path": ["여성의류", "스커트", "미니"]},
+        {"path": ["여성의류", "스커트", "미디"]},
+        {"path": ["여성의류", "스커트", "데님"]},
+        {"path": ["여성의류", "단독", "하의"]},
+    ]}}, ensure_ascii=False), encoding="utf-8")
+    h = intel_data.category_hierarchy(str(work / "no.db"), catalog_path=str(cat))
+
+    check("D42 조상-자손은 비교하지 않는다 (스커트 ⊃ 미니)",
+          intel_data.incomparable("스커트", "미니", h))
+    check("D42 형제는 비교한다 (미니 대 미디 — 둘 다 스커트 아래)",
+          not intel_data.incomparable("미니", "미디", h))
+    # 사용자가 인사이트 PDF에서 잡은 바로 그 쌍이다 (2026-08-04)
+    check("D42 부모가 갈리면 비교하지 않는다 (미니[스커트] 대 하의[단독])",
+          intel_data.incomparable("미니", "하의", h))
+    check("D42 경로 표기와 조각 표기가 같은 것으로 걸린다",
+          intel_data.incomparable("여성의류 > 스커트 > 미디", "미디", h))
+    # **모르면 거르지 않는다** — 없는 근거로 검정을 지우면 안 본 것이 없는 것이 된다
+    check("D42 트리에 없는 값은 거르지 않는다 (판단 근거가 없다)",
+          not intel_data.incomparable("처음보는값", "또다른값", h))
+    check("D42 계층 정보가 없으면 아무것도 거르지 않는다",
+          not intel_data.incomparable("미니", "하의", {"anc": set(), "parent": {}}))
+    shutil.rmtree(work, ignore_errors=True)
+
+
+def proxy_auto_tests():
+    """프록시 규칙 실행기 (D43) — rule 즉석 판정과 vision 배치 묶기."""
+    sys.path.insert(0, str(SCRIPTS))
+    import proxy_auto
+
+    class Row(dict):
+        def keys(self):
+            return dict.keys(self)
+
+    card = {"proxy_name": "t", "material": "name", "method": "rule",
+            "value_space": ["데님", "그 외"],
+            "rules": [{"value": "데님", "any": ["데님", "denim"]},
+                      {"value": "그 외", "any": ["."]}]}
+    check("D43 규칙은 위에서부터 먼저 맞는 것이 값이다",
+          proxy_auto.judge_row(card, Row(name="워시드 데님 스커트"))[0] == "데님")
+    check("D43 대소문자를 가리지 않는다",
+          proxy_auto.judge_row(card, Row(name="DENIM SKIRT"))[0] == "데님")
+    check("D43 재료가 없으면 판정하지 않는다 (저장 대상이 아니다)",
+          proxy_auto.judge_row(card, Row(name=None)) is None)
+    # all은 전부 맞아야 한다 — 혼합 판정이 이 규칙에 걸려 있다
+    mix = {"material": "name", "rules": [{"value": "혼합", "all": ["[가-힣]", "[A-Za-z]{2}"]}]}
+    check("D43 all은 전부 맞을 때만",
+          proxy_auto.judge_row(mix, Row(name="LOW 스커트"))[0] == "혼합"
+          and proxy_auto.judge_row(mix, Row(name="스커트")) is None)
+    num = {"material": "name", "numeric": {"kind": "char_len"}}
+    check("D43 수치 프록시는 float으로 나온다",
+          proxy_auto.judge_row(num, Row(name="abcde"))[0] == 5.0)
+
+
 def main():
     work = Path(tempfile.mkdtemp(prefix="intel-db-test-"))
     db = str(work / "intel.db")
@@ -501,6 +566,12 @@ def main():
 
     print("[13] 데이터 규칙 (B계열 이식 — HTML과 무관)")
     data_rule_tests()
+
+    print("[14] 카테고리 계층 판정 (D42)")
+    hierarchy_tests()
+
+    print("[15] 프록시 규칙 실행기 (D43)")
+    proxy_auto_tests()
 
     shutil.rmtree(work, ignore_errors=True)
     print("-" * 56)
