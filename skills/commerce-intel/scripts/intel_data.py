@@ -141,9 +141,29 @@ def downsample_indices(count, limit=MAX_TREND_POINTS):
 # 등장한 적이 없어 못 거른다(2026-08-04 실측 — 107→90개로 줄었는데 정작 사용자가
 # 지적한 「미니 대 하의」가 살아남았다). 카탈로그를 봐야 둘의 부모가 다름을 안다.
 
-CATALOG_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__))))), "data", ".tools", "ranking_targets.json")
+# 카탈로그는 **`skills/` 안에 함께 배포된다**(references/). 처음엔 저장소 루트의
+# `data/.tools/ranking_targets.json`만 봤는데, 배포본은 `skills/`만 압축해 나가므로
+# 팀원 환경에서 파일이 없고 **계층 판정이 조용히 죽었다** — 예외도 안 나고 그냥 안
+# 걸러져서 「미니 대 하의」가 다시 리포트에 오른다(2026-08-04 배포 리허설로 발견).
+# 조용히 기능이 빠지는 것이 이 프로젝트에서 제일 나쁜 실패다.
+#
+# 두 곳을 순서대로 본다: 배포본(옆 references/) → 개발 저장소(data/.tools/).
+# 정본은 `data/.tools/`이고 references/ 사본은 배포용 미러다 — package.sh가 둘이
+# 어긋나면 패키징을 멈춘다.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+CATALOG_CANDIDATES = [
+    os.path.join(os.path.dirname(_HERE), "references", "ranking_targets.json"),
+    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(_HERE))),
+                 "data", ".tools", "ranking_targets.json"),
+]
+
+
+def find_catalog():
+    """실측 카탈로그 위치. 없으면 None — 그때는 DB 경로 값만으로 계층을 배운다."""
+    for p in CATALOG_CANDIDATES:
+        if os.path.exists(p):
+            return p
+    return None
 
 
 def _feed_path(parts, anc, parent):
@@ -161,14 +181,14 @@ def category_hierarchy(db_path, catalog_path=None):
     그래서 부모를 집합으로 둔다 — "부모를 공유하나"가 형제 판정이 된다.
     """
     anc, parent = set(), {}
-    path = catalog_path or CATALOG_PATH
+    path = catalog_path or find_catalog()
     try:
         with open(path, encoding="utf-8") as fh:
             cat = json.load(fh)
         for site in ("musinsa", "29cm"):
             for e in cat.get(site, {}).get("entries", []):
                 _feed_path([p.strip() for p in e.get("path", []) if p.strip()], anc, parent)
-    except (OSError, ValueError, KeyError):
+    except (OSError, TypeError, ValueError, KeyError):
         pass    # 카탈로그가 없어도 DB 경로만으로 돌아간다 — 덜 걸러질 뿐이다
     try:
         conn = sqlite3.connect(db_path)
