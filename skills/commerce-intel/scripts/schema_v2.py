@@ -222,12 +222,16 @@ JOIN sites s ON s.site_id = p.site_id;
 #                            (여기를 안 나누면 `https://cdn.x.com`이 `https:/`로 잘려
 #                             같은 호스트가 사전에 두 항목으로 갈린다 — PR #9 리뷰)
 #   둘 다 있다              → 첫 `/` 앞이 호스트
+# 빈 문자열은 **URL이 없는 것**으로 본다 — 파이썬 `split_url()`의 `if not url:`과
+# 같아야 한다. 안 맞추면 사전에 빈 호스트가 생기고, 되읽을 때 한쪽은 NULL·다른
+# 쪽은 ''로 갈린다 (PR #9 리뷰). 실데이터엔 아직 없지만 규약이 어긋나 있었다.
+_EMPTY = "COALESCE({u},'')=''"
 _I = "instr({u},'//')"
 _K = "instr(substr({u},instr({u},'//')+2),'/')"
-_HOST = ("CASE WHEN %s=0 THEN '' WHEN %s=0 THEN {u} "
-         "ELSE substr({u},1,%s+%s) END" % (_I, _K, _I, _K))
-_PATH = ("CASE WHEN %s=0 THEN {u} WHEN %s=0 THEN '' "
-         "ELSE substr({u},%s+%s+1) END" % (_I, _K, _I, _K))
+_HOST = ("CASE WHEN %s THEN NULL WHEN %s=0 THEN '' WHEN %s=0 THEN {u} "
+         "ELSE substr({u},1,%s+%s) END" % (_EMPTY, _I, _K, _I, _K))
+_PATH = ("CASE WHEN %s THEN NULL WHEN %s=0 THEN {u} WHEN %s=0 THEN '' "
+         "ELSE substr({u},%s+%s+1) END" % (_EMPTY, _I, _K, _I, _K))
 
 TRIGGERS_V2 = """
 DROP TRIGGER IF EXISTS trg_products_ins;
@@ -235,8 +239,8 @@ CREATE TRIGGER trg_products_ins INSTEAD OF INSERT ON products BEGIN
   INSERT OR IGNORE INTO sites(name) VALUES (NEW.site);
   INSERT OR IGNORE INTO brands(name) SELECT NEW.brand WHERE NEW.brand IS NOT NULL;
   INSERT OR IGNORE INTO categories(name) SELECT NEW.category WHERE NEW.category IS NOT NULL;
-  INSERT OR IGNORE INTO hosts(prefix) SELECT %(uh)s WHERE NEW.url IS NOT NULL;
-  INSERT OR IGNORE INTO hosts(prefix) SELECT %(ih)s WHERE NEW.image_url IS NOT NULL;
+  INSERT OR IGNORE INTO hosts(prefix) SELECT %(uh)s WHERE COALESCE(NEW.url,'')<>'';
+  INSERT OR IGNORE INTO hosts(prefix) SELECT %(ih)s WHERE COALESCE(NEW.image_url,'')<>'';
   INSERT INTO product_base (site_id, product_id, name, url_host, url_path,
       img_host, img_path, brand_id, category_id, attributes, attributes_basis,
       static_verified_at, first_seen_at, last_seen_at, raw_extras)
@@ -271,8 +275,8 @@ DROP TRIGGER IF EXISTS trg_products_upd;
 CREATE TRIGGER trg_products_upd INSTEAD OF UPDATE ON products BEGIN
   INSERT OR IGNORE INTO brands(name) SELECT NEW.brand WHERE NEW.brand IS NOT NULL;
   INSERT OR IGNORE INTO categories(name) SELECT NEW.category WHERE NEW.category IS NOT NULL;
-  INSERT OR IGNORE INTO hosts(prefix) SELECT %(uh)s WHERE NEW.url IS NOT NULL;
-  INSERT OR IGNORE INTO hosts(prefix) SELECT %(ih)s WHERE NEW.image_url IS NOT NULL;
+  INSERT OR IGNORE INTO hosts(prefix) SELECT %(uh)s WHERE COALESCE(NEW.url,'')<>'';
+  INSERT OR IGNORE INTO hosts(prefix) SELECT %(ih)s WHERE COALESCE(NEW.image_url,'')<>'';
   UPDATE product_base SET
     name=NEW.name,
     url_host=(SELECT host_id FROM hosts WHERE prefix=%(uh)s), url_path=%(up)s,

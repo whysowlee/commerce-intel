@@ -518,14 +518,16 @@ def schema_v2_tests():
     # E-DB-17 URL 접기 규칙이 파이썬과 트리거 SQL에서 **같아야** 한다 (PR #9 리뷰).
     # 경로 없는 URL이 갈리면 같은 호스트가 사전에 두 항목으로 쪼개진다.
     from schema_v2 import split_url, _HOST, _PATH
-    for url in ("https://cdn.example.com", "https://a.test/x/y", "노프로토콜경로"):
+    for url in ("https://cdn.example.com", "https://a.test/x/y", "노프로토콜경로",
+                "", None):        # 빈 문자열·NULL도 같은 결과여야 한다 (PR #9 리뷰)
         hid, path = split_url(conn, url, {})
         pref = conn.execute("SELECT prefix FROM hosts WHERE host_id=?", (hid,)).fetchone()
         pref = pref[0] if pref else None
         sql = conn.execute("SELECT %s, %s" % (_HOST.format(u="?1"), _PATH.format(u="?1")),
                            (url,)).fetchone()
-        check("E-DB-17 URL 접기가 파이썬·SQL에서 같다 (%s)" % url,
-              (pref, path) == tuple(sql) and (pref or "") + (path or "") == url,
+        check("E-DB-17 URL 접기가 파이썬·SQL에서 같다 (%r)" % url,
+              (pref, path) == tuple(sql)
+              and (pref or "") + (path or "") == (url or ""),
               ((pref, path), tuple(sql)))
 
     # E-DB-10 증분 키는 뷰의 마지막 컬럼 _rowid다
@@ -653,6 +655,22 @@ def modeling_tests():
     check("E-MD-14 lever→response는 lever가 원인 쪽으로 간다",
           an._orient("like_count", "discount_rate", "하트", "할인율")[:2]
           == ("discount_rate", "like_count"))
+
+    # E-MD-15 claim이 헤지했으면 action도 헤지해야 한다 — 같은 카드 안에서
+    # 주장과 액션이 모순되면 읽는 사람은 더 확정적인 쪽(액션)을 믿는다 (PR #9 리뷰)
+    lp = {"verdict": "strong", "kind": "correlation", "direction": "lever_pair",
+          "x_label": "정가", "y_label": "할인율"}
+    got = ins.action_hint(lp)
+    check("E-MD-15 lever끼리의 상관도 액션에서 선후를 단정하지 않는다",
+          "데이터가 답하지 않는다" in got and "폭을 정할 때 참고" not in got, got)
+
+    # E-MD-16 recheck_hint도 코드로 가른다 (문구가 바뀌어도 안 흔들린다)
+    r_coded = {"fails": ["문구를 바꿨다"], "fail_codes": ["sample"]}
+    check("E-MD-16 recheck_hint가 fail_codes를 본다",
+          "표본이 쌓이면" in ins.recheck_hint(r_coded), ins.recheck_hint(r_coded))
+    r_old = {"fails": ["표본이 작다 (n=3 < 20)"]}     # 코드 없는 옛 항목은 폴백
+    check("E-MD-17 코드가 없으면 문구로 폴백한다",
+          "표본이 쌓이면" in ins.recheck_hint(r_old), ins.recheck_hint(r_old))
 
 
 def main():

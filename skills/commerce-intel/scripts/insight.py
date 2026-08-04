@@ -143,9 +143,16 @@ def action_hint(h):
     if kind == "paired":
         return "같은 상품인데 플랫폼별로 갈린다 — **가격·노출 조건을 어디에 맞출지** 정한다"
     if kind == "correlation":
+        # claim은 `lever_pair`도 "함께 움직인다 · 선후는 알 수 없다"로 헤지한다
+        # (analyze._orient). 여기서 안 맞추면 **같은 카드 안에서 주장과 액션이
+        # 모순된다** — 위는 모른다고 하고 아래는 "폭을 정할 때 참고"가 된다 (PR #9 리뷰).
         if h.get("direction") == "response_pair":
             return ("둘 다 고객 반응이라 **선후를 모른다.** 한쪽을 올리면 다른 쪽이 따라온다고 "
                     "읽지 마라 — 무엇이 먼저인지 보려면 시점을 나눠 다시 봐야 한다")
+        if h.get("direction") == "lever_pair":
+            return ("**둘 다 우리가 정한 값이다**(정가와 할인율처럼). 어느 쪽이 원인인지 "
+                    "데이터가 답하지 않는다 — 우리 가격 정책이 그렇게 짜여 있다는 기술이지, "
+                    "한쪽을 바꾸면 다른 쪽이 따라온다는 뜻이 아니다")
         return ("%s를 움직이면 %s가 따라 움직인 관측이다. **폭을 정할 때 참고**하되, "
                 "다른 조건이 같았는지는 확인이 필요하다" % (h.get("x_label"), h.get("y_label")))
     if kind == "group_compare":
@@ -212,14 +219,22 @@ def _null_claim(h):
 
 
 def recheck_hint(h):
-    """약한 단서마다 "어떻게 재확인하나"를 한 줄로. 없으면 단서가 아니라 잡음이다."""
-    if any("표본이 작다" in f for f in h["fails"]):
+    """약한 단서마다 "어떻게 재확인하나"를 한 줄로. 없으면 단서가 아니라 잡음이다.
+
+    **관문은 코드로 가른다**(`fail_codes`) — 한글 문구 매칭은 gate()의 문구를 다듬는
+    날 이 함수만 조용히 오분류된다(PR #9 리뷰). `null_findings`는 이미 코드로 갔는데
+    여기만 남아 있었다. 코드가 없는 옛 항목은 문구로 폴백한다.
+    """
+    codes = h.get("fail_codes") or []
+    fails = h.get("fails") or []
+    has = lambda code, word: (code in codes) if codes else any(word in f for f in fails)
+    if has("sample", "표본이 작다"):
         return "표본이 쌓이면 다시 본다 — 다음 수집 후 재확인"
-    if any("홀드아웃" in f for f in h["fails"]):
+    if has("holdout", "홀드아웃"):
         return "다음 관측 주기에 같은 방향이 나오는지 확인"
-    if any("세그먼트" in f for f in h["fails"]):
+    if has("segment", "세그먼트"):
         return "해당 세그먼트만 따로 수집해 표본을 키운 뒤 재검정"
-    if any("다중비교" in f for f in h["fails"]):
+    if has("fdr", "다중비교"):
         return "이 가설만 단독으로 검정하면 유의할 수 있다 — 목적을 정하고 재검정"
     return "다음 관측으로 재확인"
 

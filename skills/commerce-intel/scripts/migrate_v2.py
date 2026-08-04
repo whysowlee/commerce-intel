@@ -140,13 +140,16 @@ def migrate(src_path, dst_path):
         vk = vk_of.get((r["site"], r["product_id"], r["option_id"]))
         if vk is None:
             continue
+        # 시도가 아니라 **실제 삽입 수**를 센다 — `OR IGNORE`는 중복과 제약 위반을
+        # 함께 삼켜서, 시도 수를 보고하면 이관 리포트가 부풀려진다 (PR #9 리뷰)
+        before = dst.total_changes
         dst.execute(
             "INSERT OR IGNORE INTO variant_obs_base (vk, observed_at, sold_out,"
             " stock_qty, stock_display, stock_basis, run_ref) VALUES (?,"
             + TS_SQL.format(col="?") + ",?,?,?,?,?)",
             (vk, r["observed_at"], r["sold_out"], r["stock_qty"], r["stock_display"],
              r["stock_basis"], run_ref.get(r["run_id"])))
-        n += 1
+        n += dst.total_changes - before
     report["variant_observations"] = n
 
     n = 0
@@ -154,11 +157,12 @@ def migrate(src_path, dst_path):
         pk = pk_of.get((r["site"], r["product_id"]))
         if pk is None:
             continue
+        before = dst.total_changes
         dst.execute(
             "INSERT OR IGNORE INTO attr_base (pk, attr_name, value, basis, decided_at,"
             " ttl_days) VALUES (?,?,?,?," + TS_SQL.format(col="?") + ",?)",
             (pk, r["attr_name"], r["value"], r["basis"], r["decided_at"], r["ttl_days"]))
-        n += 1
+        n += dst.total_changes - before
     report["product_attributes"] = n
 
     dst.executescript(VIEWS_V2)
