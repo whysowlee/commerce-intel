@@ -774,16 +774,40 @@ def cmd_proxy_load(conn, args):
 
 
 def _proxy_load_one(conn, data):
+    """프록시 정의 + 판정을 적재한다.
+
+    **값 공간이 바뀌면 옛 캐시를 버린다** (D53). 전에는 정의만 덮어쓰고 캐시를
+    그대로 뒀는데, 그러면 **같은 이름 아래 두 값 공간이 섞인다.** 2026-08-04 실측:
+
+        name_lang  정의 [혼합·한국어·영문]  캐시에 `영문만` 945 · `한글만` 673
+        thumb_cut  정의 [제품 단독컷·착용컷] 캐시에 `스튜디오 모델컷` 65 …
+
+    값 공간 검사는 **적재 시점의 새 정의**로만 도니 옛 값은 검사를 안 거친다.
+    그 결과 같은 개념이 두 그룹으로 갈려 그룹 비교의 n이 쪼개지고, 분석은
+    "영문과 영문만은 다르다"를 검정하게 된다.
+    """
     d = data.get("proxy") or {}
     if not d.get("proxy_name"):
         raise SystemExit("proxy.proxy_name이 없다")
+    name = d["proxy_name"]
+    space = d.get("value_space")
+    new_space = json.dumps(space, ensure_ascii=False)
+    prev = conn.execute(
+        "SELECT value_space FROM proxy_defs WHERE proxy_name=?", (name,)).fetchone()
+    dropped = 0
+    if prev and prev[0] != new_space:
+        # 정의가 바뀌었다 — 옛 판정은 다른 계약으로 만들어진 값이라 못 쓴다.
+        # **조용히 섞느니 지운다.** 지웠다는 사실과 건수를 찍는다.
+        dropped = conn.execute(
+            "DELETE FROM proxy_cache WHERE proxy_name=?", (name,)).rowcount
+        print("%s: 값 공간이 바뀌어 옛 판정 %d건을 버린다\n  이전 %s\n  이후 %s"
+              % (name, dropped, prev[0][:70], new_space[:70]))
     conn.execute(
         "INSERT INTO proxy_defs VALUES (?,?,?,?,?,?) "
         "ON CONFLICT(proxy_name) DO UPDATE SET question=excluded.question, "
         "material=excluded.material, value_space=excluded.value_space, method=excluded.method",
-        (d["proxy_name"], d.get("question"), d.get("material"),
-         json.dumps(d.get("value_space"), ensure_ascii=False), d.get("method"), now_str()))
-    space = d.get("value_space")
+        (name, d.get("question"), d.get("material"),
+         new_space, d.get("method"), now_str()))
     is_numeric = space == "numeric"
     new = dup = bad = 0
     for j in data.get("judgments", []):
@@ -813,6 +837,54 @@ def _proxy_load_one(conn, data):
     if bad:
         msg += f", 값 공간 밖 {bad}건 거부"
     print(msg)
+
+
+def cmd_proxy_audit(conn, args):
+    """값 공간 밖 판정이 남아 있나 본다 (D53). `--fix`면 지운다.
+
+    적재 시점 가드(위)가 앞으로를 막고, 이건 **이미 들어간 것**을 찾는다.
+    조용히 남아 있으면 축이 갈린 채로 분석이 돈다.
+    """
+    bad_total = 0
+    for name, space_json in conn.execute(
+            "SELECT proxy_name, value_space FROM proxy_defs ORDER BY 1"):
+        try:
+            space = json.loads(space_json or "null")
+        except ValueError:
+            space = None
+        rows = conn.execute(
+            "SELECT value, COUNT(*) FROM proxy_cache WHERE proxy_name=? GROUP BY 1",
+            (name,)).fetchall()
+        if space == "numeric":
+            bad = [(v, n) for v, n in rows
+                   if v is not None and not _is_num(v)]
+        elif isinstance(space, list):
+            bad = [(v, n) for v, n in rows if v not in space]
+        else:
+            continue
+        if not bad:
+            continue
+        cnt = sum(n for _, n in bad)
+        bad_total += cnt
+        print("%s: 값 공간 밖 %d건 — %s"
+              % (name, cnt, ", ".join("%s(%d)" % b for b in bad[:5])))
+        if getattr(args, "fix", False):
+            for v, _ in bad:
+                conn.execute("DELETE FROM proxy_cache WHERE proxy_name=? AND value IS ?",
+                             (name, v))
+            conn.commit()
+            print("  → 지웠다")
+    if not bad_total:
+        print("값 공간 밖 판정 없음 — 전 프록시 정상")
+    return 0 if (bad_total == 0 or getattr(args, "fix", False)) else 2
+
+
+def _is_num(v):
+    try:
+        float(v)
+        return True
+    except (TypeError, ValueError):
+        return False
 
 
 def cmd_stats(conn, _args):
@@ -918,6 +990,8 @@ def main():
     sp.add_argument("--ttl-days", type=int, default=STATIC_TTL_DAYS)
     sp = sub.add_parser("import-snapshots"); sp.add_argument("dir")
     sp = sub.add_parser("proxy-load"); sp.add_argument("file")
+    sp = sub.add_parser("proxy-audit", help="값 공간 밖 판정 점검 (D53)")
+    sp.add_argument("--fix", action="store_true", help="찾은 것을 지운다")
     sp = sub.add_parser("export")
     sp.add_argument("--table", required=True,
                     choices=["products", "observations", "variants", "variant_observations", "platforms", "runs", "proxy_defs", "proxy_cache"])
@@ -951,6 +1025,8 @@ def main():
         cmd_import_snapshots(conn, args)
     elif args.cmd == "proxy-load":
         cmd_proxy_load(conn, args)
+    elif args.cmd == "proxy-audit":
+        return cmd_proxy_audit(conn, args)
     elif args.cmd == "export":
         cmd_export(conn, args)
     elif args.cmd == "stats":

@@ -391,13 +391,27 @@ def num_axes(data):
     return out
 
 
+def attr_axes(data):
+    """`product_attributes`에서 온 동적 속성 축 (D54).
+
+    값이 **두 종류 이상**일 때만 축이 된다 — 전부 같은 값이면 비교할 상대가 없다.
+    수치처럼 보여도 범주로 둔다: 이 표는 TEXT라 크기 비교의 근거가 없다.
+    """
+    seen = {}
+    for it in data["items"]:
+        for k, v in it.items():
+            if k.startswith("attr_") and v not in (None, ""):
+                seen.setdefault(k, set()).add(v)
+    return [(k, k[5:]) for k in sorted(seen) if len(seen[k]) >= 2]
+
+
 def cat_axes(data, base):
-    """범주축 (field, label) — base(호출자의 CAT_AXES) + 범주형 프록시.
+    """범주축 (field, label) — base(호출자의 CAT_AXES) + 동적 속성 + 범주형 프록시.
 
     프록시 대부분이 범주형이다(착용컷/제품컷·영문/한글·로고 유무). 이것들이 그룹 비교
     축이 되어야 "착용컷 상품이 제품컷보다 하트가 높은가" 같은 검정이 성립한다.
     """
-    out = list(base)
+    out = list(base) + attr_axes(data)
     for p in data["meta"].get("proxies", []):
         if not p.get("numeric") and p.get("judged"):
             out.append(("px_" + p["name"], p["name"] + "(AI)"))
@@ -444,6 +458,13 @@ def collect(db_path, contexts):
         attrs.update(dyn_attrs.get(key, {}))   # 표가 JSON을 덮는다(더 최신)
         d["fit"] = attrs.get("핏")
         d["color"] = attrs.get("컬러")         # 컬러 축은 인프라만 — 채우는 건 8번(보류)
+        # **동적 속성을 전부 필드로 편다** (D54). D35가 "스키마 변경 없이 축을
+        # 늘린다"고 했는데 정작 축 목록(CAT_AXES)이 고정이라, 새 속성을 넣어도
+        # 분석이 안 봤다 — `brand_survival`을 넣고서야 드러났다.
+        for k, v in attrs.items():
+            if k in ("핏", "컬러"):
+                continue                       # 위에서 고정 이름으로 이미 넣었다
+            d["attr_" + k] = v
         d["_attrs"] = attrs
         add_bands(d)           # D48 — 구간 표기 → 순서형 축 (순위로만)
         add_funnel(d)          # D47 — 조회→하트→구매 비율. 재료 없으면 None
@@ -506,9 +527,25 @@ def collect(db_path, contexts):
                     val = None
             it["px_" + pn] = val
             judged += 1 if val is not None else 0
+        # **값 공간 밖 값이 섞여 있으면 그 축을 쓰지 않는다** (D53 안전망).
+        # 같은 이름으로 값 공간이 바뀌면 옛 판정이 남아 축이 갈린다 — 실측:
+        # `name_lang`에 `영문`(1,120)과 `영문만`(945)이 공존해 같은 개념이 두
+        # 그룹으로 검정됐다. 적재 가드가 앞으로를 막지만, **이미 갈린 DB에서도
+        # 분석이 조용히 틀리면 안 된다.** 축을 빼고 그 사실을 남긴다.
+        off = []
+        if isinstance(space, list):
+            off = sorted({it["px_" + pn] for it in items
+                          if it.get("px_" + pn) is not None
+                          and it["px_" + pn] not in space})
+        if off:
+            for it in items:
+                it["px_" + pn] = None
+            judged = 0
         proxies.append({"name": pn, "question": d["question"], "method": d["method"],
                         "numeric": is_numeric,
-                        "judged": judged, "unjudged": len(items) - judged})
+                        "judged": judged, "unjudged": len(items) - judged,
+                        # 리포트가 "왜 이 축이 없나"에 답할 수 있어야 한다
+                        "off_space": off})
 
     # 시계열 — 축적 관측이 있는 상품의 시점별 지표. 시점이 2개 이상인 상품만.
     ts_rows = conn.execute(f"""

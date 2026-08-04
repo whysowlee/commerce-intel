@@ -300,8 +300,14 @@ def ensure_rule_proxies(db_path, contexts, cards_path=None, quiet=False):
                       file=sys.stderr)
             return None
         # 적재는 intel_db가 한다 — 값 공간 밖 판정 거부·numeric 캐스팅이 거기 있다
+        # **`--db`를 반드시 넘긴다.** intel_db의 DEFAULT_DB는 `data/intel.db`, 즉
+        # CWD 상대 경로다. 안 넘기면 `skills/commerce-intel/scripts/`에서 돌렸을 때
+        # 거기에 빈 DB를 새로 파고 판정을 통째로 거기 넣는다 — proxy_auto는 정본 DB를
+        # 읽고 적재만 딴 데로 가서, "채택 11,989건"을 찍고도 정본에는 한 건도 안 남는다
+        # (2026-08-04 실측: 그렇게 만들어진 유령 DB 36MB를 발견했다).
         load = subprocess.run(
-            [sys.executable, os.path.join(here, "intel_db.py"), "proxy-load", out],
+            [sys.executable, os.path.join(here, "intel_db.py"),
+             "--db", db_path, "proxy-load", out],
             capture_output=True, text=True, timeout=180)
         if not quiet:
             for line in (r.stdout or "").splitlines():

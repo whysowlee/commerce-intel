@@ -781,6 +781,38 @@ def modeling_role_tests():
     check("E-MD-27 빈 값은 None", d.brand_key(None) is None and d.brand_key("") is None)
 
 
+def survival_tests():
+    """생존 편향 (D54) — 이탈 판정과 동적 속성 축."""
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib.util
+    path = ROOT / "data" / ".tools" / "musinsa_brand_survival.py"
+    if not path.exists():
+        print("  SKIP  생존 — 파일 없음")
+        return
+    spec = importlib.util.spec_from_file_location("bs", str(path))
+    bs = importlib.util.module_from_spec(spec); spec.loader.exec_module(bs)
+
+    items = [{"name": "A", "survival": "survivor"}, {"name": "B", "survival": "dropped"}]
+    prods = [{"product_id": "1", "brand": "A"}, {"product_id": "2", "brand": "B"},
+             {"product_id": "3", "brand": "모르는브랜드"}]
+    rows = bs.to_attrs(items, prods)
+    check("E-SV-1 생존 상태를 상품 속성으로 편다", len(rows) == 2, len(rows))
+    check("E-SV-2 랭킹에 없는 브랜드는 만들지 않는다 (모른다 ≠ 이탈)",
+          all(r["product_id"] != "3" for r in rows))
+    check("E-SV-3 이탈 상품도 포함된다 — 이걸 빼면 생존자만 본다",
+          any(r["value"] == "dropped" for r in rows))
+    # 랭킹은 계속 바뀐다 — 오래 들고 있으면 옛 상태로 분석하게 된다
+    check("E-SV-4 TTL이 짧다 (7일)", all(r["ttl_days"] == 7 for r in rows))
+
+    d = importlib.import_module("intel_data")
+    data = {"items": [{"attr_brand_survival": "survivor"},
+                      {"attr_brand_survival": "dropped"},
+                      {"attr_only_one": "x"}, {"attr_only_one": "x"}]}
+    ax = dict(d.attr_axes(data))
+    check("E-SV-5 값이 2종 이상인 속성만 축이 된다",
+          "attr_brand_survival" in ax and "attr_only_one" not in ax, list(ax))
+
+
 def collector_tests():
     """수집기 (D48 · E-CO) — 네트워크에 붙지 않고 순수 함수만 검증한다.
 
@@ -1033,6 +1065,9 @@ def main():
 
     print("[20] 수집기 — 인코딩·커버리지·카드 매핑 (D48)")
     collector_tests()
+
+    print("[21-a] 생존 편향 — 이탈 판정·동적 축 (D54)")
+    survival_tests()
 
     print("[21] 문맥 문자열·역할 규칙 (D51)")
     context_tests()
