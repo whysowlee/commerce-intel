@@ -307,17 +307,27 @@ def build_insight_pdf(res, out_path, target, detail_pages):
                 datetime.now().strftime("%Y-%m-%d %H:%M"),
                 g["observed_from"], g["observed_to"], res["generated"]))
     d.honesty(honesty_points(res))
-    # 머리 통계 스트립 — "이 리포트에 뭐가 몇 개 있나"를 첫 화면에서 답한다
-    # (pdf-design stats strip · 2026-08-04). 숫자는 본문 섹션 제목의 개수와 같다.
-    d.stats([("강한 주장", len(res["strong"])),
-             ("약한 단서", len(res["weak"])),
+    # 머리 통계 스트립 — "이 리포트에 뭐가 몇 개 있나"를 첫 화면에서 답한다.
+    # **결론(있다+없다)을 한 칸에 합쳐 보여준다** — 나눠 놓으면 "차이 없음"이
+    # 부산물처럼 보이는데, 실제로는 그것도 결론이다 (D49).
+    nulls = res.get("null_findings") or []
+    d.stats([("말할 수 있는 것", len(res["strong"]) + len(nulls)),
+             ("판단 보류", len(res["weak"])),
              ("상품(관측 단위)", g["rows"]),
              ("검정한 가설", res["generated"])])
 
-    d.h2("강한 주장 (%d개)" % len(res["strong"]))
+    # ── 레이아웃 축을 바꿨다 (D49) ────────────────────────────────────
+    # 전에는 **효과가 크냐 작냐**로 줄을 세워 「차이가 없었다」가 약한 단서보다
+    # 아래에 있었다. 그런데 n=500에서 효과가 0.03이면 그건 약한 게 아니라
+    # **"여기 신경 쓰지 마라"를 자신 있게 말할 수 있는 결론**이다.
+    #
+    # 축을 **말할 수 있냐 없냐**로 바꾼다:
+    #     ① 차이가 있었다 + ② 차이가 없었다   ← 둘 다 결론. 나란히 둔다
+    #     ③ 판단 보류                        ← 아직 말할 수 없는 것
+    d.h2("① 차이가 있었다 (%d개)" % len(res["strong"]))
     if not res["strong"]:
-        d.para("5관문을 모두 통과한 가설이 없다. **빈자리를 약한 단서로 채우지 않았다** — "
-               "그렇게 하면 이 구분이 무의미해진다. 아래 약한 단서를 재확인 대상으로 본다.")
+        d.para("5관문을 모두 통과한 가설이 없다. **빈자리를 판단 보류로 채우지 않았다** — "
+               "그렇게 하면 이 구분이 무의미해진다. 아래 ②·③을 본다.")
     for i, h in enumerate(res["strong"], 1):
         page = detail_pages.get(_anchor(h, "s", i))
         d.card(h["claim"], audience=h["audience"],
@@ -329,9 +339,21 @@ def build_insight_pdf(res, out_path, target, detail_pages):
                    h.get("holdout_note", "")),
                detail_link=("상세 %d쪽" % page) if page else None)
 
-    d.h2("약한 단서 (%d개)" % len(res["weak"]))
-    d.para("아래는 **가설이지 결론이 아니다.** 각 항목에 어느 관문을 통과하지 못했는지와 "
-           "어떻게 재확인하는지를 적었다.")
+    if nulls:
+        d.h2("② 차이가 없었다 (%d개)" % len(nulls))
+        d.para("**이것도 결론이다.** 표본이 모자라 못 본 게 아니라 **충분히 보고도 차이를 "
+               "찾지 못한** 것들이다 — 여기에는 힘을 쓰지 않아도 된다는 근거로 쓴다. "
+               "표본 부족으로 못 본 것은 아래 ③에 있다(그건 '없다'가 아니라 '모른다'다).")
+        for h in nulls:
+            d.card(_null_claim(h), audience=h.get("audience"),
+                   action="이 축은 신경 쓰지 않아도 된다 — 다른 축에 힘을 쓴다",
+                   evidence="%s %s (차이 없음 수준) · n=%s" % (
+                       h.get("effect_kind", "효과"), _fmt(h.get("effect")),
+                       "{:,}".format(h.get("n") or 0)))
+
+    d.h2("③ 판단 보류 (%d개)" % len(res["weak"]))
+    d.para("아래는 **가설이지 결론이 아니다.** ①②와 달리 아직 말할 수 없는 것들이다 — "
+           "어느 관문을 통과하지 못했는지와 어떻게 재확인하는지를 적었다.")
     for i, h in enumerate(res["weak"], 1):
         page = detail_pages.get(_anchor(h, "w", i))
         # 약한 단서에도 액션을 준다 (PR #9 리뷰). D47은 "약한 단서는 '아직 정하지
@@ -346,21 +368,8 @@ def build_insight_pdf(res, out_path, target, detail_pages):
                    h["fails"][0] if h["fails"] else "—"),
                detail_link=("상세 %d쪽" % page) if page else None)
 
-    nulls = res.get("null_findings") or []
-    if nulls:
-        d.h2("차이가 없었다 (%d개)" % len(nulls))
-        d.para("**이것도 발견이다.** 아래는 표본이 모자라 못 본 게 아니라, **충분히 보고도 "
-               "차이를 찾지 못한** 것들이다 — 여기에는 힘을 쓰지 않아도 된다는 근거로 쓴다. "
-               "표본 부족으로 기각된 것은 이 목록에 넣지 않았다(그건 '없다'가 아니라 '모른다'다).")
-        for h in nulls:
-            d.card(_null_claim(h), audience=h.get("audience"),
-                   action="이 축은 신경 쓰지 않아도 된다 — 다른 축에 힘을 쓴다",
-                   evidence="%s %s (차이 없음 수준) · n=%s" % (
-                       h.get("effect_kind", "효과"), _fmt(h.get("effect")),
-                       "{:,}".format(h.get("n") or 0)))
-
     if res["rejected"]:
-        d.h2("기각된 가설 (%d개)" % len(res["rejected"]))
+        d.h2("④ 검정했으나 결론에 못 넣은 것 (%d개)" % len(res["rejected"]))
         d.para("데이터가 부정한 가설이다. **같은 막다른 길을 다시 파지 않기 위해 남긴다.**")
         for h in res["rejected"][:10]:
             d.para("· %s — %s" % (h["claim"], h.get("holdout_note", "")), style="small")
