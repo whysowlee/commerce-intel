@@ -11,6 +11,7 @@ import io
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -376,6 +377,14 @@ def hierarchy_tests():
           not intel_data.incomparable("스커트", "아우터", h))
     check("E-CH-13 우산 판별은 트리 전체를 본다 (하의는 남성의류 아래서 부모)",
           "하의" in h["umbrella"] and "미니" not in h["umbrella"])
+    # E-CH-14 빈 값에서 죽지 않는다 — 터지면 리포트 생성 전체가 멈춘다 (PR #8 리뷰)
+    for bad in ("", "   ", ">", " > > "):
+        try:
+            got = intel_data.incomparable_reason(bad, "미니", h)
+            ok = got is None
+        except Exception as e:
+            ok, got = False, "%s: %s" % (type(e).__name__, e)
+        check("E-CH-14 빈 카테고리(%r)에서 예외 없이 None" % bad, ok, got)
     shutil.rmtree(work, ignore_errors=True)
 
 
@@ -427,9 +436,8 @@ def proxy_auto_tests():
           proxy_auto.judge_row(long_card, Row(name=tail)) is None)
     # E-PA-11 한글은 앞 경계가 없으면 "정면"이 코튼이 된다 (리뷰 발견)
     import json as _json
-    cards = _json.loads(io.open(
-        "skills/commerce-intel/references/proxy-cards-default.json",
-        encoding="utf-8").read())["cards"]
+    cards = _json.loads((SCRIPTS.parent / "references" /
+                         "proxy-cards-default.json").read_text(encoding="utf-8"))["cards"]
     mat = [c for c in cards if c["proxy_name"] == "material_word"][0]
     check("E-PA-11 '정면 컷'은 코튼으로 판정되지 않는다",
           proxy_auto.judge_row(mat, Row(name="정면 컷 스커트"))[0] == "소재 미표기")
@@ -437,6 +445,282 @@ def proxy_auto_tests():
           proxy_auto.judge_row(mat, Row(name="서울 스토어 한정"))[0] == "소재 미표기")
     check("E-PA-11c 진짜 소재 표기는 잡는다",
           proxy_auto.judge_row(mat, Row(name="면 100% 스커트"))[0] == "코튼")
+
+
+def schema_v2_tests():
+    """스키마 v2 (D45) — 뷰가 원본처럼 읽히고 써지는가 (E-DB).
+
+    옛 이름이 뷰가 됐다는 것이 이 스키마의 전부다. 뷰가 한 군데라도 어긋나면
+    분석 전체가 조용히 틀린 값을 본다 — 예외가 안 나는 종류라 여기서 고정한다.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    intel_db = importlib.import_module("intel_db")
+    work = Path(tempfile.mkdtemp(prefix="v2-"))
+    db = str(work / "v2.db")
+    conn = intel_db.connect(db)
+
+    # E-DB-12 새 DB는 v2다
+    tabs = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    views = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='view'")}
+    check("E-DB-12 새 DB는 v2로 만들어진다", "obs_base" in tabs and "products" in views,
+          sorted(tabs)[:6])
+
+    now = "2026-08-04 10:00:00"
+    conn.execute("INSERT INTO runs (run_id, site, story, target, collected_at) "
+                 "VALUES ('R1','29cm','brand-linesheet','T',?)", (now,))
+    # E-DB-4·11 뷰로 INSERT하고 URL이 접혔다 펴진다
+    conn.execute(
+        "INSERT INTO products (site, product_id, name, url, image_url, brand, category,"
+        " attributes, attributes_basis, static_verified_at, first_seen_at, last_seen_at,"
+        " raw_extras) VALUES ('29cm','P1','상품','https://a.test/goods/1',"
+        "'https://img.a.test/x.jpg','브랜드','미니',NULL,NULL,?,?,?,NULL)", (now, now, now))
+    r = conn.execute("SELECT url, image_url, brand, first_seen_at FROM products "
+                     "WHERE product_id='P1'").fetchone()
+    check("E-DB-4·11 뷰 INSERT 후 URL·시각이 그대로 왕복한다",
+          r["url"] == "https://a.test/goods/1"
+          and r["image_url"] == "https://img.a.test/x.jpg"
+          and r["first_seen_at"] == now, tuple(r))
+    check("E-DB-11 호스트가 사전으로 접혔다",
+          conn.execute("SELECT COUNT(*) FROM hosts").fetchone()[0] == 2)
+
+    # E-DB-6 부분 SET UPDATE
+    conn.execute("UPDATE products SET brand='새브랜드' WHERE site='29cm' AND product_id='P1'")
+    r = conn.execute("SELECT brand, name FROM products WHERE product_id='P1'").fetchone()
+    check("E-DB-6 부분 SET UPDATE가 다른 컬럼을 안 지운다",
+          r["brand"] == "새브랜드" and r["name"] == "상품", tuple(r))
+
+    # E-DB-5 중복 관측은 IntegrityError — "중복 N건" 집계가 이걸로 센다
+    conn.execute("INSERT INTO observations (site, product_id, observed_at, context,"
+                 " price_sale, rank, run_id) VALUES ('29cm','P1',?,'ranking:t',1000,3,'R1')",
+                 (now,))
+    dup = False
+    try:
+        conn.execute("INSERT INTO observations (site, product_id, observed_at, context,"
+                     " price_sale) VALUES ('29cm','P1',?,'ranking:t',9)", (now,))
+    except sqlite3.IntegrityError:
+        dup = True
+    check("E-DB-5 중복 관측은 IntegrityError로 남는다", dup)
+    o = conn.execute("SELECT price_sale, rank, run_id, context FROM observations").fetchone()
+    check("E-DB-4 관측이 뷰로 그대로 읽힌다",
+          tuple(o) == (1000, 3, "R1", "ranking:t"), tuple(o))
+
+    # E-DB-8 ttl_days=NULL은 덮어써야 한다 (set-attrs가 전역 TTL을 먹이는 방식)
+    for ttl in (90, None):
+        conn.execute("INSERT OR REPLACE INTO product_attributes (site, product_id,"
+                     " attr_name, value, basis, decided_at, ttl_days)"
+                     " VALUES ('29cm','P1','핏','와이드','name',?,?)", (now, ttl))
+    got = conn.execute("SELECT ttl_days FROM product_attributes "
+                       "WHERE product_id='P1'").fetchone()[0]
+    check("E-DB-8 ttl_days=NULL이 덮어써진다 (COALESCE로 지키면 안 된다)",
+          got is None, got)
+
+    # E-DB-17 URL 접기 규칙이 파이썬과 트리거 SQL에서 **같아야** 한다 (PR #9 리뷰).
+    # 경로 없는 URL이 갈리면 같은 호스트가 사전에 두 항목으로 쪼개진다.
+    from schema_v2 import split_url, _HOST, _PATH
+    for url in ("https://cdn.example.com", "https://a.test/x/y", "노프로토콜경로",
+                "", None):        # 빈 문자열·NULL도 같은 결과여야 한다 (PR #9 리뷰)
+        hid, path = split_url(conn, url, {})
+        pref = conn.execute("SELECT prefix FROM hosts WHERE host_id=?", (hid,)).fetchone()
+        pref = pref[0] if pref else None
+        sql = conn.execute("SELECT %s, %s" % (_HOST.format(u="?1"), _PATH.format(u="?1")),
+                           (url,)).fetchone()
+        check("E-DB-17 URL 접기가 파이썬·SQL에서 같다 (%r)" % url,
+              (pref, path) == tuple(sql)
+              and (pref or "") + (path or "") == (url or ""),
+              ((pref, path), tuple(sql)))
+
+    # E-DB-10 증분 키는 뷰의 마지막 컬럼 _rowid다
+    cols = [d[0] for d in conn.execute("SELECT * FROM observations LIMIT 1").description]
+    check("E-DB-10 _rowid가 뷰의 **마지막** 컬럼이다", cols[-1] == "_rowid", cols[-3:])
+    shutil.rmtree(work, ignore_errors=True)
+
+
+def prune_tests():
+    """솎기 (D45-a) — 값이 바뀐 순간은 안 지운다 (E-DB-13·14)."""
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    intel_db = importlib.import_module("intel_db")
+    prune = importlib.import_module("prune")
+    work = Path(tempfile.mkdtemp(prefix="prune-"))
+    db = str(work / "p.db")
+    conn = intel_db.connect(db)
+    conn.execute("INSERT INTO products (site, product_id, name, first_seen_at, last_seen_at)"
+                 " VALUES ('29cm','P1','상품','2020-01-01 00:00:00','2020-01-01 00:00:00')")
+    # 10시점을 **한 시간 안에** 5분 간격으로 둔다 — 버킷(1시간)당 1개 규칙이 실제로
+    # 물어야 솎기가 검증된다. 가격은 3번째와 7번째에만 바뀌고 순위는 고정이다.
+    prices = [1000, 1000, 2000, 2000, 2000, 2000, 3000, 3000, 3000, 3000]
+    for i, p in enumerate(prices):
+        conn.execute("INSERT INTO observations (site, product_id, observed_at, context,"
+                     " price_sale, rank) VALUES ('29cm','P1',?,'brand:t',?,5)",
+                     ("2020-01-01 00:%02d:00" % (i * 5), p))
+    conn.commit()
+    counts, total = prune.plan(conn, keep_days=0, bucket=3600)
+    check("E-DB-13 예행은 남길 이유를 사유별로 센다",
+          counts.get("change", 0) >= 2 and counts.get("edge", 0) == 2, counts)
+    n = prune.apply_prune(conn)
+    kept = [r[0] for r in conn.execute(
+        "SELECT price_sale FROM observations ORDER BY observed_at")]
+    import itertools
+    seq = [k for k, _ in itertools.groupby(kept)]
+    check("E-DB-14 솎은 뒤에도 가격 변화 순서가 그대로다",
+          seq == [1000, 2000, 3000], (n, seq))
+    check("E-DB-14b 변화 없는 중복만 지워졌다", n > 0 and len(kept) < len(prices),
+          (n, len(kept)))
+    # E-DB-16 못 읽는 시각은 **즉시 걸린다** — NULL로 조용히 들어가면 그 관측은
+    # 시계열에서 사라지고 아무도 모른다 (NOT NULL이 그 몫을 진다)
+    bad = False
+    try:
+        conn.execute("INSERT INTO observations (site, product_id, observed_at, context)"
+                     " VALUES ('29cm','P1','날짜아님','brand:t')")
+    except sqlite3.IntegrityError:
+        bad = True
+    check("E-DB-16 해석 못 하는 시각은 NULL로 새지 않고 즉시 실패한다", bad)
+    shutil.rmtree(work, ignore_errors=True)
+
+
+def modeling_tests():
+    """Y 선정·퍼널 비율·무영향 인사이트 (D47 · 2026-08-04 피드백)."""
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    d = importlib.import_module("intel_data")
+    try:
+        ins = importlib.import_module("insight")
+    except ImportError:
+        # insight는 reportlab에 의존한다(PDF). 없는 환경에서도 데이터 층 규칙은
+        # 검증돼야 하므로 여기만 건너뛴다 — 배포 게이트는 package.sh가 지킨다.
+        ins = None
+
+    # E-MD-1 공급자가 정한 값은 Y가 될 수 없다
+    check("E-MD-1 할인율·판매가는 lever(원인 쪽)",
+          d.role_of("discount_rate") == "lever" and d.role_of("price_sale") == "lever")
+    check("E-MD-2 하트·조회·구매는 response(결과 쪽)",
+          all(d.role_of(f) == "response"
+              for f in ("like_count", "view_count", "purchase_count")))
+
+    # E-MD-3 퍼널 비율 — 분모가 없거나 0이면 만들지 않는다
+    it = d.add_funnel({"like_count": 50, "view_count": 1000,
+                       "purchase_count": 10, "review_count": 3})
+    check("E-MD-3 퍼널 비율이 계산된다 (조회 1000 · 하트 50 → 5%)",
+          it["cvr_view_like"] == 5.0 and it["cvr_view_buy"] == 1.0, it)
+    it0 = d.add_funnel({"like_count": 50, "view_count": None, "purchase_count": 5})
+    check("E-MD-4 분모가 없으면 비율을 만들지 않는다 (0으로 채우지 않는다)",
+          it0["cvr_view_like"] is None, it0)
+    itz = d.add_funnel({"like_count": 0, "view_count": 0, "purchase_count": 3})
+    check("E-MD-5 분모가 0이면 만들지 않는다 (나눗셈 폭발·가짜 100%)",
+          itz["cvr_view_like"] is None and itz["cvr_like_buy"] is None, itz)
+
+    if ins is None:
+        print("  SKIP  E-MD-6~10 무영향·액션 — reportlab 미설치")
+        return
+
+    # E-MD-6 무영향은 "없다"이고, 표본 부족은 "모른다"다 — 섞으면 안 된다
+    small = {"verdict": "rejected", "effect": 0.02, "n": 500,
+             "fails": ["표본이 작다"], "kind": "group_compare"}
+    real = {"verdict": "rejected", "effect": 0.03, "n": 500,
+            "fails": ["효과 크기가 작다"], "kind": "group_compare"}
+    got = ins.null_findings([small, real])
+    check("E-MD-6 표본 부족 기각은 '차이 없음'에 넣지 않는다",
+          got == [real], [g.get("fails") for g in got])
+    big = {"verdict": "rejected", "effect": 0.9, "n": 500,
+           "fails": ["다중비교"], "kind": "group_compare"}
+    check("E-MD-7 효과가 큰데 기각된 것도 '차이 없음'이 아니다",
+          ins.null_findings([big]) == [])
+    thin = {"verdict": "rejected", "effect": 0.01, "n": 10,
+            "fails": ["다중비교"], "kind": "group_compare"}
+    check("E-MD-8 n이 너무 적으면 '차이 없다'고 말하지 않는다",
+          ins.null_findings([thin]) == [])
+
+    # E-MD-9 액션은 약한 단서에 확정적으로 붙지 않는다
+    weak = {"verdict": "weak", "kind": "group_compare", "cat_field": "brand",
+            "fails": ["표본이 작다"]}
+    check("E-MD-9 약한 단서의 액션은 '아직 정하지 마라'로 시작한다",
+          ins.action_hint(weak).startswith("아직 정하지 마라"), ins.action_hint(weak))
+    resp = {"verdict": "strong", "kind": "correlation", "direction": "response_pair",
+            "x_label": "하트", "y_label": "후기 수"}
+    check("E-MD-10 반응끼리의 상관은 액션에서 선후를 단정하지 않는다",
+          "선후를 모른다" in ins.action_hint(resp), ins.action_hint(resp))
+
+    # E-MD-12 관문 판정은 **코드**로 한다 — 문구가 바뀌어도 안 흔들린다 (PR #9 리뷰)
+    coded = {"verdict": "rejected", "effect": 0.02, "n": 500,
+             "fails": ["문구가 바뀌었다"], "fail_codes": ["sample"],
+             "kind": "group_compare"}
+    check("E-MD-12 표본 부족을 fail_codes로 가른다 (문구 무관)",
+          ins.null_findings([coded]) == [], ins.null_findings([coded]))
+
+    an = importlib.import_module("analyze")
+    # E-MD-13 둘 다 lever면 방향을 단정하지 않는다
+    check("E-MD-13 lever끼리는 lever_pair로 헤지한다",
+          an._orient("price_sale", "discount_rate", "판매가", "할인율")[4] == "lever_pair")
+    check("E-MD-14 lever→response는 lever가 원인 쪽으로 간다",
+          an._orient("like_count", "discount_rate", "하트", "할인율")[:2]
+          == ("discount_rate", "like_count"))
+
+    # E-MD-15 claim이 헤지했으면 action도 헤지해야 한다 — 같은 카드 안에서
+    # 주장과 액션이 모순되면 읽는 사람은 더 확정적인 쪽(액션)을 믿는다 (PR #9 리뷰)
+    lp = {"verdict": "strong", "kind": "correlation", "direction": "lever_pair",
+          "x_label": "정가", "y_label": "할인율"}
+    got = ins.action_hint(lp)
+    check("E-MD-15 lever끼리의 상관도 액션에서 선후를 단정하지 않는다",
+          "데이터가 답하지 않는다" in got and "폭을 정할 때 참고" not in got, got)
+
+    # E-MD-16 recheck_hint도 코드로 가른다 (문구가 바뀌어도 안 흔들린다)
+    r_coded = {"fails": ["문구를 바꿨다"], "fail_codes": ["sample"]}
+    check("E-MD-16 recheck_hint가 fail_codes를 본다",
+          "표본이 쌓이면" in ins.recheck_hint(r_coded), ins.recheck_hint(r_coded))
+    r_old = {"fails": ["표본이 작다 (n=3 < 20)"]}     # 코드 없는 옛 항목은 폴백
+    check("E-MD-17 코드가 없으면 문구로 폴백한다",
+          "표본이 쌓이면" in ins.recheck_hint(r_old), ins.recheck_hint(r_old))
+
+
+def incremental_key_tests():
+    """증분 키 경로를 **모킹 없이 실제 sqlite3로** 탄다 (PR #9 리뷰).
+
+    기존 회귀는 `sync_sheets`를 가짜 모듈로 갈아끼워 `rows_of`/`since_rowid`를
+    통째로 우회했다 — 그래서 WHERE 절이 실제로 실행되는지 한 번도 안 봤다.
+    **뷰와 물리 테이블 두 경우 모두** `since_rowid > 0`으로 쿼리를 돌려 본다.
+    """
+    sys.modules.pop("sync_sheets", None)       # 앞 테스트의 가짜 모듈을 걷어낸다
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    intel_db = importlib.import_module("intel_db")
+    sync_sheets = importlib.reload(importlib.import_module("sync_sheets"))
+    schema_v2 = importlib.import_module("schema_v2")
+
+    work = Path(tempfile.mkdtemp(prefix="rid-"))
+    db = str(work / "k.db")
+    conn = intel_db.connect(db)                # 새 DB = v2
+    conn.execute("INSERT INTO runs (run_id, site, story, target, collected_at) "
+                 "VALUES ('R','29cm','brand-linesheet','T','2026-08-04 10:00:00')")
+    conn.execute("INSERT INTO products (site, product_id, name, first_seen_at,"
+                 " last_seen_at) VALUES ('29cm','P','n','2026-08-04 10:00:00',"
+                 "'2026-08-04 10:00:00')")
+    for i in range(5):
+        conn.execute("INSERT INTO observations (site, product_id, observed_at,"
+                     " context, price_sale) VALUES ('29cm','P',?,'brand:t',?)",
+                     ("2026-08-04 1%d:00:00" % i, 1000 + i))
+        conn.execute("INSERT INTO proxy_cache VALUES ('px','29cm',?,?,?,?,?)",
+                     ("P%d" % i, "fp%d" % i, "v", "b", "2026-08-04 10:00:00"))
+    conn.commit()
+
+    for table, want_type in (("observations", "view"), ("proxy_cache", "table")):
+        typ = conn.execute("SELECT type FROM sqlite_master WHERE name=?",
+                           (table,)).fetchone()[0]
+        check("E-DB-20 %s는 %s다 (두 경로를 다 탄다)" % (table, want_type),
+              typ == want_type, typ)
+        sel, key = schema_v2.rowid_parts(conn, table)
+        # **WHERE에 별칭이 아니라 진짜 참조 가능한 표현식이 들어가야 한다**
+        check("E-DB-20b %s의 WHERE 키가 %s" % (table, "rowid" if typ == "table" else "_rowid"),
+              key == ("rowid" if typ == "table" else "_rowid"), key)
+        try:
+            h, d, m = sync_sheets.rows_of(conn, table, since_rowid=2)
+            ok, detail = (len(d) == 3 and m == 5), (len(d), m)
+        except Exception as e:
+            ok, detail = False, "%s: %s" % (type(e).__name__, e)
+        check("E-DB-21 %s 증분 조회가 실제로 돈다 (since=2 → 3행)" % table, ok, detail)
+        check("E-DB-22 %s 헤더에 _rowid가 안 섞인다" % table,
+              "_rowid" not in h, h[-2:] if h else h)
+    shutil.rmtree(work, ignore_errors=True)
 
 
 def main():
@@ -629,6 +913,18 @@ def main():
 
     print("[15] 프록시 규칙 실행기 (D43)")
     proxy_auto_tests()
+
+    print("[16] 스키마 v2 — 뷰 읽기·쓰기 (D45)")
+    schema_v2_tests()
+
+    print("[17] 솎기 — 변화 순간 보존 (D45-a)")
+    prune_tests()
+
+    print("[18] 모델링 — Y 선정·퍼널·무영향 (D47)")
+    modeling_tests()
+
+    print("[19] 증분 키 — 실제 sqlite3 (뷰·물리 테이블)")
+    incremental_key_tests()
 
     shutil.rmtree(work, ignore_errors=True)
     print("-" * 56)

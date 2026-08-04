@@ -46,7 +46,7 @@ import stat_playbook as sp                                          # noqa: E402
 from eda import CAT_AXES, MIN_N, run as run_eda                     # noqa: E402
 from intel_data import (cat_axes, category_hierarchy, collect,  # noqa: E402
                         incomparable_reason, matched_pairs, num_axes,
-                        product_series, style_rows)
+                        product_series, role_of, style_rows)
 
 # ── 관문 임계 ───────────────────────────────────────────────────────────────
 # 임계는 2026-08-03에 한 번 완화했다. 우리가 모으는 데이터는 표본이 크지 않고
@@ -295,8 +295,13 @@ def run_group(ctx):
     for cat_field, cat_label in ctx["cat_axes"]:
         groups = defaultdict(list)
         for it in ctx["styles"]:          # 변형이 아니라 스타일 단위 (#7)
-            if it.get(cat_field) is not None:
-                groups[it[cat_field]].append(it)
+            # None만이 아니라 **빈 문자열·공백도 거른다** — 값이 없는 것은 그룹이
+            # 아니다. 남겨두면 "카테고리에서 은 미니보다…" 같은 문장이 나온다
+            v = it.get(cat_field)
+            if v is not None and str(v).strip():
+                # **키를 다듬어 담는다** — 앞뒤 공백만 다른 같은 값이 서로 다른
+                # 그룹으로 쪼개지면 n이 갈리고 같은 비교가 두 번 나온다 (PR #9 리뷰)
+                groups[str(v).strip() if isinstance(v, str) else v].append(it)
         big = sorted([(k, v) for k, v in groups.items() if len(v) >= N_MIN],
                      key=lambda kv: -len(kv[1]))
         truncated = max(0, len(big) - GROUPS_PER_AXIS)
@@ -344,26 +349,57 @@ def run_group(ctx):
     return out
 
 
+def _orient(x, y, xl, yl):
+    """상관의 방향을 역할로 세운다 (D47).
+
+    공급자가 정한 값(lever)은 **원인 쪽**에만 놓는다. "하트가 높을수록 할인율이
+    높다"는 할인을 하트가 정했다고 읽히는데, 실제로는 우리가 할인을 정했다.
+    둘 다 고객 반응이면 방향을 못 정하므로 그 사실을 표시해 둔다.
+    """
+    rx, ry = role_of(x), role_of(y)
+    if rx == "lever" and ry == "lever":
+        # 둘 다 우리가 정한 값이다 — 정가와 할인율처럼. 어느 쪽이 원인인지
+        # 데이터가 답하지 않으므로 response끼리와 같이 헤지한다 (PR #9 리뷰).
+        return x, y, xl, yl, "lever_pair"
+    if ry == "lever":                       # 결과 자리에 레버가 왔다 — 뒤집는다
+        return y, x, yl, xl, "lever_to_response"
+    if rx == "lever":
+        return x, y, xl, yl, "lever_to_response"
+    if rx == "response" and ry == "response":
+        return x, y, xl, yl, "response_pair"   # 선후를 데이터가 답하지 않는다
+    return x, y, xl, yl, "unknown"
+
+
 def run_corr(ctx):
     out = []
     for c in ctx["eda"]["correlations"]:
         if c["definitional"] or abs(c["spearman"]) < 0.15:
             continue
-        pairs = [(i[c["x"]], i[c["y"]]) for i in ctx["styles"]
-                 if i.get(c["x"]) is not None and i.get(c["y"]) is not None]
+        # D47 — 방향을 세운 뒤에 값을 만든다. 순위 상관은 대칭이라 r은 안 바뀌지만,
+        # 문장과 구간별 추이(어느 축을 구간으로 자르나)가 달라진다.
+        x, y, xl, yl, direction = _orient(c["x"], c["y"], c["x_label"], c["y_label"])
+        pairs = [(i[x], i[y]) for i in ctx["styles"]
+                 if i.get(x) is not None and i.get(y) is not None]
         if len(pairs) < N_MIN:
             continue
         r = sp.spearman(pairs)
+        claim = "%s 높을수록 %s %s (순위 상관 %+.2f)" % (
+            _josa(xl, "이가"), _josa(yl, "이가"),
+            "높다" if (r or 0) > 0 else "낮다", r or 0)
+        if direction in ("response_pair", "lever_pair"):
+            # 둘 다 고객 반응이다 — 어느 쪽이 먼저인지 데이터가 답하지 않는다.
+            # 문장이 인과처럼 읽히지 않게 **함께 움직인다**로 쓴다.
+            claim = "%s와 %s 함께 움직인다 (순위 상관 %+.2f · 선후는 알 수 없다)" % (
+                xl, _josa(yl, "은는"), r or 0)
         out.append({
             "method": "correlation", "kind": "correlation",
-            "x": c["x"], "y": c["y"], "x_label": c["x_label"], "y_label": c["y_label"],
+            "x": x, "y": y, "x_label": xl, "y_label": yl,
             "pairs": pairs, "eda": c, "vanity": c.get("vanity_pair"),
             "effect": r, "effect_kind": "순위 상관", "p": sp.perm_test_corr(pairs),
             "n": len(pairs), "trend": sp.binned_trend(pairs),
-            "claim": "%s 높을수록 %s %s (순위 상관 %+.2f)" % (
-                _josa(c["x_label"], "이가"), _josa(c["y_label"], "이가"),
-                "높다" if (r or 0) > 0 else "낮다", r or 0),
-            "audience": audience_of(c["y"], c["x"]),
+            "claim": claim,
+            "audience": audience_of(y, x),
+            "direction": direction,
         })
     return out
 
@@ -549,23 +585,32 @@ def check_holdout(h):
 
 
 def gate(h, fdr_survive):
-    fails = []
+    # 사람이 읽는 문구(`fails`)와 코드가 읽는 코드(`fail_codes`)를 나눠 담는다.
+    # 문구로 관문을 판정하면(`"표본" in f`) 문구를 다듬는 날 조용히 오분류된다
+    # — 실제로 `null_findings`가 그렇게 갈라내고 있었다 (PR #9 리뷰).
+    fails, codes = [], []
     eff = abs(h.get("effect") or 0)
     threshold = CORR_MIN if h["kind"] in ("correlation", "dose_response") else EFFECT_MIN
     if h.get("effect") is None:
         fails.append("효과 크기를 계산하지 못했다")
+        codes.append("effect_missing")
     elif eff < threshold:
         fails.append("효과 크기가 작다 (%.2f < %.2f) — 결정을 바꿀 만한 차이가 아니다"
                      % (eff, threshold))
+        codes.append("effect_small")
     if (h.get("n") or 0) < N_MIN:
         fails.append("표본이 작다 (n=%d < %d)" % (h.get("n") or 0, N_MIN))
+        codes.append("sample")
     if h.get("p") is None:
         fails.append("p값을 계산하지 않는 유형이다 — 우연 여부를 가리지 못했다")
+        codes.append("no_p")
     elif not fdr_survive:
         fails.append("다중비교 보정(BH, α=%.2f)을 통과하지 못했다" % ALPHA)
+        codes.append("fdr")
     seg_ok, seg_notes = check_segments(h)
     if not seg_ok:
         fails.extend(seg_notes)
+        codes.append("segment")
     hold_ok, hold_note = check_holdout(h)
     h["holdout_note"] = hold_note
     # **"재현되지 않았다"와 "확인할 수 없었다"는 다르다.** 전자만 탈락시킨다.
@@ -574,12 +619,15 @@ def gate(h, fdr_survive):
     # 대신 확인하지 못했다는 사실을 리포트에 표시로 남긴다.
     if hold_ok is False:
         fails.append("홀드아웃에서 재현되지 않는다 — %s" % hold_note)
+        codes.append("holdout")
     elif hold_ok is None:
         h["holdout_unverified"] = True
     if h.get("vanity"):
         fails.append("둘 다 누적 지표다 — 출시가 오래된 상품일수록 함께 커진다. "
                      "관측 간 증분으로 다시 보기 전에는 발견으로 볼 수 없다")
+        codes.append("vanity")
     h["fails"] = fails
+    h["fail_codes"] = codes
     h["verdict"] = "strong" if not fails else "weak"
     if hold_ok is False and h.get("effect") is not None:
         h["verdict"] = "rejected"
