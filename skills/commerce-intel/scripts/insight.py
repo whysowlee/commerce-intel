@@ -129,50 +129,80 @@ def _fmt(v):
 # 문장이 확정적일수록 근거보다 세 보인다 — 그 간극이 이 리포트가 제일 조심할 것이다.
 
 def action_hint(h):
-    """이 발견으로 무엇을 정할 수 있나. 근거가 약하면 '확인부터'로 간다."""
-    kind, metric = h.get("kind"), h.get("metric") or h.get("y")
+    """이 발견으로 **무엇을 하면 되나**. 여러 줄을 돌려준다 (D51).
+
+    2026-08-04 사용자 요청: "액션플랜 좀 더 쉽고 구체적인 걸로 여러 가지가
+    적히면 좋겠다". 전에는 한 줄이었고 문장이 추상적이었다("참고선으로 쓴다").
+
+    쓰는 법 세 가지를 지킨다:
+      1. **동사로 시작한다** — "확인한다"·"비교한다"·"정한다". 명사로 끝내지 않는다
+      2. **숫자를 문장에 넣는다** — 그 카드의 값을 그대로. 다시 안 찾아봐도 되게
+      3. **지시하지 않는다** — 우리는 상관만 봤다. "무엇을 확인할지"까지가 우리 몫이다
+    """
+    v = lambda x: _fmt(x)
+    metric = h.get("metric_label") or h.get("y_label") or "이 지표"
+    ga, gb = h.get("group_a"), h.get("group_b")
+    ma, mb = h.get("median_a"), h.get("median_b")
+    n = "{:,}".format(h.get("n") or 0)
+
     if h.get("verdict") == "weak":
-        return "아직 정하지 마라 — %s" % recheck_hint(h)
-    if kind == "did":
-        return ("가격 인하의 순효과가 이 크기다. **다음 인하 폭을 정할 때 이 값을 기준선**으로 "
-                "두고, 그보다 큰 반응을 기대한다면 다른 조건(노출·시즌)이 함께 바뀌어야 한다")
-    if kind == "dose":
-        return "구간별 반응이 갈리는 지점이 있다 — **그 구간 위로는 할인을 더 줘도 얻는 게 적다**"
-    if kind == "depletion":
-        return "소진이 빠른 쪽에 **재입고·물량 배분을 먼저** 검토한다"
-    if kind == "paired":
-        return "같은 상품인데 플랫폼별로 갈린다 — **가격·노출 조건을 어디에 맞출지** 정한다"
-    if kind == "correlation":
-        # claim은 `lever_pair`도 "함께 움직인다 · 선후는 알 수 없다"로 헤지한다
-        # (analyze._orient). 여기서 안 맞추면 **같은 카드 안에서 주장과 액션이
-        # 모순된다** — 위는 모른다고 하고 아래는 "폭을 정할 때 참고"가 된다 (PR #9 리뷰).
-        if h.get("direction") == "response_pair":
-            return ("둘 다 고객 반응이라 **선후를 모른다.** 한쪽을 올리면 다른 쪽이 따라온다고 "
-                    "읽지 마라 — 무엇이 먼저인지 보려면 시점을 나눠 다시 봐야 한다")
-        if h.get("direction") == "lever_pair":
-            return ("**둘 다 우리가 정한 값이다**(정가와 할인율처럼). 어느 쪽이 원인인지 "
-                    "데이터가 답하지 않는다 — 우리 가격 정책이 그렇게 짜여 있다는 기술이지, "
-                    "한쪽을 바꾸면 다른 쪽이 따라온다는 뜻이 아니다")
-        return ("%s를 움직이면 %s가 따라 움직인 관측이다. **폭을 정할 때 참고**하되, "
-                "다른 조건이 같았는지는 확인이 필요하다" % (h.get("x_label"), h.get("y_label")))
+        return ["**아직 정하지 마라** — %s" % recheck_hint(h),
+                "지금 값으로 기획을 바꾸면 다음 관측에서 뒤집힐 수 있다"]
+
+    out = []
+    kind = h.get("kind")
     if kind == "group_compare":
-        if h.get("cat_field") == "category":
-            return "카테고리별로 갈린다 — **구성비를 어디에 둘지**의 근거로 쓴다"
-        if h.get("cat_field") == "brand":
-            # 같은 문장이 여섯 번 반복되면 아무도 안 읽는다 — 지표가 무엇이냐에 따라
-            # 정할 수 있는 것이 다르므로 그걸 쓴다
-            m = h.get("metric")
-            if m in ("price_sale", "price_original"):
-                return "**가격대 포지션**을 어디에 둘지의 참고선이다 — 우리가 어느 구간에 설지 정한다"
-            if m == "discount_rate":
-                return "**할인 관행**이 브랜드마다 다르다 — 우리 할인 폭이 이 분포의 어디인지 확인한다"
-            if m in ("like_count", "review_count", "purchase_count", "view_count"):
-                return "반응 규모가 갈린다 — **경쟁 강도**로 읽되 브랜드 크기 차이일 수 있다"
-            if m == "rating":
-                return "만족도가 갈린다 — **품질·기대 관리**에서 우리 위치를 본다"
-            return "브랜드별로 갈린다 — **우리 포지션을 어디에 맞출지**의 참고선으로 쓴다"
-        return "이 축으로 갈린다 — **다음 기획에서 이 조건을 의도적으로 골라** 재확인한다"
-    return "다음 관측에서 같은 방향이 나오는지 먼저 본다"
+        if h.get("lever_metric"):
+            # 공급자가 정한 값이라 성과가 아니다 — 정책을 되묻는 쪽으로 쓴다
+            out += ["**우리가 정한 값이다.** %s가 왜 %s와 %s에서 갈렸는지 "
+                    "의도한 것인지 먼저 확인한다" % (metric, ga, gb),
+                    "의도한 정책이면 그대로 두고, 아니면 **어느 쪽에 맞출지** 정한다",
+                    "같은 값에서 **반응(하트·후기·판매)이 어떻게 갈리는지** 이어서 본다 "
+                    "— 그게 성과다"]
+        else:
+            gap = ""
+            if ma is not None and mb is not None:
+                gap = " (%s 대 %s)" % (v(ma), v(mb))
+            out += ["**%s와 %s를 나란히 놓고** %s 차이%s가 어디서 오는지 본다"
+                    % (ga, gb, metric, gap),
+                    "낮은 쪽(%s)의 상품 몇 개를 **직접 열어** 상세·썸네일·가격대를 "
+                    "높은 쪽과 비교한다" % (gb if (ma or 0) > (mb or 0) else ga),
+                    "다음 기획에서 **높은 쪽 조건을 의도적으로 골라** 재확인한다 "
+                    "(지금은 관측이지 실험이 아니다)"]
+            if h.get("cat_field") == "category":
+                out.append("**구성비를 어디에 둘지**의 근거로 쓴다 — 다만 카테고리 값은 "
+                           "사이트 표기라 같은 레벨인지 먼저 본다")
+            if h.get("cat_field") == "brand":
+                out.append("**우리 위치가 이 분포의 어디인지** 표시해 두고 다음 분기에 다시 본다")
+    elif kind == "correlation":
+        d = h.get("direction")
+        if d in ("response_pair", "lever_pair"):
+            out += ["**둘 다 %s라 선후를 모른다.**" % (
+                        "고객 반응" if d == "response_pair" else "우리가 정한 값"),
+                    "한쪽을 올리면 다른 쪽이 따라온다고 읽지 마라",
+                    "선후를 보려면 **시점을 나눠** 앞선 변화가 뒤선 변화를 예고하는지 확인한다"]
+        else:
+            out += ["%s를 움직였을 때 %s가 따라 움직인 관측이다 (n=%s)"
+                    % (h.get("x_label"), h.get("y_label"), n),
+                    "**폭을 정할 때 참고**하되, 같은 시기에 다른 조건(노출·시즌·경쟁)이 "
+                    "함께 바뀌지 않았는지 확인한다",
+                    "확실히 하려면 **한 상품 안에서 그 값만 바꿔** 전후를 비교한다"]
+    elif kind == "did":
+        out += ["가격 인하의 **순효과가 이 크기다** — 다음 인하 폭의 기준선으로 삼는다",
+                "이보다 큰 반응을 기대한다면 **노출·시즌 같은 다른 조건이 함께** 바뀌어야 한다",
+                "인하 직후 며칠에 몰렸는지 **기간을 나눠** 확인한다"]
+    elif kind == "dose":
+        out += ["**구간마다 반응이 다르다** — 어느 구간 위로는 더 줘도 얻는 게 적은지 본다",
+                "그 지점을 **다음 할인의 상한**으로 두고 시험한다"]
+    elif kind == "depletion":
+        out += ["소진이 빠른 쪽에 **재입고·물량 배분을 먼저** 검토한다",
+                "품절 직전 **사이즈별 잔량**을 확인해 어느 사이즈부터 비는지 본다"]
+    elif kind == "paired":
+        out += ["같은 상품인데 **플랫폼별로 갈린다** — 가격·노출 조건을 어디에 맞출지 정한다",
+                "낮은 쪽 플랫폼에서 **왜 그렇게 됐는지**(쿠폰·기획전 참여) 확인한다"]
+    if not out:
+        out = ["다음 관측에서 같은 방향이 나오는지 먼저 본다"]
+    return out
 
 
 # ── '영향이 없었다'도 인사이트 (D47) ────────────────────────────────────────
@@ -240,8 +270,57 @@ def recheck_hint(h):
 
 
 # ── 실행 ────────────────────────────────────────────────────────────────────
-def build(db_path, contexts, ai_notes=None):
+def ensure_rule_proxies(db_path, contexts, cards_path=None, quiet=False):
+    """**리포트를 만들면 rule 프록시가 자동으로 생긴다** (D51 — D43의 갭 해소).
+
+    D43이 "기본으로 만든다"로 정책을 뒤집었는데 **스크립트 연결을 안 했다.**
+    `proxy_auto.py`를 만들어 놓고 SKILL 문서의 §0 절차로만 둬서, AI가 그 단계를
+    직접 밟아야 생겼고 `insight.py`만 돌리면 **하나도 안 생겼다**(사용자 확인).
+
+    여기서 하는 것은 **rule 프록시뿐**이다 — 상품명·브랜드명에서 규칙으로 뽑는
+    것이라 비용이 0이고 네트워크도 안 탄다. **vision 프록시는 여기서 안 만든다**
+    (서브 에이전트 배치가 필요하고 비싸다) — 그건 §0 절차 그대로 AI가 판단한다.
+    """
+    import subprocess
+    here = os.path.dirname(os.path.abspath(__file__))
+    cards = cards_path or os.path.join(here, "..", "references",
+                                       "proxy-cards-default.json")
+    if not os.path.exists(cards):
+        return None
+    out = os.path.join(os.path.dirname(db_path) or ".", ".px-auto.json")
+    try:
+        r = subprocess.run(
+            [sys.executable, os.path.join(here, "proxy_auto.py"), "--db", db_path,
+             "--cards", cards, "--out", out]
+            + sum([["--context", c] for c in contexts], []),
+            capture_output=True, text=True, timeout=180)
+        if r.returncode != 0:
+            if not quiet:
+                print("프록시 자동 생성 실패(계속 진행): %s" % (r.stderr or "")[-200:],
+                      file=sys.stderr)
+            return None
+        # 적재는 intel_db가 한다 — 값 공간 밖 판정 거부·numeric 캐스팅이 거기 있다
+        load = subprocess.run(
+            [sys.executable, os.path.join(here, "intel_db.py"), "proxy-load", out],
+            capture_output=True, text=True, timeout=180)
+        if not quiet:
+            for line in (r.stdout or "").splitlines():
+                if line.strip().startswith(("채택", "버림", "카드 버림")):
+                    print("  " + line.strip())
+            if load.returncode != 0:
+                print("프록시 적재 실패(계속 진행): %s" % (load.stderr or "")[-200:],
+                      file=sys.stderr)
+        return out
+    except Exception as e:
+        if not quiet:
+            print("프록시 자동 생성 건너뜀: %s" % e, file=sys.stderr)
+        return None
+
+
+def build(db_path, contexts, ai_notes=None, auto_proxy=True):
     """분석 단을 돌리고 그 판정 결과에서 실을 것을 고른다."""
+    if auto_proxy:
+        ensure_rule_proxies(db_path, contexts)
     res = an.analyze(db_path, contexts, ai_notes)
     if not res["ok"]:
         return None, res
@@ -346,7 +425,8 @@ def build_insight_pdf(res, out_path, target, detail_pages):
                "표본 부족으로 못 본 것은 아래 ③에 있다(그건 '없다'가 아니라 '모른다'다).")
         for h in nulls:
             d.card(_null_claim(h), audience=h.get("audience"),
-                   action="이 축은 신경 쓰지 않아도 된다 — 다른 축에 힘을 쓴다",
+                   action=["**이 축은 신경 쓰지 않아도 된다** — 다른 축에 힘을 쓴다",
+                           "여기에 기획·마케팅 자원을 더 넣어도 차이가 안 났다는 뜻이다"],
                    evidence="%s %s (차이 없음 수준) · n=%s" % (
                        h.get("effect_kind", "효과"), _fmt(h.get("effect")),
                        "{:,}".format(h.get("n") or 0)))
@@ -556,6 +636,8 @@ def main():
     ap.add_argument("--out", default="output", help="PDF를 넣을 디렉터리")
     ap.add_argument("--target", help="리포트 제목에 쓸 대상 이름 (생략하면 문맥에서)")
     ap.add_argument("--ai-notes", help="분석 단에 넘길 AI 예외 판단 JSON (exclude/warn/add)")
+    ap.add_argument("--no-auto-proxy", action="store_true",
+                    help="rule 프록시 자동 생성을 건너뛴다 (기본은 만든다 — D51)")
     a = ap.parse_args()
 
     target = a.target or (", ".join(a.context) if a.context else "전체")
@@ -563,7 +645,7 @@ def main():
     if a.ai_notes:
         import json
         notes = json.loads(open(a.ai_notes, encoding="utf-8").read())
-    res, raw = build(a.db, a.context, notes)
+    res, raw = build(a.db, a.context, notes, auto_proxy=not a.no_auto_proxy)
     if res is None:
         print("중단: %s" % raw.get("reason"))
         return 1

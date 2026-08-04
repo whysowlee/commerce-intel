@@ -160,6 +160,26 @@ RESPONSE = {"view_count", "viewers_now", "like_count", "review_count", "rating",
             "cvr_view_like", "cvr_view_buy", "cvr_like_buy", "review_per_buy"}
 
 
+# ── 브랜드 표기 정규화 (D51) ───────────────────────────────────────────────
+# 같은 브랜드가 사이트마다 다르게 적힌다. 실측(2000아카이브스 문맥):
+#   무신사 `2000아카이브스` · 29CM `2000아카이브스` · 자사몰 `2000Archives`(354)
+#   그리고 **같은 자사몰 안에서** `2000 Archives`(148) — 자기 안에서도 갈렸다
+# 그대로 두면 "2000아카이브스와 2000Archives는 정가 차이가 없다"가 인사이트로
+# 올라온다. 같은 브랜드니 당연한 말이고, 그게 진짜 발견의 자리를 먹는다.
+#
+# **표기만 걷어낸다** — 대소문자·공백·하이픈. 뜻이 다른 이름은 건드리지 않는다.
+# 한글과 영문은 서로 다른 키가 된다(음차 매칭은 하지 않는다 — 근거가 없다).
+
+_BRAND_STRIP = re.compile(r"[\s\-_·.]+")
+
+
+def brand_key(name):
+    """브랜드 비교용 키. **표시는 원문을 쓰고 묶을 때만 이걸 쓴다.**"""
+    if not name:
+        return None
+    return _BRAND_STRIP.sub("", str(name)).lower()
+
+
 def role_of(field):
     return "lever" if field in LEVER else ("response" if field in RESPONSE else "context")
 

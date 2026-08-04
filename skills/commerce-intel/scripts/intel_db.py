@@ -321,9 +321,19 @@ STORY_PREFIX = {"brand-linesheet": "brand", "market-scan": "market",
 
 
 def context_of(meta):
+    """`story`로 접두사를 붙이고 `target`을 잇는다 — `brand:로우클래식`.
+
+    **`target`에는 이름만 들어간다.** 접두사까지 넣으면 `brand:brand:로우클래식`이
+    되어 같은 대상이 두 문맥으로 갈린다(2026-08-04에 실제로 3개 문맥이 그렇게
+    들어갔다). 수집기가 실수로 붙여 와도 여기서 걷어낸다 — 조용히 갈리는 것보다
+    낫다. 다른 접두사가 붙어 오면 그건 의도일 수 있으니 건드리지 않는다.
+    """
     story = meta.get("story", "")
-    target = meta.get("target", "")
-    return f"{STORY_PREFIX.get(story, story or 'adhoc')}:{target}"
+    target = str(meta.get("target", "") or "")
+    prefix = STORY_PREFIX.get(story, story or "adhoc")
+    if target.startswith(prefix + ":"):
+        target = target[len(prefix) + 1:]
+    return f"{prefix}:{target}"
 
 
 def run_context(row):
