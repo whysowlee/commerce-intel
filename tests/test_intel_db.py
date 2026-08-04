@@ -334,6 +334,8 @@ def hierarchy_tests():
         {"path": ["여성의류", "스커트", "미디"]},
         {"path": ["여성의류", "스커트", "데님"]},
         {"path": ["여성의류", "단독", "하의"]},
+        {"path": ["여성의류", "아우터", "후드"]},     # 다른 가지의 순수 리프
+        {"path": ["남성의류", "하의", "데님 팬츠"]},   # 하의가 우산임을 드러낸다
     ]}}, ensure_ascii=False), encoding="utf-8")
     h = intel_data.category_hierarchy(str(work / "no.db"), catalog_path=str(cat))
 
@@ -342,7 +344,7 @@ def hierarchy_tests():
     check("D42 형제는 비교한다 (미니 대 미디 — 둘 다 스커트 아래)",
           not intel_data.incomparable("미니", "미디", h))
     # 사용자가 인사이트 PDF에서 잡은 바로 그 쌍이다 (2026-08-04)
-    check("D42 부모가 갈리면 비교하지 않는다 (미니[스커트] 대 하의[단독])",
+    check("D42 굵기가 다르면 비교하지 않는다 (리프 미니 대 우산 하의)",
           intel_data.incomparable("미니", "하의", h))
     check("D42 경로 표기와 조각 표기가 같은 것으로 걸린다",
           intel_data.incomparable("여성의류 > 스커트 > 미디", "미디", h))
@@ -354,15 +356,26 @@ def hierarchy_tests():
     # E-CH-1·3 사유를 나눠 센다 — 합계만 찍으면 ②로 과하게 빠져도 알 수 없다
     check("E-CH-1 조상-자손은 사유가 ancestor",
           intel_data.incomparable_reason("스커트", "미니", h) == "ancestor")
-    check("E-CH-3 부모 갈림은 사유가 branch",
-          intel_data.incomparable_reason("미니", "하의", h) == "branch")
+    check("E-CH-3 굵기 차이는 사유가 granularity",
+          intel_data.incomparable_reason("미니", "하의", h) == "granularity")
     check("E-CH-2 형제는 사유가 없다",
           intel_data.incomparable_reason("미니", "미디", h) is None)
     # E-CH-6 카탈로그가 없어도 예외를 내지 않는다
     empty = intel_data.category_hierarchy(str(work / "no.db"),
                                           catalog_path=str(work / "없는파일.json"))
     check("E-CH-6 카탈로그 파일이 없어도 죽지 않는다",
-          empty == {"anc": set(), "parent": {}})
+          empty["anc"] == set() and empty["parent"] == {})
+    # E-CH-10 다른 가지라는 것만으로 거르지 않는다 (2026-08-04 리뷰로 좁힌 규칙).
+    # 옛 규칙("부모가 갈리면 제외")은 "스커트 계열 대 아우터 계열" 같은 정상 비교까지
+    # 지웠다 — 둘 다 리프면 대등하다.
+    check("E-CH-10 다른 가지의 순수 리프끼리는 비교한다 (미니 대 후드)",
+          not intel_data.incomparable("미니", "후드", h))
+    check("E-CH-11 우산 대 리프는 굵기가 달라 거른다 (하의 대 미니)",
+          intel_data.incomparable_reason("미니", "하의", h) == "granularity")
+    check("E-CH-12 우산끼리는 비교한다 (스커트 대 아우터)",
+          not intel_data.incomparable("스커트", "아우터", h))
+    check("E-CH-13 우산 판별은 트리 전체를 본다 (하의는 남성의류 아래서 부모)",
+          "하의" in h["umbrella"] and "미니" not in h["umbrella"])
     shutil.rmtree(work, ignore_errors=True)
 
 

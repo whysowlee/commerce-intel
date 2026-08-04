@@ -11,7 +11,7 @@ compatibility: 웹 요청 도구로 수집이 된다(쿠키 유지 필요 — ad
 metadata:
   version: 0.1.0
   status: draft            # draft → ready 승격은 사용자가 한다
-  refresh-cycle: unverified  # 사이트가 밝힌 값 없음. 기간별 랭킹은 sort로 직접 취득 가능(§R)
+  refresh-cycle: "unverified · 크론 잠정 60분"   # 사이트가 밝힌 값 없음. 기간별 랭킹은 sort로 직접 취득(§R)
   measured-at: "2026-08-04"   # 가장 최근 실측일
 ---
 

@@ -182,9 +182,9 @@ def honesty_points(res):
         pts.append(
             "카테고리 값은 **사이트 표기 그대로**다 — 상위·하위 분류가 한 축에 섞여 있다"
             "(예: 「하의」와 「미니」). 대등하지 않은 쌍 %d개를 비교에서 뺐다"
-            "(상위-하위 %d · 다른 가지 %d). **사이트가 계층을 안 밝힌 값은 못 걸렀으니** "
+            "(상위-하위 %d · 굵기 차이 %d). **사이트가 계층을 안 밝힌 값은 못 걸렀으니** "
             "두 값이 같은 레벨인지 보고 읽어라."
-            % (sum(sk.values()), sk.get("ancestor", 0), sk.get("branch", 0)))
+            % (sum(sk.values()), sk.get("ancestor", 0), sk.get("granularity", 0)))
     if any(h.get("cat_field") == "brand" for h in shown):
         pts.append(
             "브랜드 값도 표기 그대로다 — 같은 브랜드가 플랫폼마다 다르게 적히면"

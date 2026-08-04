@@ -269,7 +269,7 @@ class Doc:
         칸에 들어가 짧은 쪽에 빈 공간이 남는다. 마지막 칸은 남는 폭을 먹여 왼쪽 정렬.
         """
         cells, widths = [], []
-        for text, (bg, fg) in badges:
+        for text, (_bg, fg) in badges:
             st = ParagraphStyle("badge", parent=self.s["small"], textColor=fg,
                                 fontSize=7.6, leading=9.5, spaceAfter=0, alignment=TA_CENTER)
             cells.append(Paragraph(b(esc(text)), st))

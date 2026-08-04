@@ -23,7 +23,7 @@
       "method": "rule",
       "value_space": ["데님", "가죽", "니트", "울", "린넨", "새틴/실크", "코튼", "소재 미표기", "unknown"],
       "rules": [
-        {"value": "데님", "any": ["데님", "denim", "\\bjean"]},
+        {"value": "데님", "any": ["데님", "denim", "\\bjeans?\\b"]},
         {"value": "가죽", "any": ["가죽", "레더", "leather", "스웨이드", "suede"]},
         {"value": "니트", "any": ["니트", "knit", "가디건", "cardigan"]},
         {"value": "울", "any": ["\\b울\\b", "wool", "캐시미어", "cashmere", "모헤어", "mohair"]},
