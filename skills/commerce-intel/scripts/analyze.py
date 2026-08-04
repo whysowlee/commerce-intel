@@ -44,9 +44,9 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import stat_playbook as sp                                          # noqa: E402
 from eda import CAT_AXES, MIN_N, run as run_eda                     # noqa: E402
-from intel_data import (cat_axes, category_hierarchy, collect,  # noqa: E402
-                        incomparable_reason, matched_pairs, num_axes,
-                        product_series, role_of, style_rows)
+from intel_data import (brand_key, cat_axes, category_hierarchy,  # noqa: E402
+                        collect, incomparable_reason, matched_pairs,
+                        num_axes, product_series, role_of, style_rows)
 
 # ── 관문 임계 ───────────────────────────────────────────────────────────────
 # 임계는 2026-08-03에 한 번 완화했다. 우리가 모으는 데이터는 표본이 크지 않고
@@ -292,23 +292,46 @@ def run_group(ctx):
     # D42: 카테고리 축에서만 계층 쌍을 거른다. 브랜드·품절·프록시는 계층이 없다.
     hier = ctx.get("hierarchy") or set()
     skipped_pairs = defaultdict(set)
+    # **문맥이 이미 브랜드를 지정했으면 브랜드 축으로 비교하지 않는다** (D51).
+    # `brand:2000아카이브스` 문맥의 상품은 전부 같은 브랜드인데 사이트마다 표기가
+    # 달라(`2000아카이브스`·`2000Archives`·`2000 Archives`) 서로 다른 브랜드처럼
+    # 비교됐다 — "정가 차이가 없다"가 인사이트 자리를 먹었다. 같은 브랜드니 당연하다.
+    single_brand = any(str(c).startswith("brand:") for c in (ctx.get("contexts") or []))
     for cat_field, cat_label in ctx["cat_axes"]:
-        groups = defaultdict(list)
+        if single_brand and cat_field == "brand":
+            continue
+        groups, label = defaultdict(list), {}
         for it in ctx["styles"]:          # 변형이 아니라 스타일 단위 (#7)
             # None만이 아니라 **빈 문자열·공백도 거른다** — 값이 없는 것은 그룹이
             # 아니다. 남겨두면 "카테고리에서 은 미니보다…" 같은 문장이 나온다
             v = it.get(cat_field)
             if v is not None and str(v).strip():
                 # **키를 다듬어 담는다** — 앞뒤 공백만 다른 같은 값이 서로 다른
-                # 그룹으로 쪼개지면 n이 갈리고 같은 비교가 두 번 나온다 (PR #9 리뷰)
-                groups[str(v).strip() if isinstance(v, str) else v].append(it)
+                # 그룹으로 쪼개지면 n이 갈리고 같은 비교가 두 번 나온다 (PR #9 리뷰).
+                # 브랜드는 표기 차이가 더 심해서 따로 정규화한다 (D51) —
+                # `2000Archives`와 `2000 Archives`가 다른 브랜드로 비교되고 있었다.
+                key = brand_key(v) if cat_field == "brand" else (
+                    str(v).strip() if isinstance(v, str) else v)
+                groups[key].append(it)
+                label.setdefault(key, str(v).strip())   # 표시는 원문으로
         big = sorted([(k, v) for k, v in groups.items() if len(v) >= N_MIN],
                      key=lambda kv: -len(kv[1]))
         truncated = max(0, len(big) - GROUPS_PER_AXIS)
         big = big[:GROUPS_PER_AXIS]
         if len(big) < 2:
             continue
-        for metric in usable:
+        # **공급자가 정한 값은 Y로 놓지 않는다** (D47을 그룹 비교에도 적용 — D51).
+        # 여태 `run_corr`에만 걸려 있어서 "브랜드에서 A는 B보다 할인율이 낮다"가
+        # 강한 주장으로 올라왔다(2026-08-04 자사 브랜드 리포트 8건 전부 그랬다).
+        # 가격·할인은 **우리가 정한 값**이라 그룹 간 차이는 성과가 아니라 정책 기술이다.
+        #
+        # 다만 **버리지는 않는다** — 정책 기술도 MD에게 쓸모가 있다. 반응 지표가
+        # 하나라도 있으면 그쪽만 쓰고, **하나도 없으면** lever를 쓰되 그 사실을
+        # 주장에 적는다(안 그러면 리포트가 통째로 비어 나간다).
+        response = [m for m in usable if role_of(m) == "response"]
+        metrics = response or usable
+        lever_only = not response
+        for metric in metrics:
             for i in range(len(big)):
                 for j in range(i + 1, len(big)):
                     ka, va = big[i]
@@ -330,17 +353,20 @@ def run_group(ctx):
                     out.append({
                         "method": "group_compare", "kind": "group_compare",
                         "cat_field": cat_field, "cat_label": cat_label,
-                        "group_a": str(ka), "group_b": str(kb),
+                        "group_a": label.get(ka, str(ka)),
+                        "group_b": label.get(kb, str(kb)),
+                        "lever_metric": role_of(metric) == "lever",
                         "metric": metric, "metric_label": labels.get(metric, metric),
                         "a": a, "b": b, "groups_truncated": truncated,
                         "effect": eff, "effect_kind": "Cliff δ",
                         "p": sp.perm_test_groups(a, b),
                         "n": len(a) + len(b), "n_a": len(a), "n_b": len(b),
                         "median_a": ma, "median_b": mb,
-                        "claim": "%s에서 %s %s보다 %s %s (중앙값 %s 대 %s)" % (
-                            cat_label, _josa(ka, "은는"), kb,
+                        "claim": ("%s에서 %s %s보다 %s %s (중앙값 %s 대 %s)" % (
+                            cat_label, _josa(label.get(ka, str(ka)), "은는"),
+                            label.get(kb, str(kb)),
                             _josa(labels.get(metric, metric), "이가"),
-                            "높다" if ma > mb else "낮다", _fmt(ma), _fmt(mb)),
+                            "높다" if ma > mb else "낮다", _fmt(ma), _fmt(mb))),
                         "audience": audience_of(metric, cat_field),
                     })
     # 몇 개를 왜 걸렀는지 남긴다 — 조용히 줄어든 검정 수는 "전부 봤다"로 읽히고,
@@ -663,7 +689,8 @@ def analyze(db_path, contexts, ai_notes=None, plan_only=False):
            "series": product_series(db_path, contexts),
            "cat_axes": cats, "num_axes": num_axes(data),
            "labels": dict(num_axes(data) + cats),
-           "hierarchy": category_hierarchy(db_path)}   # D42
+           "hierarchy": category_hierarchy(db_path),   # D42
+           "contexts": contexts}
 
     plan = make_plan(ctx, ai_notes)
     if plan_only:

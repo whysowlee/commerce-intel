@@ -746,6 +746,41 @@ def incremental_key_tests():
     shutil.rmtree(work, ignore_errors=True)
 
 
+def context_tests():
+    """문맥 문자열 (D51) — 접두사가 두 번 붙으면 같은 대상이 두 문맥으로 갈린다."""
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    intel_db = importlib.import_module("intel_db")
+    co = intel_db.context_of
+    check("E-CX-1 target에 이름만 있으면 접두사를 붙인다",
+          co({"story": "brand-linesheet", "target": "로우클래식"}) == "brand:로우클래식")
+    # 2026-08-04에 실제로 `brand:brand:2000아카이브스`가 들어갔다
+    check("E-CX-2 접두사가 붙어 와도 두 번 붙이지 않는다",
+          co({"story": "brand-linesheet", "target": "brand:로우클래식"}) == "brand:로우클래식")
+    check("E-CX-3 market도 같다",
+          co({"story": "market-scan", "target": "market:데님팬츠(여성)"})
+          == "market:데님팬츠(여성)")
+    # 다른 접두사는 의도일 수 있으니 건드리지 않는다
+    check("E-CX-4 다른 접두사는 그대로 둔다",
+          co({"story": "brand-linesheet", "target": "market:X"}) == "brand:market:X")
+    check("E-CX-5 target이 비어도 죽지 않는다",
+          co({"story": "ranking-snapshot"}) == "ranking:")
+
+
+def modeling_role_tests():
+    """그룹 비교의 Y 선정 (D51) — 공급자가 정한 값은 Y로 안 쓴다."""
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    d = importlib.import_module("intel_data")
+    check("E-MD-25 브랜드 표기 정규화 — 공백·대소문자만 걷어낸다",
+          d.brand_key("2000 Archives") == d.brand_key("2000Archives")
+          == d.brand_key("2000-archives"), d.brand_key("2000 Archives"))
+    # 한글과 영문은 다른 키다 — 음차 매칭은 근거가 없다
+    check("E-MD-26 한글·영문은 묶지 않는다",
+          d.brand_key("2000아카이브스") != d.brand_key("2000Archives"))
+    check("E-MD-27 빈 값은 None", d.brand_key(None) is None and d.brand_key("") is None)
+
+
 def collector_tests():
     """수집기 (D48 · E-CO) — 네트워크에 붙지 않고 순수 함수만 검증한다.
 
@@ -998,6 +1033,10 @@ def main():
 
     print("[20] 수집기 — 인코딩·커버리지·카드 매핑 (D48)")
     collector_tests()
+
+    print("[21] 문맥 문자열·역할 규칙 (D51)")
+    context_tests()
+    modeling_role_tests()
 
     shutil.rmtree(work, ignore_errors=True)
     print("-" * 56)

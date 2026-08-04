@@ -304,9 +304,15 @@ class Doc:
             inner.append(self._badge_row(badges))
         inner.append(Paragraph(md(esc(claim)), self.s["claim"]))
         if action:
-            # "그래서 뭘 하지"를 읽는 사람이 매번 번역하지 않게 한 줄 붙인다 (D47).
-            # **지시가 아니라 "이 숫자로 무엇을 정할 수 있나"**다 — 우리는 상관만 봤다.
-            inner.append(Paragraph(md("→ " + esc(action)), self.s["action"]))
+            # "그래서 뭘 하지"를 읽는 사람이 매번 번역하지 않게 붙인다 (D47).
+            # **지시가 아니라 "이 숫자로 무엇을 하면 되나"**다 — 우리는 상관만 봤다.
+            # 여러 줄을 받는다(D51) — 한 줄로는 추상적인 문장밖에 안 나왔다.
+            for i, line in enumerate(action if isinstance(action, (list, tuple))
+                                     else [action]):
+                # 글머리표는 **BAD_GLYPHS를 통과한 글자**로 직접 쓴다 — `·`는 이 폰트에서
+                # 안 그려진다(esc를 안 거치는 접두사라 치환도 못 받는다. 실측으로 확인)
+                inner.append(Paragraph(md(("→ " if i == 0 else "・ ") + esc(line)),
+                                       self.s["action"]))
         if detail_link:
             inner.append(Paragraph("→ 상세: %s" % esc(detail_link), self.s["small"]))
         if evidence:

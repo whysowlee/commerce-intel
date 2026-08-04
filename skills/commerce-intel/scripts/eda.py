@@ -152,7 +152,22 @@ def check_grain(data):
 
 # ── 2. 결측 지도 ────────────────────────────────────────────────────────────
 def check_nulls(data):
-    """미노출(null)과 0을 구분한다. 이 둘을 섞으면 "반응 없음"이라는 거짓말이 만들어진다."""
+    """미노출(null)과 0을 구분한다. 이 둘을 섞으면 "반응 없음"이라는 거짓말이 만들어진다.
+
+    **결측에는 두 종류가 있다** (D51 — 실측으로 드러났다):
+
+      ① 품질 결측 — 그 사이트가 주는데 우리가 못 받았다. 30% 넘으면 축을 버린다
+      ② 구조 결측 — **그 사이트가 아예 안 준다.** 자사몰(Cafe24)은 하트·후기·평점을
+         노출하지 않는다(어댑터 실측). 이건 데이터 품질 문제가 아니다
+
+    둘을 섞으면 축이 통째로 사라진다. `brand:2000아카이브스` 실측: 자사몰 502개에
+    하트가 없어 전체 결측률 44.5% → 축 탈락. 그런데 **무신사·29CM에는 626개가
+    실제로 있었다.** 반응 지표가 하나도 없으니 리포트의 Y가 전부 가격·할인이 됐다.
+
+    그래서 **노출하는 플랫폼 안에서** 결측률을 다시 잰다. 통과하면 축으로 쓰되
+    **어느 플랫폼이 빠졌는지 함께 남긴다** — 비교가 그 플랫폼을 안 본다는 사실을
+    리포트가 말해야 한다(안 그러면 "전체를 봤다"로 읽힌다).
+    """
     items = data["items"]
     n = len(items)
     out = []
@@ -161,10 +176,28 @@ def check_nulls(data):
         zeros = sum(1 for i in items if i.get(field) == 0)
         pct = round(miss / n * 100, 1) if n else 100.0
         status = "FAIL" if pct > NULL_FAIL else ("WARN" if pct > NULL_WARN else "OK")
+
+        # 사이트별로 나눠 본다 — **한 값도 없는 사이트**가 구조 결측이다
+        by_site = {}
+        for i in items:
+            st = by_site.setdefault(i.get("site"), [0, 0])
+            st[0] += 1
+            st[1] += i.get(field) is not None
+        blind = sorted(s for s, (tot, got) in by_site.items() if tot and got == 0)
+        seen_items = [i for i in items if i.get("site") not in blind]
+        pct_seen = pct
+        if blind and seen_items:
+            m2 = sum(1 for i in seen_items if i.get(field) is None)
+            pct_seen = round(m2 / len(seen_items) * 100, 1)
+
         out.append({"field": field, "label": label, "missing": miss, "missing_pct": pct,
                     "zeros": zeros, "status": status,
-                    # 전부 결측인 축은 존재하지 않는 것과 같다 — 차트로 그리면 안 된다
-                    "usable": pct <= NULL_FAIL})
+                    # 노출 플랫폼 안에서의 결측률과, 아예 안 주는 플랫폼 목록
+                    "missing_pct_exposed": pct_seen, "blind_sites": blind,
+                    "n_exposed": len(seen_items),
+                    # 전부 결측인 축은 존재하지 않는 것과 같다 — 차트로 그리면 안 된다.
+                    # **구조 결측은 빼고 판정한다** — 그 사이트를 안 보면 될 뿐이다
+                    "usable": pct_seen <= NULL_FAIL and len(seen_items) >= MIN_N})
     return out
 
 
