@@ -163,6 +163,34 @@ def size_thumbs(sh, ws, n_rows):
         print(f"  썸네일 크기 조정 실패(무해): {e}")
 
 
+def sheet_rows(ws):
+    """시트 탭의 **값이 있는** 데이터 행 수 (헤더 제외).
+
+    `row_count`(격자 크기)를 쓰면 안 된다 — 격자는 데이터보다 크고, 중간에 빈 행이
+    섞여 있을 수도 있다(2026-08-04 실측: 격자 49,907행인데 실제 데이터는 11,727행).
+    A열을 실제로 읽어 빈 칸을 빼고 센다.
+    """
+    try:
+        col = ws.col_values(1)
+    except Exception:
+        return None                 # 못 읽으면 "모른다" — 0과 구분해야 한다
+    return sum(1 for v in col[1:] if str(v).strip())
+
+
+def rebuild_tab(ws, headers, data, chunk=5000):
+    """탭을 통째로 다시 쓴다. 증분이 어긋났을 때의 복구 경로다.
+
+    부분 보정을 하지 않는 이유: 어긋난 시트는 **어디가 비었는지 알 수 없다.**
+    중간에 빈 행이 흩어져 있으면 "몇 행부터 이어 붙일까"가 성립하지 않는다.
+    """
+    ws.clear()
+    ws.resize(rows=max(len(data) + 1, 2), cols=len(headers))
+    ws.update(values=[headers], range_name="A1")
+    for i in range(0, len(data), chunk):
+        ws.update(values=data[i:i + chunk], range_name="A%d" % (i + 2),
+                  value_input_option="RAW")
+
+
 def ensure_ws(sh, title, cols=26):
     try:
         return sh.worksheet(title)
@@ -176,6 +204,8 @@ def main():
     p.add_argument("--config", default="data/sheets_config.json")
     p.add_argument("--creds", default=os.environ.get(
         "INTEL_SHEETS_CREDENTIALS", str(Path.home() / ".config/intel/service-account.json")))
+    p.add_argument("--repair", action="store_true",
+                   help="시트 행 수가 DB와 다르면 그 탭을 통째로 다시 쓴다")
     args = p.parse_args()
 
     sh, err = open_spreadsheet(args.config, args.creds)
@@ -190,6 +220,7 @@ def main():
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     existing = {ws.title: ws for ws in sh.worksheets()}
     tab_rows = []      # 안내 탭에 실을 [탭, 행수, 내용]
+    mismatch, audit, repaired = [], [], []   # 미러 무결성 (D46)
     def drop_if_empty(title):
         if title in existing:
             sh.del_worksheet(existing.pop(title))
@@ -204,7 +235,11 @@ def main():
         ws.clear()
         ws.update(values=[headers] + data, range_name="A1")
         tab_rows.append([table, len(data), TABLE_DESC.get(table, "")])
-        print(f"{table}: 전체 {len(data)}행 미러")
+        got = sheet_rows(ws)
+        if got is not None and got != len(data):
+            audit.append((table, len(data), got))
+        print(f"{table}: 전체 {len(data)}행 미러"
+              + ("" if got in (None, len(data)) else f" !! 시트는 {got}행"))
 
     # 스토리별 뷰 탭 — 파생이므로 전체 다시 쓰기. 데이터 없는 스토리는 탭이 없다
     story_rows = []    # 안내 탭에 실을 스토리 현황
@@ -240,7 +275,10 @@ def main():
         last = int(row["last_synced_key"]) if row and row["last_synced_key"] else 0
         result = rows_of(conn, table, since_rowid=last)
         headers, data, max_rowid = result[0], result[1], result[2]
-        full_headers = [d[1] for d in conn.execute(f"PRAGMA table_info({table})")]
+        # `_rowid`는 증분 키일 뿐 데이터가 아니다 — v2에서 옛 이름은 뷰라
+        # PRAGMA가 이것까지 돌려준다. 빼지 않으면 헤더가 데이터보다 한 칸 길어진다.
+        full_headers = [d[1] for d in conn.execute(f"PRAGMA table_info({table})")
+                        if d[1] != "_rowid"]
         ws = ensure_ws(sh, table, len(full_headers))
         # 빈 열은 셀 한도(워크북 1천만)를 갉아먹는다 — 관측 탭은 계속 자라므로
         # 여기가 제일 먼저 막힌다. 2026-08-04 실측: observations가 156열(실제 20열)로
@@ -250,16 +288,47 @@ def main():
             ws.resize(rows=ws.row_count, cols=len(full_headers))
         if not ws.get_values("A1:A1"):
             ws.update(values=[full_headers], range_name="A1")
+        # ── 올린 뒤 실제로 늘었는지 보고, 그때만 진행점을 옮긴다 ──────────
+        # 이 검사가 없어서 2026-08-04에 **시트에 4분의 1만 올라간 채 sync_state는
+        # 완료를 주장**하고 있었다(DB 51,034행 / 시트 11,727행). 진행점이 앞서 나가면
+        # 다음 동기화는 "이미 다 했네" 하고 넘어가고 빠진 행은 영영 안 올라간다.
+        # 에러도 안 나는 종류라, 세어 보지 않으면 아무도 모른다.
         if data:
+            before = sheet_rows(ws)
             ws.append_rows(data, value_input_option="RAW")
-            conn.execute(
-                "INSERT INTO sync_state VALUES (?, ?, ?) "
-                "ON CONFLICT(table_name) DO UPDATE SET last_synced_key=excluded.last_synced_key, "
-                "updated_at=excluded.updated_at", (table, str(max_rowid), now))
-            conn.commit()
-            print(f"{table}: 증분 {len(data)}행 append (rowid ≤ {max_rowid})")
+            after = sheet_rows(ws)
+            landed = None if (before is None or after is None) else after - before
+            if landed is not None and landed != len(data):
+                # **진행점을 옮기지 않는다.** 다음 실행이 같은 구간을 다시 시도한다.
+                mismatch.append((table, len(data), landed))
+                print(f"{table}: !! {len(data)}행을 올렸는데 시트는 {landed}행 늘었다 "
+                      f"— 진행점을 옮기지 않는다 (--repair 로 재구축)")
+            else:
+                conn.execute(
+                    "INSERT INTO sync_state VALUES (?, ?, ?) "
+                    "ON CONFLICT(table_name) DO UPDATE SET "
+                    "last_synced_key=excluded.last_synced_key, "
+                    "updated_at=excluded.updated_at", (table, str(max_rowid), now))
+                conn.commit()
+                print(f"{table}: 증분 {len(data)}행 append (rowid ≤ {max_rowid})")
         else:
             print(f"{table}: 새 관측 없음")
+
+        # 총계 대조 — 증분이 아니라 **누적**이 맞는지 본다. 과거에 어긋난 것도 여기서 걸린다
+        got = sheet_rows(ws)
+        if got is not None and got != total:
+            audit.append((table, total, got))
+            if args.repair:
+                hdr, alldata, maxr = rows_of(conn, table)
+                rebuild_tab(ws, hdr, alldata)
+                conn.execute(
+                    "INSERT INTO sync_state VALUES (?, ?, ?) ON CONFLICT(table_name) "
+                    "DO UPDATE SET last_synced_key=excluded.last_synced_key, "
+                    "updated_at=excluded.updated_at", (table, str(maxr), now))
+                conn.commit()
+                repaired.append((table, total, got))
+                audit.pop()
+                print(f"{table}: 재구축 {total}행 (시트에 {got}행뿐이었다)")
 
     # 안내 탭 — 스토리 현황과 탭 가이드를 사람이 읽게 쓴다
     guide = [[NOTICE], [f"마지막 동기화: {now}"], [""],
@@ -269,6 +338,22 @@ def main():
     ws.clear()
     ws.update(values=guide, range_name="A1")
     print(f"안내: 스토리 현황 {len(story_rows)}줄 + 탭 가이드 {len(tab_rows)}줄")
+
+    # ── 무결성 판정 (D46) ─────────────────────────────────────────────────
+    # **어긋난 채로 조용히 끝나지 않는다.** 미러가 "됐다"고 말하면 팀원은 시트를
+    # 믿는다. 실제로 안 올라간 4만 행이 있어도 에러가 안 나면 아무도 모른다.
+    for t, want, got in repaired:
+        print(f"복구: {t} — 시트 {got}행 → DB와 같은 {want}행으로 재구축")
+    if mismatch or audit:
+        print("\n!! 시트와 DB가 어긋난다 — 시트를 믿지 마라", file=sys.stderr)
+        for t, want, got in mismatch:
+            print(f"   {t}: {want}행을 올렸는데 {got}행만 늘었다", file=sys.stderr)
+        for t, want, got in audit:
+            print(f"   {t}: DB {want:,}행 / 시트 {got:,}행 (차이 {want-got:+,})",
+                  file=sys.stderr)
+        print("   고치려면: python3 sync_sheets.py --repair", file=sys.stderr)
+        sys.exit(1)
+    print("무결성 확인: 미러한 전 탭의 행 수가 DB와 일치한다")
 
 
 if __name__ == "__main__":
