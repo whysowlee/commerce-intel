@@ -63,12 +63,26 @@ def migrate(src_path, dst_path):
     report = {}
 
     # ① 사전으로 안 접는 표 먼저 — obs_base.run_ref가 runs.rowid를 가리킨다
+    #
+    # **"없는 표"와 "깨진 표"를 가른다** (PR #9 리뷰). 전부 삼키고 0으로 적으면
+    # 스키마 오류가 "0행이었나 보다"로 읽힌다. 없는 표는 조용히 넘기고, 그 밖의
+    # 오류는 사유를 남긴다.
     for t in ("runs", "platforms", "proxy_defs", "proxy_cache", "insights", "sync_state"):
+        exists = src.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (t,)).fetchone()
+        if not exists:
+            report[t] = 0
+            report.setdefault("_missing", []).append(t)
+            continue
         try:
             report[t] = _copy_plain(src, dst, t)
-        except sqlite3.Error:
+        except sqlite3.Error as e:
             report[t] = 0
-    run_ref = {r[0]: r[1] for r in dst.execute("SELECT run_id, rowid FROM runs")}
+            report.setdefault("_errors", []).append("%s: %s" % (t, e))
+    # runs가 없으면 아래 조회가 `no such table`로 이관 전체를 죽인다. 빈 매핑으로
+    # 진행하고 그 사실을 남긴다 — 관측의 run_ref만 NULL이 될 뿐 나머지는 온전하다.
+    run_ref = ({r[0]: r[1] for r in dst.execute("SELECT run_id, rowid FROM runs")}
+               if "runs" not in report.get("_missing", []) else {})
 
     # ② 상품 — 여기서 사전이 채워진다
     pk_of = {}
@@ -227,6 +241,10 @@ def main():
         print("── 이관 ──")
         for k, v in rep.items():
             print("  %-22s %s" % (k, "{:,}".format(v)))
+        for t in rep.pop("_missing", []) or []:
+            print("  ※ 원본에 `%s` 표가 없어 건너뛰었다" % t)
+        for msg in rep.pop("_errors", []) or []:
+            print("  !! 이관 실패: %s" % msg)
         if rep.get("obs_skipped"):
             print("  ※ 관측 %d건이 삽입되지 않았다 — 중복이거나 시각을 읽지 못한 행이다. "
                   "**행 수 검산이 이걸 잡는다**" % rep["obs_skipped"])

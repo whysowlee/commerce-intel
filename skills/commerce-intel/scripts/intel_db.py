@@ -37,7 +37,7 @@ DEFAULT_CYCLE_MINUTES = 1440  # D8 — 갱신 주기 미상일 때 24시간
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from schema_v2 import (SCHEMA_V2, TRIGGERS_V2, VIEWS_V2,   # noqa: E402
-                       select_rowid)
+                       rowid_parts)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS products (
@@ -734,11 +734,13 @@ def cmd_import_snapshots(conn, args):
 
 
 def cmd_export(conn, args):
-    # v2에서 옛 이름은 뷰라 rowid가 없다 — 뷰는 물리 키를 `_rowid`로 내준다
-    q = f"{select_rowid(conn, args.table)} FROM {args.table}"
+    # v2에서 옛 이름은 뷰라 rowid가 없다 — 뷰는 물리 키를 `_rowid`로 내준다.
+    # WHERE·ORDER는 별칭이 아니라 진짜 참조 가능한 표현식으로 짠다 (PR #9 리뷰)
+    sel, key = rowid_parts(conn, args.table)
+    q = f"{sel} FROM {args.table}"
     if args.since_rowid is not None:
-        q += f" WHERE _rowid > {int(args.since_rowid)}"
-    q += " ORDER BY _rowid"
+        q += f" WHERE {key} > {int(args.since_rowid)}"
+    q += f" ORDER BY {key}"
     rows = conn.execute(q).fetchall()
     if args.format == "json":
         print(json.dumps([dict(r) for r in rows], ensure_ascii=False))

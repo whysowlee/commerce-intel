@@ -74,7 +74,9 @@ def plan(conn, keep_days=KEEP_DAYS, bucket=BUCKET_SEC):
                CASE
                  WHEN observed_at >= ?                       THEN 'recent'
                  WHEN rn = 1 OR rn = cnt                     THEN 'edge'
-                 WHEN p1 IS NULL AND price_sale IS NOT NULL   THEN 'change'
+                 -- 파티션 첫 행은 위 'edge'가 이미 잡으므로 `p1 IS NULL` 분기는
+                 -- 도달하지 않는다 — 지웠다 (PR #9 리뷰). LAG가 NULL인 행은
+                 -- 첫 행뿐이다
                  WHEN price_sale IS NOT p1 OR price_original IS NOT p0
                    OR discount_rate IS NOT p2                 THEN 'change'
                  WHEN rank IS NOT p3                          THEN 'change'

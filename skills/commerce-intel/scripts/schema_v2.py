@@ -425,8 +425,23 @@ def split_url(conn, url, cache):
 # 구 스키마에서는 `rowid`가 곧 증분 키였다. v2에서 옛 이름은 **뷰**라 rowid가 없어서
 # 뷰가 물리 키를 `_rowid`로 노출한다. 증분 미러(sync_sheets)와 export가 이 헬퍼를 쓴다.
 
-def select_rowid(conn, table):
-    """`SELECT ...` 접두사. 뷰면 `_rowid`가 이미 있고, 표면 `rowid`를 붙여 준다."""
+def rowid_parts(conn, table):
+    """(SELECT 접두사, WHERE·ORDER에 쓸 표현식)을 돌려준다.
+
+    **둘을 나누는 이유**: 물리 테이블에서는 `SELECT rowid AS _rowid` 로 별칭을
+    만들지만, 그 별칭을 `WHERE`에서 참조하는 것은 **표준 SQL이 아니다.** SQLite는
+    확장으로 허용하고 실제로 이 환경(3.43.2)에서는 물리 테이블·뷰 여섯 케이스가
+    전부 통과했지만, **팀 배포 환경의 SQLite 빌드를 우리가 검증할 수 없다**
+    (PR #9 리뷰). PR 이전 코드는 `WHERE rowid`로 진짜 컬럼을 썼고 그 구분이
+    이번 변경에서 사라졌었다 — 되돌린다.
+
+        물리 테이블 → ("SELECT rowid AS _rowid, *", "rowid")   ← WHERE는 진짜 rowid
+        뷰          → ("SELECT *",                  "_rowid")  ← 뷰의 실제 컬럼
+
+    뷰에는 rowid가 없으므로 뷰 쪽은 `_rowid`(실제 컬럼)를 그대로 쓴다.
+    """
     is_view = bool(conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='view' AND name=?", (table,)).fetchone())
-    return "SELECT *" if is_view else "SELECT rowid AS _rowid, *"
+    if is_view:
+        return "SELECT *", "_rowid"
+    return "SELECT rowid AS _rowid, *", "rowid"

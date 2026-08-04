@@ -673,6 +673,56 @@ def modeling_tests():
           "표본이 쌓이면" in ins.recheck_hint(r_old), ins.recheck_hint(r_old))
 
 
+def incremental_key_tests():
+    """증분 키 경로를 **모킹 없이 실제 sqlite3로** 탄다 (PR #9 리뷰).
+
+    기존 회귀는 `sync_sheets`를 가짜 모듈로 갈아끼워 `rows_of`/`since_rowid`를
+    통째로 우회했다 — 그래서 WHERE 절이 실제로 실행되는지 한 번도 안 봤다.
+    **뷰와 물리 테이블 두 경우 모두** `since_rowid > 0`으로 쿼리를 돌려 본다.
+    """
+    sys.modules.pop("sync_sheets", None)       # 앞 테스트의 가짜 모듈을 걷어낸다
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    intel_db = importlib.import_module("intel_db")
+    sync_sheets = importlib.reload(importlib.import_module("sync_sheets"))
+    schema_v2 = importlib.import_module("schema_v2")
+
+    work = Path(tempfile.mkdtemp(prefix="rid-"))
+    db = str(work / "k.db")
+    conn = intel_db.connect(db)                # 새 DB = v2
+    conn.execute("INSERT INTO runs (run_id, site, story, target, collected_at) "
+                 "VALUES ('R','29cm','brand-linesheet','T','2026-08-04 10:00:00')")
+    conn.execute("INSERT INTO products (site, product_id, name, first_seen_at,"
+                 " last_seen_at) VALUES ('29cm','P','n','2026-08-04 10:00:00',"
+                 "'2026-08-04 10:00:00')")
+    for i in range(5):
+        conn.execute("INSERT INTO observations (site, product_id, observed_at,"
+                     " context, price_sale) VALUES ('29cm','P',?,'brand:t',?)",
+                     ("2026-08-04 1%d:00:00" % i, 1000 + i))
+        conn.execute("INSERT INTO proxy_cache VALUES ('px','29cm',?,?,?,?,?)",
+                     ("P%d" % i, "fp%d" % i, "v", "b", "2026-08-04 10:00:00"))
+    conn.commit()
+
+    for table, want_type in (("observations", "view"), ("proxy_cache", "table")):
+        typ = conn.execute("SELECT type FROM sqlite_master WHERE name=?",
+                           (table,)).fetchone()[0]
+        check("E-DB-20 %s는 %s다 (두 경로를 다 탄다)" % (table, want_type),
+              typ == want_type, typ)
+        sel, key = schema_v2.rowid_parts(conn, table)
+        # **WHERE에 별칭이 아니라 진짜 참조 가능한 표현식이 들어가야 한다**
+        check("E-DB-20b %s의 WHERE 키가 %s" % (table, "rowid" if typ == "table" else "_rowid"),
+              key == ("rowid" if typ == "table" else "_rowid"), key)
+        try:
+            h, d, m = sync_sheets.rows_of(conn, table, since_rowid=2)
+            ok, detail = (len(d) == 3 and m == 5), (len(d), m)
+        except Exception as e:
+            ok, detail = False, "%s: %s" % (type(e).__name__, e)
+        check("E-DB-21 %s 증분 조회가 실제로 돈다 (since=2 → 3행)" % table, ok, detail)
+        check("E-DB-22 %s 헤더에 _rowid가 안 섞인다" % table,
+              "_rowid" not in h, h[-2:] if h else h)
+    shutil.rmtree(work, ignore_errors=True)
+
+
 def main():
     work = Path(tempfile.mkdtemp(prefix="intel-db-test-"))
     db = str(work / "intel.db")
@@ -872,6 +922,9 @@ def main():
 
     print("[18] 모델링 — Y 선정·퍼널·무영향 (D47)")
     modeling_tests()
+
+    print("[19] 증분 키 — 실제 sqlite3 (뷰·물리 테이블)")
+    incremental_key_tests()
 
     shutil.rmtree(work, ignore_errors=True)
     print("-" * 56)

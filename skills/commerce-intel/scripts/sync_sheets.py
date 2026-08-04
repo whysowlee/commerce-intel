@@ -24,7 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from intel_db import connect  # noqa: E402
-from schema_v2 import select_rowid  # noqa: E402
+from schema_v2 import rowid_parts  # noqa: E402
 
 FULL_TABLES = ("products", "variants", "platforms", "runs", "proxy_defs")
 INCR_TABLES = ("observations", "variant_observations", "proxy_cache")
@@ -100,11 +100,14 @@ def fetch_tab(sh, title):
 
 
 def rows_of(conn, table, since_rowid=None):
-    # v2는 옛 이름이 뷰라 rowid가 없다 — 뷰가 `_rowid`로 물리 키를 내준다 (D45)
-    q = f"{select_rowid(conn, table)} FROM {table}"
+    # v2는 옛 이름이 뷰라 rowid가 없다 — 뷰가 `_rowid`로 물리 키를 내준다 (D45).
+    # **WHERE·ORDER에는 별칭이 아니라 그 테이블에서 진짜로 참조 가능한 표현식**을
+    # 쓴다 — 물리 테이블이면 `rowid`, 뷰면 `_rowid` (PR #9 리뷰)
+    sel, key = rowid_parts(conn, table)
+    q = f"{sel} FROM {table}"
     if since_rowid is not None:
-        q += f" WHERE _rowid > {int(since_rowid)}"
-    rows = conn.execute(q + " ORDER BY _rowid").fetchall()
+        q += f" WHERE {key} > {int(since_rowid)}"
+    rows = conn.execute(q + f" ORDER BY {key}").fetchall()
     if not rows:
         return [], [], None
     headers = [k for k in rows[0].keys() if k != "_rowid"]

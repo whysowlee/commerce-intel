@@ -334,11 +334,16 @@ def build_insight_pdf(res, out_path, target, detail_pages):
            "어떻게 재확인하는지를 적었다.")
     for i, h in enumerate(res["weak"], 1):
         page = detail_pages.get(_anchor(h, "w", i))
+        # 약한 단서에도 액션을 준다 (PR #9 리뷰). D47은 "약한 단서는 '아직 정하지
+        # 마라'로 시작한다"고 정했는데 렌더가 action=을 안 넘겨 **그 분기가 유닛
+        # 테스트에서만 돌고 PDF에는 한 번도 안 나왔다.**
+        # 재확인 문구는 액션 줄이 이미 담으므로 evidence에서 뺀다(중복 제거).
         d.card(h["claim"], audience=h["audience"], weak=True,
-               evidence="%s %s · n=%s · 미통과: %s · 재확인: %s" % (
+               action=action_hint(h),
+               evidence="%s %s · n=%s · 미통과: %s" % (
                    h.get("effect_kind", "효과"), _fmt(h.get("effect")),
                    "{:,}".format(h.get("n") or 0),
-                   h["fails"][0] if h["fails"] else "—", recheck_hint(h)),
+                   h["fails"][0] if h["fails"] else "—"),
                detail_link=("상세 %d쪽" % page) if page else None)
 
     nulls = res.get("null_findings") or []
