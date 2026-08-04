@@ -82,10 +82,65 @@ AXES = [
     # 옵션(사이즈) — 값이 있는 문맥에서만 축 목록에 뜬다
     ("opt_total", "옵션 수"), ("opt_out_rate", "옵션 품절률(%)"), ("stock_sum", "재고 수량 합"),
     ("sold_min", "최소 판매량*"),
+    # 구간 표기에서 뽑은 순서형 축 (D48) — **순위로만 쓴다**
+    ("view_band", "조회수 구간(하한)"), ("purchase_band", "누적판매 구간(하한)"),
+    ("like_band", "하트 구간(하한)"),
     # 퍼널 비율 (D47) — 아래 FUNNEL이 계산해 붙인다
     ("cvr_view_like", "조회→하트 전환(%)"), ("cvr_view_buy", "조회→구매 전환(%)"),
     ("cvr_like_buy", "하트→구매 전환(%)"), ("review_per_buy", "구매 대비 후기(%)"),
 ]
+
+# ── 구간 표기를 순서형 축으로 (D48) ────────────────────────────────────────
+# 무신사는 조회수·누적판매를 **구간으로만** 보여준다("1.2만 회 이상", "2.7천 개 이상").
+# 원시 정수를 주는 API가 있지만 그 호스트는 robots가 `Disallow: /`라 쓰지 않는다
+# (2026-08-04 실측 — SPEC D48). 그래서 화면에 표시된 구간 표기를 쓴다.
+#
+# **정수로 담지 않는다**(어댑터 함정 1은 그대로다). "1.2만 이상"을 12000으로 담으면
+# 실제 90,000인 상품과 12,001인 상품이 같은 값이 되고, 그 값으로 평균이나 비율을
+# 내면 조용히 틀린다.
+#
+# **대신 순서로 쓴다.** 구간 표기의 **하한은 정확하다** — "1.2만 이상"은 값은 몰라도
+# 12,000보다 크다는 것은 틀림이 없다. 그래서 상품 사이의 **순서**는 오차 없이 매겨진다
+# (같은 구간끼리는 동순위). 그리고 이 프로젝트의 통계는 **Cliff δ와 Spearman —
+# 둘 다 순위 기반**이라 순서만 맞으면 그대로 성립한다.
+#
+#     못 하는 것: 평균·합계·비율(퍼널 전환율의 분모로 쓸 수 없다)
+#     되는 것:   그룹 비교(Cliff δ) · 순위 상관(Spearman) · 구간별 분포
+
+_BAND_UNIT = {"": 1, "천": 1000, "만": 10000, "억": 100000000}
+_BAND_RE = re.compile(r"([\d,]+(?:\.\d+)?)\s*(천|만|억)?\s*(?:회|개|건)?\s*이상")
+
+
+def band_floor(display):
+    """구간 표기의 **하한**을 정수로. 못 읽으면 None.
+
+    돌려주는 값은 "이 상품의 조회수"가 아니라 **"적어도 이만큼"**이다.
+    순서를 매기는 데만 쓰고 크기 계산에는 쓰지 마라 — 이름에 floor를 박아 둔 이유다.
+    """
+    if not display:
+        return None
+    m = _BAND_RE.search(str(display))
+    if not m:
+        return None
+    try:
+        n = float(m.group(1).replace(",", ""))
+    except ValueError:
+        return None
+    return int(n * _BAND_UNIT.get(m.group(2) or "", 1))
+
+
+# 구간 표기에서 뽑는 순서형 축. 값은 하한(정수)이지만 **순위로만 쓴다**.
+BAND_AXES = [("view_band", "view_count_display", "조회수 구간(하한)"),
+             ("purchase_band", "purchase_count_display", "누적판매 구간(하한)"),
+             ("like_band", "like_count_display", "하트 구간(하한)")]
+
+
+def add_bands(item):
+    """구간 표기 → 순서형 축. 원문(`*_display`)은 그대로 둔다."""
+    for name, src, _ in BAND_AXES:
+        item[name] = band_floor(item.get(src))
+    return item
+
 
 # ── 축의 역할 — 무엇이 Y가 될 수 있나 (D47) ────────────────────────────────
 # 2026-08-04 피드백: "할인율·판매가 등 **사람이 설정하는 값은 공급자 입장에서 Y가
@@ -100,6 +155,7 @@ AXES = [
 LEVER = {"price_sale", "price_original", "discount_rate",
          "opt_total", "stock_sum"}
 RESPONSE = {"view_count", "viewers_now", "like_count", "review_count", "rating",
+            "view_band", "purchase_band", "like_band",
             "purchase_count", "sold_min", "sold_out", "opt_out_rate", "rank",
             "cvr_view_like", "cvr_view_buy", "cvr_like_buy", "review_per_buy"}
 
@@ -126,7 +182,12 @@ FUNNEL = [
 
 
 def add_funnel(item):
-    """상품 하나에 퍼널 비율을 붙인다. 재료가 없으면 그 축은 만들지 않는다(None)."""
+    """상품 하나에 퍼널 비율을 붙인다. 재료가 없으면 그 축은 만들지 않는다(None).
+
+    **구간 밴드(`*_band`)는 절대 쓰지 않는다** — 하한일 뿐이라 나누면 전환율이
+    부풀려진다("1.2만 이상"인 상품이 실제 9만이면 분모가 7배 작게 들어간다).
+    비율은 원시 정수가 있을 때만 만든다. 없으면 그 축은 없는 것이다 (D48).
+    """
     for name, num, den in FUNNEL:
         a, b = item.get(num), item.get(den)
         item[name] = round(100.0 * a / b, 3) if (
@@ -364,6 +425,7 @@ def collect(db_path, contexts):
         d["fit"] = attrs.get("핏")
         d["color"] = attrs.get("컬러")         # 컬러 축은 인프라만 — 채우는 건 8번(보류)
         d["_attrs"] = attrs
+        add_bands(d)           # D48 — 구간 표기 → 순서형 축 (순위로만)
         add_funnel(d)          # D47 — 조회→하트→구매 비율. 재료 없으면 None
         items.append(d)
 

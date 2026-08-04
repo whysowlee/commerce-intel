@@ -610,6 +610,29 @@ def modeling_tests():
     check("E-MD-5 분모가 0이면 만들지 않는다 (나눗셈 폭발·가짜 100%)",
           itz["cvr_view_like"] is None and itz["cvr_like_buy"] is None, itz)
 
+    # ── 구간 표기 → 순서형 축 (D48) ──────────────────────────────────
+    # 원시 정수를 주는 API는 robots가 막혀 쓰지 않는다. 화면 구간 표기를 쓰되
+    # **하한만 정확하므로 순위로만** 쓴다.
+    for disp, want in [("1.2만 회 이상 (최근 1개월)", 12000), ("2.7천 개 이상", 2700),
+                       ("300회 이상", 300), ("1,500개 이상", 1500),
+                       ("5억 이상", 500000000)]:
+        check("E-MD-19 구간 하한을 정확히 읽는다 (%s)" % disp,
+              d.band_floor(disp) == want, d.band_floor(disp))
+    for bad in ("없음", "", None, "1.2만 회", "조회수"):
+        check("E-MD-20 구간 표기가 아니면 만들지 않는다 (%r)" % bad,
+              d.band_floor(bad) is None, d.band_floor(bad))
+    b = d.add_bands({"view_count_display": "1.2만 회 이상",
+                     "purchase_count_display": "2.7천 개 이상"})
+    check("E-MD-21 밴드가 축으로 붙는다",
+          b["view_band"] == 12000 and b["purchase_band"] == 2700 and b["like_band"] is None, b)
+    # **밴드를 비율 분모로 쓰면 전환율이 부풀려진다** — 하한이라서다
+    f = d.add_funnel(dict(b))
+    check("E-MD-22 밴드로는 퍼널 비율을 만들지 않는다",
+          f["cvr_view_like"] is None and f["cvr_view_buy"] is None, f)
+    check("E-MD-23 밴드의 역할은 response",
+          all(d.role_of(x) == "response"
+              for x in ("view_band", "purchase_band", "like_band")))
+
     if ins is None:
         print("  SKIP  E-MD-6~10 무영향·액션 — reportlab 미설치")
         return
