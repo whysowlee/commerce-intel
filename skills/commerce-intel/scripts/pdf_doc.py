@@ -443,7 +443,11 @@ def md(text):
     """
     text = _MD_BOLD.sub(r"<b>\1</b>", text)
     text = _MD_ITALIC.sub(r"<i>\1</i>", text)
-    return _MD_CODE.sub(r'<font face="Courier">\1</font>', text)
+    # 코드 스팬을 Courier로 바꾸면 **한글이 전부 ■로 깨진다** — Courier에 한글
+    # 글리프가 없다(2026-08-04 실물 스크린샷으로 확인: `데님` → ■■). 폰트를 바꾸지
+    # 않고 「」로 감싼다 — 이 괄호는 본문 폰트(HYGothic)에 있고 이미 배너 문구가
+    # 쓰고 있다(「하의」와 「미니」).
+    return _MD_CODE.sub(r"「\1」", text)
 
 
 def _has_markup(text):

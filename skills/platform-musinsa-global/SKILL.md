@@ -1,6 +1,7 @@
 ---
 name: platform-musinsa-global
-description: 무신사 글로벌(global.musinsa.com, 무신사 해외몰)에서 상품 데이터를 수집해
+description: >-
+  무신사 글로벌(global.musinsa.com, 무신사 해외몰)에서 상품 데이터를 수집해
   commerce-intel 데이터 계약 JSON을 만든다. 요청에 무신사 글로벌/musinsa global/글로벌
   무신사/해외 무신사가 명시되고 수집·정리 태스크가 함께 있을 때 쓴다. 예: "무신사 글로벌
   US 데님 카테고리 정리해줘", "musinsa global에서 이 브랜드 훑어줘", "무신사 글로벌 재팬

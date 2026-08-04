@@ -18,20 +18,29 @@ cd "$(dirname "$0")"
 # 목록)이 현역이고, 통째 제외하던 탓에 배포 zip에서 빠져 tag-lifecycle이 팀원 환경에서
 # 실패할 참이었다(2026-08-03 발견).
 
-echo "[1/4] 권한 파일 최신 확인"
+# 프론트매터가 깨진 스킬은 **에러 없이 설치에서 빠진다** — zip에는 파일이 멀쩡히 들어 있어서
+# 배포한 쪽에서 알아챌 방법이 없다. 2026-08-04에 platform-* 7종이 그렇게 팀원 환경에서
+# 사라져 있었다(D57). 그래서 압축 전에 실제 YAML 파서로 검사하고, 깨졌으면 만들지 않는다.
+echo "[1/6] 스킬 프론트매터 파싱 검사"
+python3 tools/validate_skills.py || {
+    echo "프론트매터가 깨진 스킬이 있다 — 배포하면 팀원 환경에 조용히 설치되지 않는다." >&2
+    exit 1
+}
+
+echo "[2/6] 권한 파일 최신 확인"
 python3 tools/gen_permissions.py --check || {
     echo ".claude/settings.json이 정본 목록과 다르다 — python3 tools/gen_permissions.py 로 재생성하라." >&2
     exit 1
 }
 
-echo "[2/4] 회귀 테스트"
+echo "[3/6] 회귀 테스트"
 python3 tests/run_tests.py > /dev/null || {
     echo "테스트 실패 — 패키징을 중단한다. python3 tests/run_tests.py 로 확인할 것." >&2
     exit 1
 }
 echo "      통과"
 
-echo "[3/4] PDF 경로 스모크"
+echo "[4/6] PDF 경로 스모크"
 python3 -c "import reportlab" 2>/dev/null || {
     echo "reportlab이 없다 — PDF 리포트를 만들 수 없다." >&2
     echo "    python3 -m pip install reportlab" >&2
@@ -44,7 +53,7 @@ echo "      통과 (한글 렌더 포함)"
 # **조용히 기능이 빠진다** — 2026-08-04 실측: 카테고리 계층 카탈로그가 저장소 루트에만
 # 있어서 배포본에서 필터가 죽었고, 예외도 안 나서 「미니 대 하의」가 다시 리포트에 올랐다.
 # 그래서 ① 사본이 최신인지 ② 배포본만으로 실제 동작하는지를 둘 다 본다.
-echo "[3.5/4] 배포 자립성 — skills/ 밖을 참조하지 않는가"
+echo "[4.5/6] 배포 자립성 — skills/ 밖을 참조하지 않는가"
 CATALOG_SRC="data/.tools/ranking_targets.json"
 CATALOG_MIRROR="skills/commerce-intel/references/ranking_targets.json"
 if ! cmp -s "$CATALOG_SRC" "$CATALOG_MIRROR"; then
@@ -64,12 +73,33 @@ if not d.incomparable('미니', '하의', h):
 print('      통과 (카탈로그 %d쌍 · 미니/하의 걸러짐)' % len(h['anc']))
 ") || exit 1
 
-echo "[4/4] 압축"
+# 정본 중 **배포 허용 범위만** 떼어 seed DB를 만든다 (D58 — 2026-08-04 사용자 지시:
+# 2000아카이브스 전제품 + 여성 데님팬츠 브랜드랭킹 상위30 전수조사. 나머지 정본은 배포 X).
+# 만든 뒤 범위 밖 행이 한 줄이라도 있으면 make_seed_db.py가 실패한다.
+echo "[5/6] 정본 부분 배포 — seed DB 생성·범위 검산"
+SEED="skills/commerce-intel/assets/seed-intel.db"
+python3 tools/make_seed_db.py --out "$SEED" || {
+    echo "seed DB 생성·검산 실패 — 범위 밖 데이터가 나갈 수 있으니 패키징을 중단한다." >&2
+    exit 1
+}
+
+echo "[6/6] 압축"
 rm -rf dist
 mkdir -p dist
 find skills -name '.DS_Store' -delete
+# `*.db`·scripts/data/ 제외 — scripts/를 그 자리에서 실행하면 기본 상대 경로 `data/intel.db`가
+# skills/ 안에 만들어진다. 2026-08-04 실측: 그렇게 생긴 20MB 정본 사본이 배포 zip에 그대로
+# 들어가 팀원에게 범위 밖 데이터가 나갈 참이었다(D57).
 zip -rq dist/commerce-intel-skills.zip skills \
-    -x '*.DS_Store' '*__pycache__*' '*.pyc'
+    -x '*.DS_Store' '*__pycache__*' '*.pyc' '*.db' '*/scripts/data/*'
+# 나가는 DB는 **검산을 통과한 seed 하나뿐**이다. `*.db`를 통째로 막고 이 파일만 이름으로
+# 다시 넣는다 — 실수로 생긴 DB가 딸려 갈 길이 없다. 넣은 뒤 zip 안 DB가 그것 하나인지 센다.
+zip -q dist/commerce-intel-skills.zip "$SEED"
+DBS=$(zipinfo -1 dist/commerce-intel-skills.zip | grep -c '\.db$' || true)
+if [ "$DBS" != "1" ] || ! zipinfo -1 dist/commerce-intel-skills.zip | grep -qx "$SEED"; then
+    echo "zip 안 DB가 seed 하나가 아니다(${DBS}개) — 배포를 멈춘다." >&2
+    exit 1
+fi
 
 
 echo

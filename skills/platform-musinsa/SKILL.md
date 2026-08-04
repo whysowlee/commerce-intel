@@ -1,6 +1,7 @@
 ---
 name: platform-musinsa
-description: 무신사(musinsa.com)에서 상품·랭킹 데이터를 수집해 commerce-intel 데이터 계약
+description: >-
+  무신사(musinsa.com)에서 상품·랭킹 데이터를 수집해 commerce-intel 데이터 계약
   JSON을 만든다. 요청에 무신사/musinsa가 명시되고 수집·정리·모니터링 태스크가 함께 있을 때
   쓴다. 예: "무신사에서 인사일런스 상품 다 모아줘", "무신사 데님팬츠 전수조사", "무신사
   바지 랭킹 모니터링 시작". 다른 플랫폼 요청이나 상품 구매 대행에는 쓰지 않는다.

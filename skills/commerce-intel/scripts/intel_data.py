@@ -387,8 +387,27 @@ def num_axes(data):
     out = list(AXES)
     for p in data["meta"].get("proxies", []):
         if p.get("numeric") and p.get("judged"):
-            out.append(("px_" + p["name"], p["name"] + "(AI)"))
+            # 사람이 읽는 이름 + **AI 판정 표시는 유지한다** (D56) — 노출값과
+            # 판정값을 구분하는 것은 정직성 규칙이고, 사용자가 뺀 것은
+            # 내부 이름(`denim_rise`)이지 "AI 판정"이라는 사실이 아니다.
+            out.append(("px_" + p["name"], "%s(AI 판정)" % (p.get("label") or p["name"])))
     return out
+
+
+# 동적 속성의 **사람이 읽는 이름** (D56 3차 피드백). `attr_brand_survival`이
+# "brand_survival에서 survivor는 dropped보다…"로 그대로 찍혔다 — 읽는 사람이
+# 알 수 없다. 수집 도구가 영문 코드로 쓰는 속성만 여기 옮긴다. 값 라벨의 정의는
+# `생존 편향 제거.md` 사용자 정의(생존=주간 상위30 · 이탈=월간엔 있었으나 주간엔 없음).
+ATTR_LABELS = {"brand_survival": "브랜드 랭킹 생존"}
+ATTR_VALUE_LABELS = {
+    "attr_brand_survival": {"survivor": "생존(주간 상위30 잔류)",
+                            "dropped": "이탈(월간 상위30이었으나 주간엔 없음)"},
+}
+
+
+def display_value(field, v):
+    """그룹 값의 표시 이름 — 매핑이 없으면 원문 그대로."""
+    return ATTR_VALUE_LABELS.get(field, {}).get(v, str(v).strip())
 
 
 def attr_axes(data):
@@ -402,7 +421,8 @@ def attr_axes(data):
         for k, v in it.items():
             if k.startswith("attr_") and v not in (None, ""):
                 seen.setdefault(k, set()).add(v)
-    return [(k, k[5:]) for k in sorted(seen) if len(seen[k]) >= 2]
+    return [(k, ATTR_LABELS.get(k[5:], k[5:]))
+            for k in sorted(seen) if len(seen[k]) >= 2]
 
 
 def cat_axes(data, base):
@@ -414,7 +434,10 @@ def cat_axes(data, base):
     out = list(base) + attr_axes(data)
     for p in data["meta"].get("proxies", []):
         if not p.get("numeric") and p.get("judged"):
-            out.append(("px_" + p["name"], p["name"] + "(AI)"))
+            # 사람이 읽는 이름 + **AI 판정 표시는 유지한다** (D56) — 노출값과
+            # 판정값을 구분하는 것은 정직성 규칙이고, 사용자가 뺀 것은
+            # 내부 이름(`denim_rise`)이지 "AI 판정"이라는 사실이 아니다.
+            out.append(("px_" + p["name"], "%s(AI 판정)" % (p.get("label") or p["name"])))
     return out
 
 
@@ -430,7 +453,11 @@ def collect(db_path, contexts):
         SELECT p.site, p.product_id, p.name, p.url, p.image_url, p.brand, p.category,
                p.attributes, o.observed_at, o.context,
                o.price_original, o.price_sale, o.discount_rate, o.review_count, o.rating,
-               o.purchase_count, o.like_count, o.viewers_now, o.sold_out, o.rank
+               o.purchase_count, o.like_count, o.viewers_now, o.sold_out, o.rank,
+               -- 구간 표기 원문 (D48) — `add_bands()`가 이걸 읽어 순서형 축을 만든다.
+               -- **빠져 있었다**: 컬럼을 안 뽑으니 `purchase_band`가 늘 None이었고,
+               -- 사용자가 1순위 Y로 지목한 누적판매가 축이 될 수 없었다(D57).
+               o.view_count_display, o.purchase_count_display, o.like_count_display
         FROM products p
         JOIN observations o ON o.site = p.site AND o.product_id = p.product_id
         WHERE o.observed_at = (
@@ -541,7 +568,14 @@ def collect(db_path, contexts):
             for it in items:
                 it["px_" + pn] = None
             judged = 0
-        proxies.append({"name": pn, "question": d["question"], "method": d["method"],
+        # **사람이 읽는 축 이름** (D56). 카드의 `label`이 정본이고, 없으면
+        # `proxy_name`으로 되돌아간다 — 옛 DB에는 컬럼 자체가 없을 수 있다.
+        try:
+            human = d["label"]
+        except (IndexError, KeyError):
+            human = None
+        proxies.append({"name": pn, "label": human or pn, "material": mat,
+                        "question": d["question"], "method": d["method"],
                         "numeric": is_numeric,
                         "judged": judged, "unjudged": len(items) - judged,
                         # 리포트가 "왜 이 축이 없나"에 답할 수 있어야 한다

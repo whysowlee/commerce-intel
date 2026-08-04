@@ -11,6 +11,9 @@ data/*
 !data/.tools/
 data/.tools/*.log
 output/
+# package.sh가 정본에서 떼어 만드는 배포용 seed DB — 생성물이라 추적하지 않는다 (D58).
+# 정본 데이터를 git에 올리지 않는다는 규칙이 여기에도 그대로 적용된다
+skills/commerce-intel/assets/seed-intel.db
 description.md
 __pycache__/
 *.pyc

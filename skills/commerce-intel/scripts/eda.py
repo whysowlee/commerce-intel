@@ -31,6 +31,15 @@ from intel_data import cat_axes, collect, num_axes  # noqa: E402
 
 # ── 임계값 (programmatic-eda/references/quality_thresholds.md 차용) ──────────
 NULL_WARN, NULL_FAIL = 5.0, 30.0      # 결측률 % — db-contract와 같은 값
+
+# **노출 여부가 곧 성과인 축** (D57). 무신사는 잘 팔린 상품에만 조회수·누적판매를
+# 보여준다(D50 실측: 조회수 표시 있음 235개 하트 중앙 508 대 없음 62개 하트 117).
+# 이 축들은 결측률이 높은 게 정상이고, 그 높음 자체가 정보다. 결측률 컷에서 면제하되
+# **값이 있는 상품 안에서만** 비교한다는 사실을 리포트가 반드시 밝힌다.
+EXPOSURE_SIGNAL_FIELDS = {"purchase_band", "view_band", "like_band",
+                          "purchase_count", "view_count",
+                          "cvr_view_like", "cvr_view_buy", "cvr_like_buy",
+                          "review_per_buy"}
 IQR_K = 1.5                            # IQR 이상치 계수
 Z_CUT = 3.0                            # z-score 이상치
 SKEW_LOG = 1.0                         # |왜도| 이 이상이면 로그 변환 권고
@@ -197,7 +206,17 @@ def check_nulls(data):
                     "n_exposed": len(seen_items),
                     # 전부 결측인 축은 존재하지 않는 것과 같다 — 차트로 그리면 안 된다.
                     # **구조 결측은 빼고 판정한다** — 그 사이트를 안 보면 될 뿐이다
-                    "usable": pct_seen <= NULL_FAIL and len(seen_items) >= MIN_N})
+                    # **노출 자체가 성과인 축은 결측률로 죽이지 않는다** (D57).
+                    # 무신사는 일정 수준 이상 팔린 상품에만 조회수·누적판매를 노출한다
+                    # (D50 실측 — MNAR). 그래서 결측률 41%가 나오는데, 이건 데이터
+                    # 품질이 나쁜 게 아니라 **그 자체가 신호**다. 30% 컷으로 버리면
+                    # 사용자가 1순위 Y로 지목한 누적판매가 영영 축이 되지 못한다.
+                    # 대신 **값이 노출된 상품 안에서만** 비교하고 노출률을 함께 싣는다
+                    # (D50이 정한 처리 그대로). 표본 하한(MIN_N)은 그대로 건다.
+                    "exposure_signal": field in EXPOSURE_SIGNAL_FIELDS,
+                    "usable": ((field in EXPOSURE_SIGNAL_FIELDS
+                                or pct_seen <= NULL_FAIL)
+                               and (n - miss) >= MIN_N and len(seen_items) >= MIN_N)})
     return out
 
 
@@ -271,6 +290,13 @@ def check_correlations(data, nulls):
     usable = [f for f, _ in num
               if next((x for x in nulls if x["field"] == f), {}).get("usable")]
     labels = dict(num)
+    # **같은 재료에서 뽑은 수치 프록시끼리는 정의상 연동이다** (D56).
+    # `name_length`(문자 수)와 `name_word_count`(단어 수)는 둘 다 상품명의
+    # 크기를 재는 자라, 상관 r=+0.78이 나와도 발견이 아니라 산수다. 실측에서
+    # 이 쌍이 강한 주장 한 자리를 차지했다. 재료가 같고 둘 다 numeric이면 뺀다 —
+    # 프록시 이름을 박아 두지 않고 **재료로** 판정한다(D19: 하드코딩 금지).
+    px_material = {"px_" + p["name"]: p.get("material")
+                   for p in data["meta"].get("proxies", []) if p.get("numeric")}
     out = []
     for a, bfield in [(usable[i], usable[j])
                       for i in range(len(usable)) for j in range(i + 1, len(usable))]:
@@ -297,7 +323,9 @@ def check_correlations(data, nulls):
                 if (r * gr < 0) or (abs(r) > 0.3 and abs(gr) < SIMPSON_FLIP):
                     seg_flips.append({"segment": "%s=%s" % (seg_label, gval),
                                       "n": len(gpairs), "r": round(gr, 3)})
-        definitional = frozenset((a, bfield)) in DEFINITIONAL_PAIRS
+        definitional = (frozenset((a, bfield)) in DEFINITIONAL_PAIRS
+                        or (a in px_material and bfield in px_material
+                            and px_material[a] == px_material[bfield]))
         out.append({
             "x": a, "y": bfield, "x_label": labels[a], "y_label": labels[bfield],
             "n": len(pairs), "spearman": round(r, 3),

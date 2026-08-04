@@ -45,8 +45,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import stat_playbook as sp                                          # noqa: E402
 from eda import CAT_AXES, MIN_N, run as run_eda                     # noqa: E402
 from intel_data import (brand_key, cat_axes, category_hierarchy,  # noqa: E402
-                        collect, incomparable_reason, matched_pairs,
-                        num_axes, product_series, role_of, style_rows)
+                        collect, display_value, incomparable_reason,
+                        matched_pairs, num_axes, product_series, role_of,
+                        style_rows)
 
 # ── 관문 임계 ───────────────────────────────────────────────────────────────
 # 임계는 2026-08-03에 한 번 완화했다. 우리가 모으는 데이터는 표본이 크지 않고
@@ -100,14 +101,24 @@ def _josa(word, pair):
     은/는·이/가를 골라야 문장이 자연스럽다. 한글 받침만 정확히 보고, 영문·기호·숫자로
     끝나면 받침 없음으로 취급한다(그쪽은 조사 자체가 덜 어색하다).
 
-    pair: "은는" | "이가"
+    pair: "은는" | "이가" | "와과"
+
+    **와/과는 앞의 둘과 방향이 반대다** — 받침이 있으면 `과`, 없으면 `와`다
+    (은/는·이/가는 받침이 있을 때 앞쪽을 쓴다). 2026-08-04 사용자 지적:
+    "`material_word(AI)에서 데님와 소재 미표기는`" — `데님`은 받침이 있으니 `데님과`다.
+    그전에는 조사를 문자열에 박아 써서 받침을 아예 안 봤다.
     """
     w = str(word)
     if not w:
         return w
     last = w[-1]
     has_batchim = "가" <= last <= "힣" and (ord(last) - 0xAC00) % 28 != 0
-    a, b = {"은는": ("은", "는"), "이가": ("이", "가")}[pair]
+    a, b = {"은는": ("은", "는"), "이가": ("이", "가"),
+            "와과": ("과", "와"), "을를": ("을", "를"),
+            # 로/으로도 받침을 본다. 단 `ㄹ` 받침은 `로`다(`진청으로`·`서울로`)
+            "로으로": ("으로", "로")}[pair]
+    if pair == "로으로" and has_batchim and (ord(last) - 0xAC00) % 28 == 8:
+        return w + "로"          # ㄹ 받침
     return w + (a if has_batchim else b)
 
 
@@ -297,6 +308,19 @@ def run_group(ctx):
     # 달라(`2000아카이브스`·`2000Archives`·`2000 Archives`) 서로 다른 브랜드처럼
     # 비교됐다 — "정가 차이가 없다"가 인사이트 자리를 먹었다. 같은 브랜드니 당연하다.
     single_brand = any(str(c).startswith("brand:") for c in (ctx.get("contexts") or []))
+    # **제3자끼리의 브랜드 비교는 내지 않는다** (D56). 2026-08-04 사용자 지적:
+    # "'브랜드에서 에잇세컨즈는 잠뱅이보다 평점이 높다' — 에잇세컨즈와 잠뱅이는 우리
+    # 분석 대상과 직접적인 관련이 없어. 우리 팀원들이 인사이트를 보고 액션 플랜을
+    # 수행할 수 있는 인사이트가 나와야 해."
+    #
+    # 브랜드 **정체성**끼리의 비교는 우리 브랜드가 한쪽에 있을 때만 쓸모가 있다
+    # (벤치마크가 된다). 남의 브랜드 둘을 비교한 문장은 옮겨 쓸 규칙이 없다.
+    #
+    # **브랜드의 속성 축은 이 규칙에 걸리지 않는다.** 생존/이탈·공급량 같은 축은
+    # 그룹이 브랜드 이름이 아니라 성질이라, "론론이 상품 58개로 3위 아캄(48개)보다
+    # 많은데 이탈했다 — 공급량이 성과가 아니다"처럼 **자사에 옮겨 쓸 교훈**이 나온다
+    # (사용자가 살려두라고 명시). 여기서 막는 것은 `cat_field == "brand"`뿐이다.
+    own = {brand_key(b) for b in (ctx.get("own_brands") or []) if b}
     for cat_field, cat_label in ctx["cat_axes"]:
         if single_brand and cat_field == "brand":
             continue
@@ -310,10 +334,18 @@ def run_group(ctx):
                 # 그룹으로 쪼개지면 n이 갈리고 같은 비교가 두 번 나온다 (PR #9 리뷰).
                 # 브랜드는 표기 차이가 더 심해서 따로 정규화한다 (D51) —
                 # `2000Archives`와 `2000 Archives`가 다른 브랜드로 비교되고 있었다.
-                key = brand_key(v) if cat_field == "brand" else (
-                    str(v).strip() if isinstance(v, str) else v)
+                #
+                # **카테고리도 같은 정규화를 받는다** (D55). 앞뒤 공백만 걷어내면
+                # 안쪽 공백이 남아 `데님팬츠`(3,329)와 `데님 팬츠`(48)가 다른 그룹이
+                # 됐고, 2026-08-04 여성 데님 리포트의 강한 주장 10번이 **띄어쓰기만
+                # 다른 같은 카테고리끼리의 비교**였다(δ=-0.58 · n=2,992). 사이트
+                # 표기를 그대로 쓴다는 원칙은 **표시**에 대한 것이지, 같은 값을 두
+                # 그룹으로 갈라 검정하라는 뜻이 아니다.
+                key = (brand_key(v) if cat_field in ("brand", "category")
+                       else (str(v).strip() if isinstance(v, str) else v))
                 groups[key].append(it)
-                label.setdefault(key, str(v).strip())   # 표시는 원문으로
+                # 표시는 원문 — 단 영문 코드 값(survivor/dropped)은 한글 라벨로
+                label.setdefault(key, display_value(cat_field, v))
         big = sorted([(k, v) for k, v in groups.items() if len(v) >= N_MIN],
                      key=lambda kv: -len(kv[1]))
         truncated = max(0, len(big) - GROUPS_PER_AXIS)
@@ -336,9 +368,18 @@ def run_group(ctx):
                 for j in range(i + 1, len(big)):
                     ka, va = big[i]
                     kb, vb = big[j]
+                    # 우리 브랜드가 없는 브랜드 쌍은 건너뛴다 (D56).
+                    # `own`이 비어 있으면(자사 브랜드를 안 알려줬으면) 아무것도 안 막는다 —
+                    # 모르는 채로 거르면 리포트가 조용히 비어 나간다.
+                    if cat_field == "brand" and own and ka not in own and kb not in own:
+                        skipped_pairs["제3자끼리"].add((cat_field, ka, kb))
+                        continue
                     # 대등하지 않은 쌍은 검정하지 않는다 (D42)
                     if cat_field == "category":
-                        why = incomparable_reason(ka, kb, hier)
+                        # **키가 아니라 표시값을 넘긴다** — 계층 맵(`hier`)은 카탈로그와
+                        # DB의 원문으로 지어져 있는데, D55로 카테고리 키가 정규화되면서
+                        # (`데님 팬츠` → `데님팬츠`) 키로 조회하면 계층을 통째로 놓친다.
+                        why = incomparable_reason(label.get(ka, ka), label.get(kb, kb), hier)
                         if why:
                             # 쌍 단위로 센다 — 지표마다 더하면 4쌍이 24로 부풀고
                             # 리포트가 "쌍 24개를 뺐다"고 거짓말한다
@@ -362,11 +403,15 @@ def run_group(ctx):
                         "p": sp.perm_test_groups(a, b),
                         "n": len(a) + len(b), "n_a": len(a), "n_b": len(b),
                         "median_a": ma, "median_b": mb,
-                        "claim": ("%s에서 %s %s보다 %s %s (중앙값 %s 대 %s)" % (
+                        # **주장에 숫자를 넣지 않는다** (D56 — 2026-08-04 사용자 지시:
+                        # "`(중앙값 4.8 대 0)` 이런 건 메인 문구에 넣지 말고 상세 설명으로 빼").
+                        # 중앙값은 `median_a`·`median_b`로 이미 넘어가고, 카드 본문과
+                        # 상세 PDF가 그걸 쓴다. 한 줄짜리 주장은 **무슨 일이 있었나**만 말한다.
+                        "claim": ("%s에서 %s %s보다 %s %s" % (
                             cat_label, _josa(label.get(ka, str(ka)), "은는"),
                             label.get(kb, str(kb)),
                             _josa(labels.get(metric, metric), "이가"),
-                            "높다" if ma > mb else "낮다", _fmt(ma), _fmt(mb))),
+                            "높다" if ma > mb else "낮다")),
                         "audience": audience_of(metric, cat_field),
                     })
     # 몇 개를 왜 걸렀는지 남긴다 — 조용히 줄어든 검정 수는 "전부 봤다"로 읽히고,
@@ -409,14 +454,15 @@ def run_corr(ctx):
         if len(pairs) < N_MIN:
             continue
         r = sp.spearman(pairs)
-        claim = "%s 높을수록 %s %s (순위 상관 %+.2f)" % (
+        # 상관계수도 주장에서 뺀다 (D56) — `effect`로 이미 넘어가고 카드가 찍는다
+        claim = "%s 높을수록 %s %s" % (
             _josa(xl, "이가"), _josa(yl, "이가"),
-            "높다" if (r or 0) > 0 else "낮다", r or 0)
+            "높다" if (r or 0) > 0 else "낮다")
         if direction in ("response_pair", "lever_pair"):
             # 둘 다 고객 반응이다 — 어느 쪽이 먼저인지 데이터가 답하지 않는다.
             # 문장이 인과처럼 읽히지 않게 **함께 움직인다**로 쓴다.
-            claim = "%s와 %s 함께 움직인다 (순위 상관 %+.2f · 선후는 알 수 없다)" % (
-                xl, _josa(yl, "은는"), r or 0)
+            claim = "%s %s 함께 움직인다 (선후는 알 수 없다)" % (
+                _josa(xl, "와과"), _josa(yl, "은는"))
         out.append({
             "method": "correlation", "kind": "correlation",
             "x": x, "y": y, "x_label": xl, "y_label": yl,
@@ -464,9 +510,23 @@ def run_dose(ctx):
 
 
 def run_paired(ctx):
+    """플랫폼 간 쌍체 비교.
+
+    **여기에도 Y 선정을 건다** (D56 — D47/D51을 `run_paired`에 못 걸어 놓고 있었다).
+    2026-08-04 사용자 지적: "17:39에 만들어진 것도 Y가 할인율인 게 있네?" — 맞다.
+    `run_group`·`run_corr`만 고쳐서 "같은 상품 119쌍에서 29cm의 할인율이 musinsa보다
+    높다"가 강한 주장 1번으로 올라왔다. 할인율은 **우리가 정한 값**이라 성과가 아니다.
+
+    반응 지표가 하나라도 쓸 수 있으면 그쪽만 쓰고, 하나도 없을 때만 lever로 내려간다
+    (리포트를 통째로 비우지는 않는다 — D51과 같은 처리).
+    """
     out = []
-    for metric in ("price_sale", "discount_rate", "like_count"):
-        if metric not in _usable_metrics(ctx["eda"]):
+    usable = _usable_metrics(ctx["eda"])
+    response = [m for m in ("purchase_band", "purchase_count", "like_count",
+                            "review_count", "rating", "view_band") if m in usable]
+    lever = [m for m in ("price_sale", "discount_rate") if m in usable]
+    for metric in (response or lever):
+        if metric not in usable:
             continue
         for (sa, sb), pairs in matched_pairs(ctx["items"], metric).items():
             res = sp.paired_test(pairs)
@@ -483,6 +543,7 @@ def run_paired(ctx):
                     res["n_pairs"], sa, _josa(ctx["labels"].get(metric, metric), "이가"), sb,
                     "높다" if res["median_diff"] > 0 else "낮다",
                     _fmt(abs(res["median_diff"]))),
+                "lever_metric": role_of(metric) == "lever",
                 "audience": audience_of(metric),
             })
     return out
@@ -671,11 +732,28 @@ def strip_payload(h):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-def analyze(db_path, contexts, ai_notes=None, plan_only=False):
+def analyze(db_path, contexts, ai_notes=None, plan_only=False, own_brands=None):
+    """`own_brands` — 우리 브랜드 이름들. 브랜드 축에서 **제3자끼리의 비교를
+    거르는 데만** 쓴다(D56). 안 주면 아무것도 안 거른다.
+    """
+    # `brand:X` 문맥은 그 자체로 "X를 보러 왔다"는 선언이다 — 따로 안 알려줘도 쓴다
+    own_brands = list(own_brands or []) + [
+        str(c).split(":", 1)[1] for c in (contexts or [])
+        if str(c).startswith("brand:")]
     eda_res = run_eda(db_path, contexts)
     if not eda_res["ok"]:
         return {"ok": False, "reason": eda_res.get("reason"), "contexts": contexts}
     data = collect(db_path, contexts)
+    # **표기 변형까지 자사로 친다** (D56). `brand_key()`는 한글·영문을 일부러 안 묶는데
+    # (음차 매칭은 근거가 없다 — D51), 자사 브랜드는 그 셋이 전부 우리다:
+    # `2000아카이브스` · `2000Archives` · `2000 Archives`. 한 표기만 알려주면 나머지
+    # 표기로 적힌 쌍이 "제3자끼리"로 걸려 통째로 빠진다.
+    #
+    # `brand:X` 문맥은 **그 문맥의 상품이 전부 같은 브랜드**라는 선언이므로, 거기 실제로
+    # 적힌 브랜드 값을 전부 자사 표기로 받는다. 시장 전수조사 문맥에는 그런 신호가 없으니
+    # 그때는 `--own-brand`로 표기를 다 넘겨야 한다.
+    if any(str(c).startswith("brand:") for c in (contexts or [])):
+        own_brands += [it.get("brand") for it in data["items"] if it.get("brand")]
     # 분석 단위가 둘이다(2026-08-03 #7):
     #   items  — 상품(변형) 단위. 재고·품절처럼 색상마다 다른 것
     #   styles — 스타일 단위. 가격·반응처럼 색상이 같이 움직이는 것
@@ -690,7 +768,7 @@ def analyze(db_path, contexts, ai_notes=None, plan_only=False):
            "cat_axes": cats, "num_axes": num_axes(data),
            "labels": dict(num_axes(data) + cats),
            "hierarchy": category_hierarchy(db_path),   # D42
-           "contexts": contexts}
+           "contexts": contexts, "own_brands": own_brands}
 
     plan = make_plan(ctx, ai_notes)
     if plan_only:

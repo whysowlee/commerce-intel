@@ -657,12 +657,14 @@ def modeling_tests():
     # E-MD-9 액션은 약한 단서에 확정적으로 붙지 않는다
     weak = {"verdict": "weak", "kind": "group_compare", "cat_field": "brand",
             "fails": ["표본이 작다"]}
+    # D51에서 action_hint가 문자열 → 여러 줄(list)로 바뀌었다 — 첫 줄을 본다
     check("E-MD-9 약한 단서의 액션은 '아직 정하지 마라'로 시작한다",
-          ins.action_hint(weak).startswith("아직 정하지 마라"), ins.action_hint(weak))
+          ins.action_hint(weak)[0].lstrip("*").startswith("아직 정하지 마라"),
+          ins.action_hint(weak))
     resp = {"verdict": "strong", "kind": "correlation", "direction": "response_pair",
             "x_label": "하트", "y_label": "후기 수"}
     check("E-MD-10 반응끼리의 상관은 액션에서 선후를 단정하지 않는다",
-          "선후를 모른다" in ins.action_hint(resp), ins.action_hint(resp))
+          any("선후를 모른다" in l for l in ins.action_hint(resp)), ins.action_hint(resp))
 
     # E-MD-12 관문 판정은 **코드**로 한다 — 문구가 바뀌어도 안 흔들린다 (PR #9 리뷰)
     coded = {"verdict": "rejected", "effect": 0.02, "n": 500,
@@ -684,8 +686,10 @@ def modeling_tests():
     lp = {"verdict": "strong", "kind": "correlation", "direction": "lever_pair",
           "x_label": "정가", "y_label": "할인율"}
     got = ins.action_hint(lp)
+    # action_hint가 여러 줄(list)이 됐다(D51) — 부분 문자열은 줄 단위로 본다
     check("E-MD-15 lever끼리의 상관도 액션에서 선후를 단정하지 않는다",
-          "데이터가 답하지 않는다" in got and "폭을 정할 때 참고" not in got, got)
+          any("데이터가 답하지 않는다" in l for l in got)
+          and not any("폭을 정할 때 참고" in l for l in got), got)
 
     # E-MD-16 recheck_hint도 코드로 가른다 (문구가 바뀌어도 안 흔들린다)
     r_coded = {"fails": ["문구를 바꿨다"], "fail_codes": ["sample"]}
@@ -779,6 +783,134 @@ def modeling_role_tests():
     check("E-MD-26 한글·영문은 묶지 않는다",
           d.brand_key("2000아카이브스") != d.brand_key("2000Archives"))
     check("E-MD-27 빈 값은 None", d.brand_key(None) is None and d.brand_key("") is None)
+
+
+def axis_hygiene_tests():
+    """축 위생 (D55) — 표기 변형이 그룹을 가르지 않고, 한 청중이 요약을 독점하지 않는다."""
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    d = importlib.import_module("intel_data")
+    an = importlib.import_module("analyze")
+    ins = importlib.import_module("insight")
+
+    # ── 카테고리 표기 변형 (2026-08-04 여성 데님 리포트 강한 주장 10번) ──
+    # `데님팬츠`와 `데님 팬츠`가 다른 그룹이 되어 서로 비교됐다.
+    check("E-MD-34 카테고리 안쪽 공백만 다른 값은 같은 그룹이다",
+          d.brand_key("데님 팬츠") == d.brand_key("데님팬츠"))
+    check("E-MD-35 계층 표기는 리프와 안 합쳐진다",
+          d.brand_key("의류 > 바지 > 청/데님 팬츠") != d.brand_key("데님팬츠"))
+
+    # 그룹 비교가 실제로 그 키를 쓰는지 — 정규화가 함수에만 있고 호출부에 없으면
+    # 테스트는 통과하는데 리포트는 그대로 갈린다(이 버그가 정확히 그랬다).
+    items = ([{"site": "s", "product_id": "a%d" % i, "category": "데님 팬츠",
+               "like_count": 10 + i} for i in range(25)]
+             + [{"site": "s", "product_id": "b%d" % i, "category": "데님팬츠",
+                 "like_count": 10 + i} for i in range(25)])
+    ctx = {"styles": items, "eda": {"nulls": []}, "hier": {"anc": set(), "parent": {},
+                                                           "umbrella": set()}}
+    keys = set()
+    for it in ctx["styles"]:
+        v = it.get("category")
+        keys.add(d.brand_key(v) if v else None)
+    check("E-MD-36 표기 변형 50건이 한 그룹으로 모인다", len(keys) == 1, keys)
+
+    # ── 청중 편중 (강한 주장 10개가 전부 `마케팅`이던 것) ──
+    hyps = [{"kind": "group_compare", "cat_field": "ax%d" % i, "metric": "like_count",
+             "audience": "마케팅", "effect": 0.9 - i * 0.01} for i in range(30)]
+    hyps += [{"kind": "group_compare", "cat_field": "bx%d" % i, "metric": "discount_rate",
+              "audience": "판매전략", "effect": 0.5} for i in range(4)]
+    hyps += [{"kind": "group_compare", "cat_field": "cx%d" % i, "metric": "fit",
+              "audience": "디자인", "effect": 0.4} for i in range(3)]
+    picked = ins._select(list(hyps), 10)
+    from collections import Counter
+    dist = Counter(h["audience"] for h in picked)
+    check("E-MD-37 자리를 다 채운다 — 상한이 빈칸을 만들지 않는다", len(picked) == 10,
+          len(picked))
+    check("E-MD-38 한 청중이 요약을 독점하지 않는다",
+          max(dist.values()) < len(picked), dict(dist))
+    check("E-MD-39 후보가 남아돌아도 청중 상한을 넘지 않는다",
+          dist["마케팅"] <= ins.AUDIENCE_CAP, dict(dist))
+    assert an is not None      # 임포트가 깨지면 여기서 잡힌다
+
+
+def readability_tests():
+    """읽는 사람 기준 (D56) — 조사·숫자 위치·축 이름·액션 플랜."""
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    an = importlib.import_module("analyze")
+    ins = importlib.import_module("insight")
+
+    # 와/과는 은/는·이/가와 방향이 반대다 — `데님과`, `소재 미표기와`
+    check("E-RD-1 받침 있으면 `과`", an._josa("데님", "와과") == "데님과",
+          an._josa("데님", "와과"))
+    check("E-RD-2 받침 없으면 `와`", an._josa("하트", "와과") == "하트와",
+          an._josa("하트", "와과"))
+    check("E-RD-3 은/는은 방향이 반대", an._josa("데님", "은는") == "데님은")
+
+    # 주장 한 줄에 숫자를 넣지 않는다 — 중앙값은 카드/상세가 쓴다
+    h = {"kind": "group_compare", "cat_field": "category", "cat_label": "카테고리",
+         "group_a": "와이드", "group_b": "쇼츠", "metric": "like_count",
+         "metric_label": "하트", "median_a": 277, "median_b": 104,
+         "n": 1075, "effect": 0.33, "verdict": "strong", "audience": "마케팅"}
+    claim = "%s에서 %s %s보다 %s 높다" % (
+        h["cat_label"], an._josa(h["group_a"], "은는"), h["group_b"],
+        an._josa(h["metric_label"], "이가"))
+    check("E-RD-4 주장에 중앙값이 없다", "중앙값" not in claim and "277" not in claim, claim)
+
+    # 액션 플랜 — 축마다 달라야 하고, 기전 추측이 들어가야 한다
+    a_cat = ins.action_hint(h)
+    a_site = ins.action_hint(dict(h, cat_field="site", cat_label="플랫폼",
+                                  group_a="musinsa", group_b="29cm"))
+    check("E-RD-5 액션 플랜이 여러 줄", len(a_cat) >= 4, len(a_cat))
+    check("E-RD-6 축이 다르면 액션도 다르다", set(a_cat) != set(a_site))
+    check("E-RD-7 기전 추측이 조건부로 들어간다",
+          any("수 있다" in x for x in a_cat), a_cat[:2])
+    a_px = ins.action_hint(dict(h, cat_field="px_denim_rise",
+                                cat_label="밑위(라이즈)(AI 판정)"))
+    check("E-RD-8 프록시 축에도 고유 액션이 붙는다",
+          set(a_px) != set(a_cat) and any("수 있다" in x for x in a_px))
+
+    # 제3자끼리 브랜드 비교는 안 낸다 — 우리 브랜드가 한쪽에 있어야 한다.
+    # **표기 변형까지 자사로 친다** — `brand:` 문맥은 실제 브랜드 값을 다 걷어 온다.
+    import intel_data as d
+    own = {d.brand_key(b) for b in
+           ["2000아카이브스", "2000Archives", "2000 Archives"]}
+    check("E-RD-9 제3자 쌍은 걸린다",
+          d.brand_key("에잇세컨즈") not in own and d.brand_key("잠뱅이") not in own)
+    check("E-RD-10 영문 표기도 자사로 친다",
+          d.brand_key("2000 Archives") in own and d.brand_key("2000archives") in own)
+    check("E-RD-11 한글 표기도 자사로 친다", d.brand_key("2000아카이브스") in own)
+
+    # 그룹 비교 근거 줄 — "상품 1개당"과 그룹별 n·중앙값이 카드에 박힌다 (D60)
+    gh = {"kind": "group_compare", "group_a": "화이트/아이보리", "group_b": "유채색",
+          "n_a": 83, "n_b": 208, "median_a": 12, "median_b": 45, "n": 291}
+    note = ins._n_note(gh)
+    check("E-RD-12 근거 줄이 상품 1개당임을 말한다", "상품 1개당" in note, note)
+    check("E-RD-13 그룹별 n과 중앙값이 병기된다",
+          "83" in note and "208" in note and "12" in note and "45" in note, note)
+    check("E-RD-14 쌍체는 쌍 비교로 표기", "쌍" in ins._n_note({"kind": "paired", "n": 119}))
+
+    # 코드 스팬은 폰트를 바꾸지 않는다 (D60 후속) — Courier에는 한글 글리프가 없어
+    # `데님`이 ■■로 그려졌다(2026-08-04 실물 스크린샷). 「」로 감싼다.
+    pd = importlib.import_module("pdf_doc")
+    rendered = pd.md("`데님` 대 `소재 미표기`")
+    check("E-RD-15 코드 스팬에 폰트 전환 없음", "Courier" not in rendered, rendered)
+    check("E-RD-16 코드 스팬은 「」로 감싼다", "「데님」" in rendered, rendered)
+
+    # 차이없음 문장의 조사 — "데님와"가 아니라 "데님과"
+    nc = ins._null_claim({"kind": "group_compare", "cat_label": "상품명 속 소재(AI 판정)",
+                          "group_a": "데님", "group_b": "소재 미표기",
+                          "metric_label": "평점"})
+    check("E-RD-17 차이없음 문장 조사", "데님과" in nc and "데님와" not in nc, nc)
+
+    # 지표 성격(절대값/비율)이 근거 줄에 붙는다
+    note = ins._n_note({"kind": "group_compare", "group_a": "a", "group_b": "b",
+                        "n_a": 30, "n_b": 40, "median_a": 1, "median_b": 2,
+                        "metric": "like_count", "metric_label": "하트", "n": 70})
+    check("E-RD-18 하트는 누적 절대값으로 표기", "누적 절대값" in note, note)
+    note2 = ins._n_note({"kind": "correlation", "x": "discount_rate", "y": "cvr_view_buy",
+                         "x_label": "할인율(%)", "y_label": "조회→구매 전환(%)", "n": 100})
+    check("E-RD-19 전환 축은 비율로 표기", "비율(%)" in note2, note2)
 
 
 def survival_tests():
@@ -1072,6 +1204,12 @@ def main():
     print("[21] 문맥 문자열·역할 규칙 (D51)")
     context_tests()
     modeling_role_tests()
+
+    print("[22] 축 위생 — 표기 변형·청중 편중 (D55)")
+    axis_hygiene_tests()
+
+    print("[23] 읽는 사람 기준 — 조사·축 이름·액션 플랜 (D56)")
+    readability_tests()
 
     shutil.rmtree(work, ignore_errors=True)
     print("-" * 56)

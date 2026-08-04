@@ -1,10 +1,11 @@
 ---
 name: platform-wconcept
-description: "W컨셉(국내 wconcept.co.kr · 글로벌 wconcept.com)에서 상품 데이터를 수집해 commerce-intel 데이터 계약
+description: >-
+  W컨셉(국내 wconcept.co.kr · 글로벌 wconcept.com)에서 상품 데이터를 수집해 commerce-intel 데이터 계약
   JSON을 만든다. 요청에 W컨셉/더블유컨셉/wconcept이 명시되고 수집·정리·모니터링 태스크가
-  함께 있을 때 쓴다. 예: \"W컨셉에서 이 브랜드 상품 모아줘\", \"더블유컨셉 로우클래식
-  정리해줘\", \"W컨셉 원피스 얼마나 파는지 봐줘\". 다른 플랫폼 요청이나 상품 구매
-  대행에는 쓰지 않는다."
+  함께 있을 때 쓴다. 예: "W컨셉에서 이 브랜드 상품 모아줘", "더블유컨셉 로우클래식
+  정리해줘", "W컨셉 원피스 얼마나 파는지 봐줘". 다른 플랫폼 요청이나 상품 구매
+  대행에는 쓰지 않는다.
 compatibility: 웹 요청(JSON API) 도구로 국내·글로벌 모두 수집이 된다. 2026-08-03
   재실측(D30)으로 국내가 주 경로가 됐다 — 국내 robots는 Claude 봇을 명시 허용하고,
   브라우저 UA 헤더 3종으로 PLP API 200을 받는다. 다만 **건별 수집만**(크론 축적 금지)이고
