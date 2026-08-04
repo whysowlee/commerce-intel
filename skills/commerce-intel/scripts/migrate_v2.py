@@ -27,6 +27,17 @@ from schema_v2 import (SCHEMA_V2, VIEWS_V2, brand_id, category_id,  # noqa: E402
 TS_SQL = "CAST(strftime('%s', {col}) AS INTEGER)"
 
 
+def _flush(dst, sql, batch):
+    """배치를 넣고 **실제로 들어간 수**를 돌려준다.
+
+    `executemany` + `OR IGNORE`는 몇 건이 무시됐는지 알려주지 않는다.
+    `total_changes` 차이로 센다 — 이게 없으면 "51,034건 이관"이 거짓일 수 있다.
+    """
+    before = dst.total_changes
+    dst.executemany(sql, batch)
+    return dst.total_changes - before
+
+
 def _copy_plain(src, dst, table):
     """사전으로 접을 게 없는 표는 그대로 옮긴다 (runs·platforms·proxy_*·insights)."""
     cols = [d[1] for d in src.execute("PRAGMA table_info(%s)" % table)]
@@ -96,11 +107,18 @@ def migrate(src_path, dst_path):
             continue
         batch.append([pk, r["observed_at"], context_id(dst, r["context"], cache),
                       run_ref.get(r["run_id"])] + [r[c] for c in metric])
+        report["_obs_tried"] = report.get("_obs_tried", 0) + 1
         if len(batch) >= 5000:
-            dst.executemany(ins, batch); n += len(batch); batch = []
+            n += _flush(dst, ins, batch); batch = []
     if batch:
-        dst.executemany(ins, batch); n += len(batch)
+        n += _flush(dst, ins, batch)
     report["observations"] = n
+    # `INSERT OR IGNORE`는 정상 중복과 **NOT NULL 위반(시각이 안 읽히는 행)을
+    # 함께 삼킨다.** 시도 수를 그대로 보고하면 이관이 조용히 행을 잃는다
+    # (PR #9 리뷰). 실제 삽입 수와 시도 수의 차이를 남긴다.
+    tried = report.pop("_obs_tried", 0)
+    if tried != n:
+        report["obs_skipped"] = tried - n
 
     # ④ 옵션·옵션 관측·속성
     vk_of = {}
@@ -205,6 +223,9 @@ def main():
         print("── 이관 ──")
         for k, v in rep.items():
             print("  %-22s %s" % (k, "{:,}".format(v)))
+        if rep.get("obs_skipped"):
+            print("  ※ 관측 %d건이 삽입되지 않았다 — 중복이거나 시각을 읽지 못한 행이다. "
+                  "**행 수 검산이 이걸 잡는다**" % rep["obs_skipped"])
         if rep.get("orphan_obs"):
             print("  ※ 상품 표에 없는 관측 %d건은 옮기지 않았다 (옛 DB의 고아 행)"
                   % rep["orphan_obs"])

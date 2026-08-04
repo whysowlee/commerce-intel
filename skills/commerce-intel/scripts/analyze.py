@@ -299,7 +299,9 @@ def run_group(ctx):
             # 아니다. 남겨두면 "카테고리에서 은 미니보다…" 같은 문장이 나온다
             v = it.get(cat_field)
             if v is not None and str(v).strip():
-                groups[v].append(it)
+                # **키를 다듬어 담는다** — 앞뒤 공백만 다른 같은 값이 서로 다른
+                # 그룹으로 쪼개지면 n이 갈리고 같은 비교가 두 번 나온다 (PR #9 리뷰)
+                groups[str(v).strip() if isinstance(v, str) else v].append(it)
         big = sorted([(k, v) for k, v in groups.items() if len(v) >= N_MIN],
                      key=lambda kv: -len(kv[1]))
         truncated = max(0, len(big) - GROUPS_PER_AXIS)
@@ -355,7 +357,11 @@ def _orient(x, y, xl, yl):
     둘 다 고객 반응이면 방향을 못 정하므로 그 사실을 표시해 둔다.
     """
     rx, ry = role_of(x), role_of(y)
-    if ry == "lever" and rx != "lever":     # 결과 자리에 레버가 왔다 — 뒤집는다
+    if rx == "lever" and ry == "lever":
+        # 둘 다 우리가 정한 값이다 — 정가와 할인율처럼. 어느 쪽이 원인인지
+        # 데이터가 답하지 않으므로 response끼리와 같이 헤지한다 (PR #9 리뷰).
+        return x, y, xl, yl, "lever_pair"
+    if ry == "lever":                       # 결과 자리에 레버가 왔다 — 뒤집는다
         return y, x, yl, xl, "lever_to_response"
     if rx == "lever":
         return x, y, xl, yl, "lever_to_response"
@@ -380,7 +386,7 @@ def run_corr(ctx):
         claim = "%s 높을수록 %s %s (순위 상관 %+.2f)" % (
             _josa(xl, "이가"), _josa(yl, "이가"),
             "높다" if (r or 0) > 0 else "낮다", r or 0)
-        if direction == "response_pair":
+        if direction in ("response_pair", "lever_pair"):
             # 둘 다 고객 반응이다 — 어느 쪽이 먼저인지 데이터가 답하지 않는다.
             # 문장이 인과처럼 읽히지 않게 **함께 움직인다**로 쓴다.
             claim = "%s와 %s 함께 움직인다 (순위 상관 %+.2f · 선후는 알 수 없다)" % (
@@ -579,23 +585,32 @@ def check_holdout(h):
 
 
 def gate(h, fdr_survive):
-    fails = []
+    # 사람이 읽는 문구(`fails`)와 코드가 읽는 코드(`fail_codes`)를 나눠 담는다.
+    # 문구로 관문을 판정하면(`"표본" in f`) 문구를 다듬는 날 조용히 오분류된다
+    # — 실제로 `null_findings`가 그렇게 갈라내고 있었다 (PR #9 리뷰).
+    fails, codes = [], []
     eff = abs(h.get("effect") or 0)
     threshold = CORR_MIN if h["kind"] in ("correlation", "dose_response") else EFFECT_MIN
     if h.get("effect") is None:
         fails.append("효과 크기를 계산하지 못했다")
+        codes.append("effect_missing")
     elif eff < threshold:
         fails.append("효과 크기가 작다 (%.2f < %.2f) — 결정을 바꿀 만한 차이가 아니다"
                      % (eff, threshold))
+        codes.append("effect_small")
     if (h.get("n") or 0) < N_MIN:
         fails.append("표본이 작다 (n=%d < %d)" % (h.get("n") or 0, N_MIN))
+        codes.append("sample")
     if h.get("p") is None:
         fails.append("p값을 계산하지 않는 유형이다 — 우연 여부를 가리지 못했다")
+        codes.append("no_p")
     elif not fdr_survive:
         fails.append("다중비교 보정(BH, α=%.2f)을 통과하지 못했다" % ALPHA)
+        codes.append("fdr")
     seg_ok, seg_notes = check_segments(h)
     if not seg_ok:
         fails.extend(seg_notes)
+        codes.append("segment")
     hold_ok, hold_note = check_holdout(h)
     h["holdout_note"] = hold_note
     # **"재현되지 않았다"와 "확인할 수 없었다"는 다르다.** 전자만 탈락시킨다.
@@ -604,12 +619,15 @@ def gate(h, fdr_survive):
     # 대신 확인하지 못했다는 사실을 리포트에 표시로 남긴다.
     if hold_ok is False:
         fails.append("홀드아웃에서 재현되지 않는다 — %s" % hold_note)
+        codes.append("holdout")
     elif hold_ok is None:
         h["holdout_unverified"] = True
     if h.get("vanity"):
         fails.append("둘 다 누적 지표다 — 출시가 오래된 상품일수록 함께 커진다. "
                      "관측 간 증분으로 다시 보기 전에는 발견으로 볼 수 없다")
+        codes.append("vanity")
     h["fails"] = fails
+    h["fail_codes"] = codes
     h["verdict"] = "strong" if not fails else "weak"
     if hold_ok is False and h.get("effect") is not None:
         h["verdict"] = "rejected"

@@ -216,10 +216,18 @@ JOIN sites s ON s.site_id = p.site_id;
 # 스킵"을 세고 있어서, 조용히 삼키면 그 숫자가 거짓이 된다.
 
 # URL을 스킴+호스트 / 경로로 자르는 식. 파이썬 split_url()과 같은 규칙이어야 한다.
-_HOST = ("CASE WHEN instr({u},'//')=0 THEN '' ELSE substr({u},1,"
-         "instr({u},'//')+instr(substr({u},instr({u},'//')+2),'/')) END")
-_PATH = ("CASE WHEN instr({u},'//')=0 THEN {u} ELSE substr({u},"
-         "instr({u},'//')+instr(substr({u},instr({u},'//')+2),'/')+1) END")
+# 규칙 세 갈래 — **파이썬 split_url()과 글자 그대로 같아야 한다**(E-DB-11).
+#   `//`가 없다            → 호스트 없음, 전체가 경로
+#   `//`는 있는데 뒤에 `/`가 없다 → **전체가 호스트**, 경로는 빈 문자열
+#                            (여기를 안 나누면 `https://cdn.x.com`이 `https:/`로 잘려
+#                             같은 호스트가 사전에 두 항목으로 갈린다 — PR #9 리뷰)
+#   둘 다 있다              → 첫 `/` 앞이 호스트
+_I = "instr({u},'//')"
+_K = "instr(substr({u},instr({u},'//')+2),'/')"
+_HOST = ("CASE WHEN %s=0 THEN '' WHEN %s=0 THEN {u} "
+         "ELSE substr({u},1,%s+%s) END" % (_I, _K, _I, _K))
+_PATH = ("CASE WHEN %s=0 THEN {u} WHEN %s=0 THEN '' "
+         "ELSE substr({u},%s+%s+1) END" % (_I, _K, _I, _K))
 
 TRIGGERS_V2 = """
 DROP TRIGGER IF EXISTS trg_products_ins;
@@ -401,9 +409,11 @@ def split_url(conn, url, cache):
         return None, None
     s = str(url)
     i = s.find("//")
-    j = s.find("/", i + 2) if i >= 0 else -1
-    if i < 0 or j < 0:
+    if i < 0:                       # 스킴이 없다 — 접을 호스트가 없다
         return _dim(conn, "hosts", "host_id", "prefix", "", cache), s
+    j = s.find("/", i + 2)
+    if j < 0:                       # `https://cdn.x.com` — 경로가 없다. 전체가 호스트
+        return _dim(conn, "hosts", "host_id", "prefix", s, cache), ""
     return _dim(conn, "hosts", "host_id", "prefix", s[:j], cache), s[j:]
 
 

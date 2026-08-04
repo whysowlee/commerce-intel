@@ -515,6 +515,19 @@ def schema_v2_tests():
     check("E-DB-8 ttl_days=NULL이 덮어써진다 (COALESCE로 지키면 안 된다)",
           got is None, got)
 
+    # E-DB-17 URL 접기 규칙이 파이썬과 트리거 SQL에서 **같아야** 한다 (PR #9 리뷰).
+    # 경로 없는 URL이 갈리면 같은 호스트가 사전에 두 항목으로 쪼개진다.
+    from schema_v2 import split_url, _HOST, _PATH
+    for url in ("https://cdn.example.com", "https://a.test/x/y", "노프로토콜경로"):
+        hid, path = split_url(conn, url, {})
+        pref = conn.execute("SELECT prefix FROM hosts WHERE host_id=?", (hid,)).fetchone()
+        pref = pref[0] if pref else None
+        sql = conn.execute("SELECT %s, %s" % (_HOST.format(u="?1"), _PATH.format(u="?1")),
+                           (url,)).fetchone()
+        check("E-DB-17 URL 접기가 파이썬·SQL에서 같다 (%s)" % url,
+              (pref, path) == tuple(sql) and (pref or "") + (path or "") == url,
+              ((pref, path), tuple(sql)))
+
     # E-DB-10 증분 키는 뷰의 마지막 컬럼 _rowid다
     cols = [d[0] for d in conn.execute("SELECT * FROM observations LIMIT 1").description]
     check("E-DB-10 _rowid가 뷰의 **마지막** 컬럼이다", cols[-1] == "_rowid", cols[-3:])
@@ -625,6 +638,21 @@ def modeling_tests():
             "x_label": "하트", "y_label": "후기 수"}
     check("E-MD-10 반응끼리의 상관은 액션에서 선후를 단정하지 않는다",
           "선후를 모른다" in ins.action_hint(resp), ins.action_hint(resp))
+
+    # E-MD-12 관문 판정은 **코드**로 한다 — 문구가 바뀌어도 안 흔들린다 (PR #9 리뷰)
+    coded = {"verdict": "rejected", "effect": 0.02, "n": 500,
+             "fails": ["문구가 바뀌었다"], "fail_codes": ["sample"],
+             "kind": "group_compare"}
+    check("E-MD-12 표본 부족을 fail_codes로 가른다 (문구 무관)",
+          ins.null_findings([coded]) == [], ins.null_findings([coded]))
+
+    an = importlib.import_module("analyze")
+    # E-MD-13 둘 다 lever면 방향을 단정하지 않는다
+    check("E-MD-13 lever끼리는 lever_pair로 헤지한다",
+          an._orient("price_sale", "discount_rate", "판매가", "할인율")[4] == "lever_pair")
+    check("E-MD-14 lever→response는 lever가 원인 쪽으로 간다",
+          an._orient("like_count", "discount_rate", "하트", "할인율")[:2]
+          == ("discount_rate", "like_count"))
 
 
 def main():

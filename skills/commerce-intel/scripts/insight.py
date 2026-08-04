@@ -185,8 +185,13 @@ def null_findings(hyps, cap=6):
     for h in hyps:
         if h.get("verdict") != "rejected":
             continue
-        if any("표본" in f for f in h.get("fails", [])):
-            continue                      # "모른다"이지 "없다"가 아니다
+        # 표본 부족은 "모른다"이지 "없다"가 아니다. 한글 부분 문자열로 가르면
+        # 문구가 바뀌는 날 조용히 오분류된다(PR #9 리뷰) — **관문 이름으로 가른다.**
+        # `fails`에 관문 코드가 없는 옛 항목은 문자열로 폴백한다.
+        codes = h.get("fail_codes") or []
+        if "sample" in codes or (not codes and
+                                 any("표본" in f for f in h.get("fails", []))):
+            continue
         eff = abs(h.get("effect") or 0)
         if eff > NULL_EFFECT_MAX or (h.get("n") or 0) < 40:
             continue

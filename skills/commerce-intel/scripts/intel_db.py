@@ -386,14 +386,21 @@ def _load_variants(conn, site, pid, variants, collected_at, run_id):
         oid = str(v.get("option_id") or v.get("option_name") or "").strip()
         if not oid:
             continue
+        # **알던 값을 None으로 덮지 않는다.** `OR REPLACE`는 행을 지우고 새로 넣어서
+        # 이번에 안 온 옵션명·색상·사이즈를 NULL로 만든다(v2 트리거는 COALESCE를
+        # 유지하므로 두 스키마의 동작이 갈렸다 — PR #9 리뷰). 병합을 여기서 한다.
+        prev = conn.execute(
+            "SELECT option_name, color, size, first_seen_at FROM variants "
+            "WHERE site=? AND product_id=? AND option_id=?", (site, pid, oid)).fetchone()
+        keep = lambda new, old: new if new not in (None, "") else old
         conn.execute(
-            # ON CONFLICT 절이 없다 — v2에서는 뷰의 INSTEAD OF 트리거가 업서트
-            # 의미를 진다(뷰에는 UPSERT를 못 쓴다). 구 스키마에서는 아래 OR REPLACE가
-            # 같은 일을 한다. 덮어쓰기 규칙은 schema_v2.TRIGGERS_V2에 적혀 있다.
             "INSERT OR REPLACE INTO variants (site, product_id, option_id, option_name,"
             " color, size, first_seen_at, last_seen_at) VALUES (?,?,?,?,?,?,?,?)",
-            (site, pid, oid, v.get("option_name"), v.get("color"), v.get("size"),
-             collected_at, collected_at),
+            (site, pid, oid,
+             keep(v.get("option_name"), prev["option_name"] if prev else None),
+             keep(v.get("color"), prev["color"] if prev else None),
+             keep(v.get("size"), prev["size"] if prev else None),
+             (prev["first_seen_at"] if prev else None) or collected_at, collected_at),
         )
         so = v.get("sold_out")
         try:

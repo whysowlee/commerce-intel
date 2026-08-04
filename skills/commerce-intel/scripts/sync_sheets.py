@@ -177,6 +177,23 @@ def sheet_rows(ws):
     return sum(1 for v in col[1:] if str(v).strip())
 
 
+def trailing_is_empty(ws, keep_cols):
+    """`keep_cols` 오른쪽이 전부 비었나. 못 읽으면 **비었다고 단정하지 않는다**(False).
+
+    시트 축소는 되돌릴 수 없다. 확인에 실패했을 때 "아마 비었겠지"로 자르면
+    그 순간 데이터가 사라지고 아무도 모른다 — 모르면 안 자르는 쪽으로 간다.
+    """
+    if ws.col_count <= keep_cols:
+        return True
+    try:
+        import gspread.utils as u
+        rng = "%s:%s" % (u.rowcol_to_a1(1, keep_cols + 1),
+                         u.rowcol_to_a1(ws.row_count, ws.col_count))
+        return not any(str(c).strip() for row in ws.get(rng) for c in row)
+    except Exception:
+        return False
+
+
 def rebuild_tab(ws, headers, data, chunk=5000):
     """탭을 통째로 다시 쓴다. 증분이 어긋났을 때의 복구 경로다.
 
@@ -283,9 +300,17 @@ def main():
         # 빈 열은 셀 한도(워크북 1천만)를 갉아먹는다 — 관측 탭은 계속 자라므로
         # 여기가 제일 먼저 막힌다. 2026-08-04 실측: observations가 156열(실제 20열)로
         # 부풀어 780만 셀을 쓰고 있었고 append가 400으로 거절당했다. 줄이니 100만이 됐다.
-        # **값이 있는 열은 건드리지 않는다** — 헤더 수보다 넓을 때만 헤더 폭으로 맞춘다.
+        #
+        # **자르기 전에 정말 비었는지 읽어 본다** (PR #9 리뷰). 시트 축소는 잘린 열의
+        # 데이터를 영구 삭제한다 — 팀원이 오른쪽에 메모를 적어 뒀다면 그대로 사라지고
+        # 에러도 안 난다. D46이 막으려던 "조용한 손실"과 정확히 같은 종류다.
+        # 값이 하나라도 있으면 **자르지 않고 그 사실을 알린다.**
         if ws.col_count > len(full_headers):
-            ws.resize(rows=ws.row_count, cols=len(full_headers))
+            if trailing_is_empty(ws, len(full_headers)):
+                ws.resize(rows=ws.row_count, cols=len(full_headers))
+            else:
+                print(f"{table}: {len(full_headers)}열 뒤에 값이 있어 열을 줄이지 않았다 "
+                      f"(현재 {ws.col_count}열) — 셀 한도가 걱정되면 사람이 확인하고 지워라")
         if not ws.get_values("A1:A1"):
             ws.update(values=[full_headers], range_name="A1")
         # ── 올린 뒤 실제로 늘었는지 보고, 그때만 진행점을 옮긴다 ──────────
