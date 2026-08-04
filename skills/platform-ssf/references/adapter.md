@@ -127,3 +127,49 @@
 - [ ] 개인화 가격 — 목록가↔상세 JSON-LD price 대조 표본 확대 (현재 1개 상품)
 - [ ] 레이트리밋 임계 — 2초 간격 16요청 무사고까지만 확인
 - [ ] 이미지 리사이즈 프리픽스의 유효 값 범위 (`LB_500x660` 외)
+
+## §R. 랭킹 — 갱신 주기 1시간 (사이트 명시, 2026-08-04 실측)
+
+### 갱신 주기: **매 1시간** — 사이트가 직접 밝힌다
+
+`/ranking` 페이지의 「랭킹 노출 기준」 안내 원문:
+
+> **"순위는 매 시간마다 갱신됩니다."** NEW: 50위권 신규 진입한 상품
+
+시차 관측이 아니라 **사이트 표기**라 확정이다. 크론 주기는 이 값에 맞춘다.
+(교차 확인: 10분 간격 두 스냅샷에서 상위 20위 변동 0 — 모순 없음)
+
+### 랭킹 경로
+
+```
+GET https://www.ssfshop.com/rankingGodList?{폼 전체}
+Referer: https://www.ssfshop.com/ranking
+X-Requested-With: XMLHttpRequest
+Cookie: /ranking 을 먼저 GET 해서 받은 세션
+```
+
+**⚠️ 함정 — 폼 파라미터를 하나라도 빠뜨리면 200 + 빈 응답(0B)이 온다.** 에러를 주지
+않으므로 코드로 실패를 감지하려면 **본문 길이 0**을 실패로 잡아야 한다. 전체:
+
+```
+ctgryFlterCd=CTGRY_ALL&brndShopId=&brandShopNo=&otltYn=&dspCtgryNo=&endIndex=0
+&cnncCtgryNo=&rankSect={종류}&preferAgeCd=ALL&lagSpcltyYn=&goodListPageSize=&utag=&currentPage=1
+```
+
+Referer·세션 쿠키도 필수다(둘 중 하나만 빠져도 빈 응답).
+
+### 랭킹 종류 `rankSect` — 2종 동작 (실측)
+
+| 값 | 결과 | 비고 |
+|---|---|---|
+| `CLICK_RANK` | 60개 · 1위 `GM0026070235540` | 클릭랭킹(페이지 기본) |
+| `SALE_RANK` | 60개 · 1위 `GM0026070235545` | 판매랭킹 — **1위가 다르다** |
+| `SEARCH_RANK` | 빈 응답 | 페이지 JS에 값은 있으나 미동작 |
+
+`preferAgeCd`로 연령축을 나눌 수 있다(ALL·1020AGE·30AGE·40AGE·50AGE_OVER).
+
+### 기간별 랭킹: **없다** (실측)
+
+`periodCd=DAILY` · `termCd=WEEKLY` · `stdDt=20260803`을 붙여도 **1위가 그대로**다
+(`GM0026070235540`). 무신사(`period=`)·29CM(`periodFacetInput`)·EQL(`sort=*_SALE_SEQ`)
+같은 기간 축이 SSF에는 없다 — **일간/주간/월간 랭킹은 축적으로만 얻는다.**

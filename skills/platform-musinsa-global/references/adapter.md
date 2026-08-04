@@ -247,3 +247,58 @@ category2DepthCodes=003002`가 홍콩 인기 랭킹이고, 카드에 순위가 �
 - [ ] 쿠키/세션 필요 여부 — 현재 불필요로 관측(전 요청 200)
 - [ ] **크론 축적 사용자 승인** 여부 — 현재 건별 수집만(D30)
 - [ ] region 전체에서 카테고리 코드가 완전히 국내와 일치하는지(US·JP만 확인)
+
+## §R. 랭킹 — 2종이고, 갱신 시각은 브랜드 랭킹에만 있다 (2026-08-04 실측)
+
+### 랭킹 경로 2종
+
+| 경로 | 순위 필드 | `updatedAt` |
+|---|---|---|
+| `GET /{region}/trending/items?category1DepthCode=…&category2DepthCodes=…` | **없다 — 배열 순서가 순위다** | **항상 `null`** |
+| `GET /{region}/trending/brands` | **`rank` 1~100 명시** | **실값 있다** |
+
+- items: 서버 렌더 HTML의 `var goodsListJsonString` → `{error, totalCount, goodsInfoList[150], updatedAt}`.
+  HK `003/003002` → `totalCount 14,926`. 카테고리 파라미터를 빼면 488,836으로 바뀐다
+  (**파라미터가 서버에 실제로 반영된다는 양성 대조**)
+- brands: `var brandRankingJsonString` → `{updatedAt, brandList[100]}`.
+  각 항목에 `rank`·브랜드 대표상품 배열이 함께 온다
+- **items에는 순위 필드가 없으므로 순위는 배열 인덱스로 매긴다.** 필드셋은 카테고리 PLP와 동일
+
+### 갱신 시각 — brands만 사이트가 밝힌다
+
+```
+var brandRankingJsonString = "{\"updatedAt\":\"2026-08-04T00:48:44.444\", \"brandList\":[…]}"
+```
+
+- **items 랭킹의 `updatedAt`은 전 케이스 `null`이다** — 국내 무신사의
+  `information.updatedAt`(30분 주기 판정 근거)에 해당하는 값을 글로벌 items에서는 못 얻는다
+- **HK와 JP의 `updatedAt`이 완전히 동일**(둘 다 `2026-08-04T00:48:44.444`)한데 랭킹
+  내용은 다르다(HK 2위 ITZAVIBE / JP 2위 MUCENT) → **전 region을 한 배치가 동시에
+  갱신하는 것으로 보인다.** 다만 **1회 관측이라 단정하지 않는다**
+- 수신(09:43 KST) 기준 약 9시간 전 값이라 **새벽 1회 배치처럼 보이나 주기는 「미검증」**이다.
+  확정하려면 **다음날 같은 시각에 한 번 더** 받아 하루 단위로 움직이는지 본다
+- 화면 문구에 주기 안내가 없다(번들 번역 문자열에 "Updated at" 류 없음)
+
+### 기간별 랭킹: **없다** — 파라미터는 선언돼 있으나 서버가 무시한다
+
+- 랭킹 번들의 요청 기본값에 **`period: null`이 실제로 선언**돼 있고 URL 직렬화 맵에도
+  들어 있다. **그런데 값을 붙여도 결과가 안 바뀐다** — `period=DAILY`·`period=WEEKLY`·
+  무파라미터 3종이 **응답 789,975B로 동일**, 상위 8개 goodsNo 순서까지 같다
+- 번들 어디에도 `REALTIME/DAILY/WEEKLY/MONTHLY` 같은 **period 값 어휘가 없다**
+- 필터 축 전체(`filterCondition`)에 기간 항목이 없고, **`sortTypeList`는 값이 하나뿐**이다
+  — `{"code":"RANK","text":"Top rated in Korea"}`
+- **판정: 기간별 랭킹은 축적으로만 얻는다.** `period` 파라미터를 믿지 마라
+
+### 이 사이트의 랭킹 축은 기간이 아니라 **국가**다
+
+번들에 `ranking.location.{kor,hkg,jpn,usa,can,aus,nzl,sgp,twn,tha,phl,mys,idn}` 번역과
+`"Change country"` 토글(`title: i ? "global" : "korea"`)이 있다. UI가 주는 전환은
+**"내 나라 랭킹 ↔ 한국 랭킹"**이지 기간이 아니다 — §4-1b의 region 축 판단과 일치한다.
+
+### 부수 실측
+
+- brands의 `category1DepthCode`는 **서버 응답을 바꾸지 않는다**(붙인 것과 안 붙인 것이
+  647,647B 바이트 동일) → 브랜드 랭킹의 카테고리 필터는 **클라이언트 처리**이고 서버는
+  항상 전체 Top 100을 준다
+- 클라이언트 region 상수에 **`KR:"kr"`이 포함**돼 있다(확인된 13종 + kr). `/kr/` 실동작 「미검증」
+- items 랭킹은 2분 간격·10분 간격 재요청에서 goodsNo 150개가 완전 동일

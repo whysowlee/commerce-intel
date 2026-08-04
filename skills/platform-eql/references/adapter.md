@@ -139,3 +139,65 @@ selectCtgryNo=EQLA01A01A01&mallGubun=CTGRY&mallType=&ctgryType=&dspEqlOtltYn=
 - [ ] 레이트리밋 임계 (2초×17요청 무사고까지만)
 - [ ] `equalCount` 요청 본문 형식 — 응답 형식·의미(미반환=0)는 실측됨
 - [ ] `sort` 유효 어휘 (`NEW_GOD_SEQ`만 완주 실측)
+
+## §R. 랭킹(BEST) — 기간별 랭킹이 있다 (2026-08-04 실측)
+
+### ★ 기간 축이 `sort`에 들어 있다 — 축적 없이 일간·주간·월간을 바로 받는다
+
+무신사(`period=`)·29CM(`periodFacetInput.type`)에 대응하는 것이 EQL에는 **`sort`
+파라미터**로 들어 있다. 랭킹을 쌓기 전에도 과거 기간 랭킹을 얻을 수 있다는 뜻이다.
+
+| `sort` 값 | 유효 | 1위(우먼 BEST, 2026-08-04) | md5 |
+|---|---|---|---|
+| `DAILY_SALE_SEQ` | ✅ | `GQ2U25073147163` | `536c9b62` |
+| `WEEKLY_SALE_SEQ` | ✅ | `GQEZ24092703139` | `5d05d271` |
+| `MONTHLY_SALE_SEQ` | ✅ | `GP3924032010693` | `937fed07` |
+| `MONTHS_3_SALE_SEQ` · `YEAR_SALE_SEQ` · `REALTIME_SALE_SEQ` | ❌ | fallback | — |
+
+**3개월·6개월은 없다**(29CM의 `MONTHS_3`/`MONTHS_6` 대응 없음).
+
+**⚠️ 미지원 값도 200 + 정상 본문을 준다.** 가짜 값 `ZZZ_BOGUS_SEQ`도 120개가 오고
+md5가 또 다르다(`910f3da3`) — **"200이니까 동작한다"로 판정하면 틀린다.** 새 정렬값을
+쓸 때는 반드시 **결과를 대조**해라. 위 세 값이 유효하다는 근거도 md5·1위가 서로 다르고
+가짜 값과도 다르다는 대조에서 나왔다.
+
+### 랭킹 경로
+
+```
+페이지: GET /display/productsList?categoryNumber={대분류}A05&bestYn=Y
+        (우먼 EQLA01A05 · 맨 EQLA02A05 · 라이프 EQLA03A05 — GNB 서버 렌더 링크)
+데이터: POST /category/v2/godListHtml
+        selectCtgryNo=EQLA01        ← **대분류 코드**(URL의 A05가 아니다)
+        &rendingCtgryNo=EQLA01A05
+        &ctgryType=BEST             ← 일반 목록은 빈 값
+        &sort={기간}&page=1&excludeSoldoutGodYn=N&mallGubun=CTGRY
+```
+
+- **BEST는 Top 100 캡**이다(`totalRow=100`). 일반 카테고리는 전체 수를 준다
+- **일반 카테고리에서도 기간 sort가 먹는다** — Top 100 캡 없이 기간 랭킹을 뽑으려면
+  `ctgryType=`를 비우고 카테고리 코드로 요청한다(아우터 8,396건 전체가 기간 판매순 정렬)
+
+### ⚠️ 쿠키 — 목록 페이지에서 받아야 한다 (§1 보강)
+
+홈(`/`)에서 받은 쿠키로는 **200 + 빈 본문(750B)**이 온다. **목록/랭킹 페이지**
+(`/display/productsList?...`)를 먼저 GET 해야 유효한 WMONID가 발급된다(2026-08-04 실측).
+
+### 갱신 주기: **사이트가 밝힌 값 없음** 「미확인」
+
+- `godListHtml` 응답에 `updatedAt`·기준일·집계시각 필드가 **없다**(말미 스크립트는
+  `totalRow`/`endIndex`뿐)
+- 랭킹 페이지에도 "실시간/집계/업데이트" 안내 문구가 없다
+- 같은 요청을 시차 두고 보내면 **md5가 동일**해 세션 내 관측으로는 못 잰다 —
+  주기를 확정하려면 **날짜를 넘겨 재관측**해야 한다
+
+### 정렬 어휘 정정 (`/resources/js/queJS/UI/SortUI.js` 실측)
+
+정본 어휘: `GOD_BEST_POINT`(베스트순) · `NEW_GOD_SEQ` · `LWET_PRC_SEQ` ·
+`BEST_PRC_SEQ` · `BEST_DC_SEQ` · `PCH_PS_SEQ` · `MD_RECOMMEND_SEQ`
+
+⚠️ **§1에 적힌 `BEST_GOD`·`SALE_QTY`는 이 목록에 없다.** 미지원 값도 200이 오므로
+그때 "동작한다"고 본 판정이 틀렸을 수 있다 — 재검증 대상 「미확인」.
+`GOD_BEST_POINT`는 BEST 페이지에서 `DAILY_SALE_SEQ`와 바이트 동일(사실상 일간 판매순).
+
+※ 아우터 `totalRow`가 8,427(08-03) → 8,396(08-04)로 하루 만에 변동했다 —
+  총계는 시점 값이라 대조할 때 같은 날 것을 써야 한다.

@@ -11,7 +11,7 @@ compatibility: 웹 요청(HTML) 도구로 수집이 완결된다. 쿠키·refere
 metadata:
   version: 0.1.0
   status: draft            # draft → ready 승격은 사용자가 한다
-  refresh-cycle: "unverified"
+  refresh-cycle: 60m        # 사이트 명시 "매 시간마다 갱신" (2026-08-04 실측)
   measured-at: "2026-08-03"
 ---
 

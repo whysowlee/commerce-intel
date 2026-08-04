@@ -12,7 +12,7 @@ compatibility: 웹 요청 도구로 수집이 된다(서버 렌더 HTML 임베�
 metadata:
   version: 0.1.0
   status: draft            # draft → ready 승격은 사용자가 한다
-  refresh-cycle: unverified
+  refresh-cycle: unverified  # brands는 updatedAt 노출(1회 관측), items는 항상 null (§R)
   measured-at: "2026-08-03"
 ---
 
