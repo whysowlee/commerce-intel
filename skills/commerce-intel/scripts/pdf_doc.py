@@ -109,6 +109,9 @@ def _styles():
         "claim": ParagraphStyle("claim", **base, fontSize=10.8, leading=15.5, spaceAfter=3),
         "evidence": ParagraphStyle("evidence", **dict(base, textColor=MUTED),
                                    fontSize=8.2, leading=11.5),
+        # 액션 한 줄 — 주장보다 작고 근거보다 진하다(읽는 순서: 주장 → 액션 → 근거)
+        "action": ParagraphStyle("action", **base, fontSize=8.8, leading=12.5,
+                                 spaceBefore=2, spaceAfter=2),
         # 통계 스트립 — 큰 숫자 + 작은 라벨 (pdf-design stats strip)
         "stat_num": ParagraphStyle("stat_num", **base, fontSize=17, leading=20, spaceAfter=1),
         "stat_label": ParagraphStyle("stat_label", **dict(base, textColor=MUTED),
@@ -288,7 +291,7 @@ class Doc:
 
     # ── 카드 (가설 하나 = 카드 하나) ────────────────────────────────────
     def card(self, claim, audience=None, evidence=None, weak=False,
-             detail_link=None, anchor=None):
+             detail_link=None, anchor=None, action=None):
         """가설 카드.
 
         weak=True면 약한 단서다 — 왼쪽 굵은 선이 회색으로 바뀌고 배경이 옅어진다.
@@ -300,6 +303,10 @@ class Doc:
         if badges:
             inner.append(self._badge_row(badges))
         inner.append(Paragraph(md(esc(claim)), self.s["claim"]))
+        if action:
+            # "그래서 뭘 하지"를 읽는 사람이 매번 번역하지 않게 한 줄 붙인다 (D47).
+            # **지시가 아니라 "이 숫자로 무엇을 정할 수 있나"**다 — 우리는 상관만 봤다.
+            inner.append(Paragraph(md("→ " + esc(action)), self.s["action"]))
         if detail_link:
             inner.append(Paragraph("→ 상세: %s" % esc(detail_link), self.s["small"]))
         if evidence:

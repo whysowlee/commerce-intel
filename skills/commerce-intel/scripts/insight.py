@@ -120,6 +120,92 @@ def _fmt(v):
     return "{:,}".format(v)
 
 
+# ── 액션 제안 (D47) ─────────────────────────────────────────────────────────
+# 2026-08-04 피드백: "인사이트 이후 **액션 제안**이 필요 — 읽었을 때 리턴이 있어야
+# 함". 관측 진술만 실으면 읽는 사람이 "그래서 뭘 하지"를 매번 스스로 번역해야 한다.
+#
+# **지시하지 않는다.** MD가 "참고용·정성적"이라고 못박았고(2026-08-03 인터뷰) 우리는
+# 상관만 봤다. 그래서 "무엇을 해라"가 아니라 **"이 숫자로 무엇을 정할 수 있나"**를 쓴다.
+# 문장이 확정적일수록 근거보다 세 보인다 — 그 간극이 이 리포트가 제일 조심할 것이다.
+
+def action_hint(h):
+    """이 발견으로 무엇을 정할 수 있나. 근거가 약하면 '확인부터'로 간다."""
+    kind, metric = h.get("kind"), h.get("metric") or h.get("y")
+    if h.get("verdict") == "weak":
+        return "아직 정하지 마라 — %s" % recheck_hint(h)
+    if kind == "did":
+        return ("가격 인하의 순효과가 이 크기다. **다음 인하 폭을 정할 때 이 값을 기준선**으로 "
+                "두고, 그보다 큰 반응을 기대한다면 다른 조건(노출·시즌)이 함께 바뀌어야 한다")
+    if kind == "dose":
+        return "구간별 반응이 갈리는 지점이 있다 — **그 구간 위로는 할인을 더 줘도 얻는 게 적다**"
+    if kind == "depletion":
+        return "소진이 빠른 쪽에 **재입고·물량 배분을 먼저** 검토한다"
+    if kind == "paired":
+        return "같은 상품인데 플랫폼별로 갈린다 — **가격·노출 조건을 어디에 맞출지** 정한다"
+    if kind == "correlation":
+        if h.get("direction") == "response_pair":
+            return ("둘 다 고객 반응이라 **선후를 모른다.** 한쪽을 올리면 다른 쪽이 따라온다고 "
+                    "읽지 마라 — 무엇이 먼저인지 보려면 시점을 나눠 다시 봐야 한다")
+        return ("%s를 움직이면 %s가 따라 움직인 관측이다. **폭을 정할 때 참고**하되, "
+                "다른 조건이 같았는지는 확인이 필요하다" % (h.get("x_label"), h.get("y_label")))
+    if kind == "group_compare":
+        if h.get("cat_field") == "category":
+            return "카테고리별로 갈린다 — **구성비를 어디에 둘지**의 근거로 쓴다"
+        if h.get("cat_field") == "brand":
+            # 같은 문장이 여섯 번 반복되면 아무도 안 읽는다 — 지표가 무엇이냐에 따라
+            # 정할 수 있는 것이 다르므로 그걸 쓴다
+            m = h.get("metric")
+            if m in ("price_sale", "price_original"):
+                return "**가격대 포지션**을 어디에 둘지의 참고선이다 — 우리가 어느 구간에 설지 정한다"
+            if m == "discount_rate":
+                return "**할인 관행**이 브랜드마다 다르다 — 우리 할인 폭이 이 분포의 어디인지 확인한다"
+            if m in ("like_count", "review_count", "purchase_count", "view_count"):
+                return "반응 규모가 갈린다 — **경쟁 강도**로 읽되 브랜드 크기 차이일 수 있다"
+            if m == "rating":
+                return "만족도가 갈린다 — **품질·기대 관리**에서 우리 위치를 본다"
+            return "브랜드별로 갈린다 — **우리 포지션을 어디에 맞출지**의 참고선으로 쓴다"
+        return "이 축으로 갈린다 — **다음 기획에서 이 조건을 의도적으로 골라** 재확인한다"
+    return "다음 관측에서 같은 방향이 나오는지 먼저 본다"
+
+
+# ── '영향이 없었다'도 인사이트 (D47) ────────────────────────────────────────
+# 피드백: "**'영향이 없었다'도 인사이트** — 신경 쓰지 않아도 된다는 판단 근거가 되므로".
+# 지금까지 기각된 가설은 "같은 막다른 길을 다시 파지 않기 위해" 목록으로만 실렸다.
+# 그런데 **효과 크기가 작아서 기각된 것**은 다른 이야기다 — 그건 "차이가 없더라"이고,
+# 팀원에게는 "여기 신경 쓰지 마라"라는 쓸 수 있는 답이다.
+#
+# 표본이 작아서 기각된 것과는 **반드시 갈라야 한다.** 전자는 "없다"이고 후자는
+# "모른다"인데, 섞으면 안 본 것이 없는 것이 된다.
+NULL_EFFECT_MAX = 0.15          # |효과| 이 아래면 "차이가 없다"로 읽는다
+
+
+def null_findings(hyps, cap=6):
+    """**차이가 없다고 말할 수 있는** 발견. 표본 부족으로 못 본 것은 제외한다."""
+    out = []
+    for h in hyps:
+        if h.get("verdict") != "rejected":
+            continue
+        if any("표본" in f for f in h.get("fails", [])):
+            continue                      # "모른다"이지 "없다"가 아니다
+        eff = abs(h.get("effect") or 0)
+        if eff > NULL_EFFECT_MAX or (h.get("n") or 0) < 40:
+            continue
+        out.append(h)
+    out.sort(key=lambda h: (-(h.get("n") or 0), abs(h.get("effect") or 0)))
+    return out[:cap]
+
+
+def _null_claim(h):
+    """무영향 발견의 문장. 원 문장은 "A가 B보다 높다"라 그대로 쓰면 정반대로 읽힌다."""
+    if h.get("kind") == "group_compare":
+        return "%s에서 %s와 %s는 %s 차이가 없다" % (
+            h.get("cat_label"), h.get("group_a"), h.get("group_b"),
+            h.get("metric_label", ""))
+    if h.get("kind") == "correlation":
+        return "%s와 %s는 함께 움직이지 않는다" % (h.get("x_label"), h.get("y_label"))
+    return "이 조건에서는 차이가 나타나지 않았다 — %s" % h.get("claim", "")
+
+
 def recheck_hint(h):
     """약한 단서마다 "어떻게 재확인하나"를 한 줄로. 없으면 단서가 아니라 잡음이다."""
     if any("표본이 작다" in f for f in h["fails"]):
@@ -148,6 +234,7 @@ def build(db_path, contexts, ai_notes=None):
             "strong": strong, "weak": weak, "rejected": rejected,
             "eda": res["eda"], "data": res["data"],
             "lineage_skipped": res.get("lineage_skipped") or {},   # D42 — 서두 경고가 쓴다
+            "null_findings": null_findings(hyps),                  # D47 — 차이가 없었다
             "strong_pool": sum(1 for h in hyps if h["verdict"] == "strong"),
             "verified": sum(1 for h in strong if not h.get("holdout_unverified"))}, res
 
@@ -214,6 +301,7 @@ def build_insight_pdf(res, out_path, target, detail_pages):
     for i, h in enumerate(res["strong"], 1):
         page = detail_pages.get(_anchor(h, "s", i))
         d.card(h["claim"], audience=h["audience"],
+               action=action_hint(h),          # D47 — 읽고 무엇을 정할 수 있나
                evidence="%s %s · n=%s · p=%s · %s" % (
                    h.get("effect_kind", "효과"), _fmt(h.get("effect")),
                    "{:,}".format(h.get("n") or 0),
@@ -232,6 +320,19 @@ def build_insight_pdf(res, out_path, target, detail_pages):
                    "{:,}".format(h.get("n") or 0),
                    h["fails"][0] if h["fails"] else "—", recheck_hint(h)),
                detail_link=("상세 %d쪽" % page) if page else None)
+
+    nulls = res.get("null_findings") or []
+    if nulls:
+        d.h2("차이가 없었다 (%d개)" % len(nulls))
+        d.para("**이것도 발견이다.** 아래는 표본이 모자라 못 본 게 아니라, **충분히 보고도 "
+               "차이를 찾지 못한** 것들이다 — 여기에는 힘을 쓰지 않아도 된다는 근거로 쓴다. "
+               "표본 부족으로 기각된 것은 이 목록에 넣지 않았다(그건 '없다'가 아니라 '모른다'다).")
+        for h in nulls:
+            d.card(_null_claim(h), audience=h.get("audience"),
+                   action="이 축은 신경 쓰지 않아도 된다 — 다른 축에 힘을 쓴다",
+                   evidence="%s %s (차이 없음 수준) · n=%s" % (
+                       h.get("effect_kind", "효과"), _fmt(h.get("effect")),
+                       "{:,}".format(h.get("n") or 0)))
 
     if res["rejected"]:
         d.h2("기각된 가설 (%d개)" % len(res["rejected"]))

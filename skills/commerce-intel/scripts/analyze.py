@@ -46,7 +46,7 @@ import stat_playbook as sp                                          # noqa: E402
 from eda import CAT_AXES, MIN_N, run as run_eda                     # noqa: E402
 from intel_data import (cat_axes, category_hierarchy, collect,  # noqa: E402
                         incomparable_reason, matched_pairs, num_axes,
-                        product_series, style_rows)
+                        product_series, role_of, style_rows)
 
 # ── 관문 임계 ───────────────────────────────────────────────────────────────
 # 임계는 2026-08-03에 한 번 완화했다. 우리가 모으는 데이터는 표본이 크지 않고
@@ -347,26 +347,53 @@ def run_group(ctx):
     return out
 
 
+def _orient(x, y, xl, yl):
+    """상관의 방향을 역할로 세운다 (D47).
+
+    공급자가 정한 값(lever)은 **원인 쪽**에만 놓는다. "하트가 높을수록 할인율이
+    높다"는 할인을 하트가 정했다고 읽히는데, 실제로는 우리가 할인을 정했다.
+    둘 다 고객 반응이면 방향을 못 정하므로 그 사실을 표시해 둔다.
+    """
+    rx, ry = role_of(x), role_of(y)
+    if ry == "lever" and rx != "lever":     # 결과 자리에 레버가 왔다 — 뒤집는다
+        return y, x, yl, xl, "lever_to_response"
+    if rx == "lever":
+        return x, y, xl, yl, "lever_to_response"
+    if rx == "response" and ry == "response":
+        return x, y, xl, yl, "response_pair"   # 선후를 데이터가 답하지 않는다
+    return x, y, xl, yl, "unknown"
+
+
 def run_corr(ctx):
     out = []
     for c in ctx["eda"]["correlations"]:
         if c["definitional"] or abs(c["spearman"]) < 0.15:
             continue
-        pairs = [(i[c["x"]], i[c["y"]]) for i in ctx["styles"]
-                 if i.get(c["x"]) is not None and i.get(c["y"]) is not None]
+        # D47 — 방향을 세운 뒤에 값을 만든다. 순위 상관은 대칭이라 r은 안 바뀌지만,
+        # 문장과 구간별 추이(어느 축을 구간으로 자르나)가 달라진다.
+        x, y, xl, yl, direction = _orient(c["x"], c["y"], c["x_label"], c["y_label"])
+        pairs = [(i[x], i[y]) for i in ctx["styles"]
+                 if i.get(x) is not None and i.get(y) is not None]
         if len(pairs) < N_MIN:
             continue
         r = sp.spearman(pairs)
+        claim = "%s 높을수록 %s %s (순위 상관 %+.2f)" % (
+            _josa(xl, "이가"), _josa(yl, "이가"),
+            "높다" if (r or 0) > 0 else "낮다", r or 0)
+        if direction == "response_pair":
+            # 둘 다 고객 반응이다 — 어느 쪽이 먼저인지 데이터가 답하지 않는다.
+            # 문장이 인과처럼 읽히지 않게 **함께 움직인다**로 쓴다.
+            claim = "%s와 %s 함께 움직인다 (순위 상관 %+.2f · 선후는 알 수 없다)" % (
+                xl, _josa(yl, "은는"), r or 0)
         out.append({
             "method": "correlation", "kind": "correlation",
-            "x": c["x"], "y": c["y"], "x_label": c["x_label"], "y_label": c["y_label"],
+            "x": x, "y": y, "x_label": xl, "y_label": yl,
             "pairs": pairs, "eda": c, "vanity": c.get("vanity_pair"),
             "effect": r, "effect_kind": "순위 상관", "p": sp.perm_test_corr(pairs),
             "n": len(pairs), "trend": sp.binned_trend(pairs),
-            "claim": "%s 높을수록 %s %s (순위 상관 %+.2f)" % (
-                _josa(c["x_label"], "이가"), _josa(c["y_label"], "이가"),
-                "높다" if (r or 0) > 0 else "낮다", r or 0),
-            "audience": audience_of(c["y"], c["x"]),
+            "claim": claim,
+            "audience": audience_of(y, x),
+            "direction": direction,
         })
     return out
 

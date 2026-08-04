@@ -78,10 +78,60 @@ AXES = [
     ("price_sale", "판매가"), ("price_original", "정가"), ("discount_rate", "할인율(%)"),
     ("like_count", "하트"), ("review_count", "후기 수"), ("rating", "평점"),
     ("purchase_count", "누적판매*"), ("viewers_now", "보는 중(랭킹)"),
+    ("view_count", "조회수"),
     # 옵션(사이즈) — 값이 있는 문맥에서만 축 목록에 뜬다
     ("opt_total", "옵션 수"), ("opt_out_rate", "옵션 품절률(%)"), ("stock_sum", "재고 수량 합"),
     ("sold_min", "최소 판매량*"),
+    # 퍼널 비율 (D47) — 아래 FUNNEL이 계산해 붙인다
+    ("cvr_view_like", "조회→하트 전환(%)"), ("cvr_view_buy", "조회→구매 전환(%)"),
+    ("cvr_like_buy", "하트→구매 전환(%)"), ("review_per_buy", "구매 대비 후기(%)"),
 ]
+
+# ── 축의 역할 — 무엇이 Y가 될 수 있나 (D47) ────────────────────────────────
+# 2026-08-04 피드백: "할인율·판매가 등 **사람이 설정하는 값은 공급자 입장에서 Y가
+# 될 수 없다**". 맞다 — 우리가 정한 값을 결과로 놓고 원인을 찾으면 인과가 거꾸로다.
+# "하트가 높을수록 할인율이 높다"는 문장은 **할인을 하트가 정했다**고 읽힌다.
+#
+#   lever    공급자가 정한다 — 가격·할인·재고·옵션. **원인 쪽(X)에만 놓는다**
+#   response 고객이 만든다 — 조회·하트·후기·구매·순위. **결과 쪽(Y)이 된다**
+#
+# 상관을 만들 때 이 역할로 **방향을 세운다**. 둘 다 response면 방향을 못 정하므로
+# 그 사실을 주장에 적는다(선후를 데이터가 답하지 않는다).
+LEVER = {"price_sale", "price_original", "discount_rate",
+         "opt_total", "stock_sum"}
+RESPONSE = {"view_count", "viewers_now", "like_count", "review_count", "rating",
+            "purchase_count", "sold_min", "sold_out", "opt_out_rate", "rank",
+            "cvr_view_like", "cvr_view_buy", "cvr_like_buy", "review_per_buy"}
+
+
+def role_of(field):
+    return "lever" if field in LEVER else ("response" if field in RESPONSE else "context")
+
+
+# ── 퍼널 비율 (D47) ────────────────────────────────────────────────────────
+# 피드백: "절대값이 아니라 **비율**로 판단 (노출 대비 하트 등)". 절대값은 노출량에
+# 끌려간다 — 많이 노출된 상품이 하트도 많은 건 당연하고, 그건 상품의 힘이 아니다.
+#
+#     조회 → 하트 → 구매        (무신사가 세 값을 다 준다)
+#     stat.pageViewTotal · like_count · stat.purchaseTotal
+#
+# **분모가 없거나 0이면 만들지 않는다.** 0으로 나눈 자리를 0이나 100으로 채우면
+# 없는 성과를 만들어내는 것이고, 그건 이 프로젝트의 제1원칙 위반이다.
+FUNNEL = [
+    ("cvr_view_like", "like_count", "view_count"),
+    ("cvr_view_buy", "purchase_count", "view_count"),
+    ("cvr_like_buy", "purchase_count", "like_count"),
+    ("review_per_buy", "review_count", "purchase_count"),
+]
+
+
+def add_funnel(item):
+    """상품 하나에 퍼널 비율을 붙인다. 재료가 없으면 그 축은 만들지 않는다(None)."""
+    for name, num, den in FUNNEL:
+        a, b = item.get(num), item.get(den)
+        item[name] = round(100.0 * a / b, 3) if (
+            a is not None and b is not None and b > 0) else None
+    return item
 
 # ── 모듈 ────────────────────────────────────────────────────────────────────
 # 리포트는 종류가 아니라 **모듈의 조합**이다. 필요한 것만 골라 한 리포트로 만든다.
@@ -314,6 +364,7 @@ def collect(db_path, contexts):
         d["fit"] = attrs.get("핏")
         d["color"] = attrs.get("컬러")         # 컬러 축은 인프라만 — 채우는 건 8번(보류)
         d["_attrs"] = attrs
+        add_funnel(d)          # D47 — 조회→하트→구매 비율. 재료 없으면 None
         items.append(d)
 
     # 가격 변경 사건 — 상품별 마지막 관측 상태 대비(기존 diff 규칙과 동일 철학)

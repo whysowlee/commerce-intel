@@ -564,6 +564,69 @@ def prune_tests():
     shutil.rmtree(work, ignore_errors=True)
 
 
+def modeling_tests():
+    """Y 선정·퍼널 비율·무영향 인사이트 (D47 · 2026-08-04 피드백)."""
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    d = importlib.import_module("intel_data")
+    try:
+        ins = importlib.import_module("insight")
+    except ImportError:
+        # insight는 reportlab에 의존한다(PDF). 없는 환경에서도 데이터 층 규칙은
+        # 검증돼야 하므로 여기만 건너뛴다 — 배포 게이트는 package.sh가 지킨다.
+        ins = None
+
+    # E-MD-1 공급자가 정한 값은 Y가 될 수 없다
+    check("E-MD-1 할인율·판매가는 lever(원인 쪽)",
+          d.role_of("discount_rate") == "lever" and d.role_of("price_sale") == "lever")
+    check("E-MD-2 하트·조회·구매는 response(결과 쪽)",
+          all(d.role_of(f) == "response"
+              for f in ("like_count", "view_count", "purchase_count")))
+
+    # E-MD-3 퍼널 비율 — 분모가 없거나 0이면 만들지 않는다
+    it = d.add_funnel({"like_count": 50, "view_count": 1000,
+                       "purchase_count": 10, "review_count": 3})
+    check("E-MD-3 퍼널 비율이 계산된다 (조회 1000 · 하트 50 → 5%)",
+          it["cvr_view_like"] == 5.0 and it["cvr_view_buy"] == 1.0, it)
+    it0 = d.add_funnel({"like_count": 50, "view_count": None, "purchase_count": 5})
+    check("E-MD-4 분모가 없으면 비율을 만들지 않는다 (0으로 채우지 않는다)",
+          it0["cvr_view_like"] is None, it0)
+    itz = d.add_funnel({"like_count": 0, "view_count": 0, "purchase_count": 3})
+    check("E-MD-5 분모가 0이면 만들지 않는다 (나눗셈 폭발·가짜 100%)",
+          itz["cvr_view_like"] is None and itz["cvr_like_buy"] is None, itz)
+
+    if ins is None:
+        print("  SKIP  E-MD-6~10 무영향·액션 — reportlab 미설치")
+        return
+
+    # E-MD-6 무영향은 "없다"이고, 표본 부족은 "모른다"다 — 섞으면 안 된다
+    small = {"verdict": "rejected", "effect": 0.02, "n": 500,
+             "fails": ["표본이 작다"], "kind": "group_compare"}
+    real = {"verdict": "rejected", "effect": 0.03, "n": 500,
+            "fails": ["효과 크기가 작다"], "kind": "group_compare"}
+    got = ins.null_findings([small, real])
+    check("E-MD-6 표본 부족 기각은 '차이 없음'에 넣지 않는다",
+          got == [real], [g.get("fails") for g in got])
+    big = {"verdict": "rejected", "effect": 0.9, "n": 500,
+           "fails": ["다중비교"], "kind": "group_compare"}
+    check("E-MD-7 효과가 큰데 기각된 것도 '차이 없음'이 아니다",
+          ins.null_findings([big]) == [])
+    thin = {"verdict": "rejected", "effect": 0.01, "n": 10,
+            "fails": ["다중비교"], "kind": "group_compare"}
+    check("E-MD-8 n이 너무 적으면 '차이 없다'고 말하지 않는다",
+          ins.null_findings([thin]) == [])
+
+    # E-MD-9 액션은 약한 단서에 확정적으로 붙지 않는다
+    weak = {"verdict": "weak", "kind": "group_compare", "cat_field": "brand",
+            "fails": ["표본이 작다"]}
+    check("E-MD-9 약한 단서의 액션은 '아직 정하지 마라'로 시작한다",
+          ins.action_hint(weak).startswith("아직 정하지 마라"), ins.action_hint(weak))
+    resp = {"verdict": "strong", "kind": "correlation", "direction": "response_pair",
+            "x_label": "하트", "y_label": "후기 수"}
+    check("E-MD-10 반응끼리의 상관은 액션에서 선후를 단정하지 않는다",
+          "선후를 모른다" in ins.action_hint(resp), ins.action_hint(resp))
+
+
 def main():
     work = Path(tempfile.mkdtemp(prefix="intel-db-test-"))
     db = str(work / "intel.db")
@@ -760,6 +823,9 @@ def main():
 
     print("[17] 솎기 — 변화 순간 보존 (D45-a)")
     prune_tests()
+
+    print("[18] 모델링 — Y 선정·퍼널·무영향 (D47)")
+    modeling_tests()
 
     shutil.rmtree(work, ignore_errors=True)
     print("-" * 56)
