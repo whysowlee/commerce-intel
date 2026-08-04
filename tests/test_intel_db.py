@@ -376,6 +376,14 @@ def hierarchy_tests():
           not intel_data.incomparable("스커트", "아우터", h))
     check("E-CH-13 우산 판별은 트리 전체를 본다 (하의는 남성의류 아래서 부모)",
           "하의" in h["umbrella"] and "미니" not in h["umbrella"])
+    # E-CH-14 빈 값에서 죽지 않는다 — 터지면 리포트 생성 전체가 멈춘다 (PR #8 리뷰)
+    for bad in ("", "   ", ">", " > > "):
+        try:
+            got = intel_data.incomparable_reason(bad, "미니", h)
+            ok = got is None
+        except Exception as e:
+            ok, got = False, "%s: %s" % (type(e).__name__, e)
+        check("E-CH-14 빈 카테고리(%r)에서 예외 없이 None" % bad, ok, got)
     shutil.rmtree(work, ignore_errors=True)
 
 
@@ -427,9 +435,8 @@ def proxy_auto_tests():
           proxy_auto.judge_row(long_card, Row(name=tail)) is None)
     # E-PA-11 한글은 앞 경계가 없으면 "정면"이 코튼이 된다 (리뷰 발견)
     import json as _json
-    cards = _json.loads(io.open(
-        "skills/commerce-intel/references/proxy-cards-default.json",
-        encoding="utf-8").read())["cards"]
+    cards = _json.loads((SCRIPTS.parent / "references" /
+                         "proxy-cards-default.json").read_text(encoding="utf-8"))["cards"]
     mat = [c for c in cards if c["proxy_name"] == "material_word"][0]
     check("E-PA-11 '정면 컷'은 코튼으로 판정되지 않는다",
           proxy_auto.judge_row(mat, Row(name="정면 컷 스커트"))[0] == "소재 미표기")

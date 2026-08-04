@@ -238,9 +238,15 @@ def main():
         last = int(row["last_synced_key"]) if row and row["last_synced_key"] else 0
         result = rows_of(conn, table, since_rowid=last)
         headers, data, max_rowid = result[0], result[1], result[2]
-        ws = ensure_ws(sh, table, 30)
+        full_headers = [d[1] for d in conn.execute(f"PRAGMA table_info({table})")]
+        ws = ensure_ws(sh, table, len(full_headers))
+        # 빈 열은 셀 한도(워크북 1천만)를 갉아먹는다 — 관측 탭은 계속 자라므로
+        # 여기가 제일 먼저 막힌다. 2026-08-04 실측: observations가 156열(실제 20열)로
+        # 부풀어 780만 셀을 쓰고 있었고 append가 400으로 거절당했다. 줄이니 100만이 됐다.
+        # **값이 있는 열은 건드리지 않는다** — 헤더 수보다 넓을 때만 헤더 폭으로 맞춘다.
+        if ws.col_count > len(full_headers):
+            ws.resize(rows=ws.row_count, cols=len(full_headers))
         if not ws.get_values("A1:A1"):
-            full_headers = [d[1] for d in conn.execute(f"PRAGMA table_info({table})")]
             ws.update(values=[full_headers], range_name="A1")
         if data:
             ws.append_rows(data, value_input_option="RAW")

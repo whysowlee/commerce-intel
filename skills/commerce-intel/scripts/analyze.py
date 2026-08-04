@@ -295,8 +295,11 @@ def run_group(ctx):
     for cat_field, cat_label in ctx["cat_axes"]:
         groups = defaultdict(list)
         for it in ctx["styles"]:          # 변형이 아니라 스타일 단위 (#7)
-            if it.get(cat_field) is not None:
-                groups[it[cat_field]].append(it)
+            # None만이 아니라 **빈 문자열·공백도 거른다** — 값이 없는 것은 그룹이
+            # 아니다. 남겨두면 "카테고리에서 은 미니보다…" 같은 문장이 나온다
+            v = it.get(cat_field)
+            if v is not None and str(v).strip():
+                groups[v].append(it)
         big = sorted([(k, v) for k, v in groups.items() if len(v) >= N_MIN],
                      key=lambda kv: -len(kv[1]))
         truncated = max(0, len(big) - GROUPS_PER_AXIS)

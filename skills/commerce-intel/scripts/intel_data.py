@@ -208,7 +208,9 @@ def incomparable(a, b, hier):
 
 
 def incomparable_reason(a, b, hier):
-    """`incomparable`과 같은 판정에 **사유**를 붙여 돌려준다 — "ancestor" | "granularity" | None.
+    """`incomparable`과 같은 판정에 **사유**를 붙여 돌려준다.
+
+    "same"(같은 값) | "ancestor" | "granularity" | None(대등하다·판단 불가).
 
     사유를 나눠 세야 리포트가 "몇 개를 왜 뺐는지"를 말할 수 있다. 합계만 찍으면
     한쪽 사유로 과하게 빠져도 독자가 알 수 없다.
@@ -219,6 +221,11 @@ def incomparable_reason(a, b, hier):
     umbrella = hier.get("umbrella") or set()
     pa = [p.strip() for p in str(a).split(">") if p.strip()]
     pb = [p.strip() for p in str(b).split(">") if p.strip()]
+    # 빈 문자열·공백·`>`만 있는 값은 조각이 하나도 안 남는다. 그대로 두면 아래
+    # `pa[-1]`이 IndexError를 내고 **리포트 생성 전체가 죽는다**(PR #8 리뷰 발견).
+    # 판정 불가는 "거르지 않는다"로 간다 — 모르면 안 거르는 이 함수의 원칙 그대로다.
+    if not pa or not pb:
+        return None
     for x in pa:
         for y in pb:
             if x == y or (x, y) in anc or (y, x) in anc:
