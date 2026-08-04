@@ -11,6 +11,7 @@ import io
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -446,6 +447,123 @@ def proxy_auto_tests():
           proxy_auto.judge_row(mat, Row(name="면 100% 스커트"))[0] == "코튼")
 
 
+def schema_v2_tests():
+    """스키마 v2 (D45) — 뷰가 원본처럼 읽히고 써지는가 (E-DB).
+
+    옛 이름이 뷰가 됐다는 것이 이 스키마의 전부다. 뷰가 한 군데라도 어긋나면
+    분석 전체가 조용히 틀린 값을 본다 — 예외가 안 나는 종류라 여기서 고정한다.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    intel_db = importlib.import_module("intel_db")
+    work = Path(tempfile.mkdtemp(prefix="v2-"))
+    db = str(work / "v2.db")
+    conn = intel_db.connect(db)
+
+    # E-DB-12 새 DB는 v2다
+    tabs = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    views = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='view'")}
+    check("E-DB-12 새 DB는 v2로 만들어진다", "obs_base" in tabs and "products" in views,
+          sorted(tabs)[:6])
+
+    now = "2026-08-04 10:00:00"
+    conn.execute("INSERT INTO runs (run_id, site, story, target, collected_at) "
+                 "VALUES ('R1','29cm','brand-linesheet','T',?)", (now,))
+    # E-DB-4·11 뷰로 INSERT하고 URL이 접혔다 펴진다
+    conn.execute(
+        "INSERT INTO products (site, product_id, name, url, image_url, brand, category,"
+        " attributes, attributes_basis, static_verified_at, first_seen_at, last_seen_at,"
+        " raw_extras) VALUES ('29cm','P1','상품','https://a.test/goods/1',"
+        "'https://img.a.test/x.jpg','브랜드','미니',NULL,NULL,?,?,?,NULL)", (now, now, now))
+    r = conn.execute("SELECT url, image_url, brand, first_seen_at FROM products "
+                     "WHERE product_id='P1'").fetchone()
+    check("E-DB-4·11 뷰 INSERT 후 URL·시각이 그대로 왕복한다",
+          r["url"] == "https://a.test/goods/1"
+          and r["image_url"] == "https://img.a.test/x.jpg"
+          and r["first_seen_at"] == now, tuple(r))
+    check("E-DB-11 호스트가 사전으로 접혔다",
+          conn.execute("SELECT COUNT(*) FROM hosts").fetchone()[0] == 2)
+
+    # E-DB-6 부분 SET UPDATE
+    conn.execute("UPDATE products SET brand='새브랜드' WHERE site='29cm' AND product_id='P1'")
+    r = conn.execute("SELECT brand, name FROM products WHERE product_id='P1'").fetchone()
+    check("E-DB-6 부분 SET UPDATE가 다른 컬럼을 안 지운다",
+          r["brand"] == "새브랜드" and r["name"] == "상품", tuple(r))
+
+    # E-DB-5 중복 관측은 IntegrityError — "중복 N건" 집계가 이걸로 센다
+    conn.execute("INSERT INTO observations (site, product_id, observed_at, context,"
+                 " price_sale, rank, run_id) VALUES ('29cm','P1',?,'ranking:t',1000,3,'R1')",
+                 (now,))
+    dup = False
+    try:
+        conn.execute("INSERT INTO observations (site, product_id, observed_at, context,"
+                     " price_sale) VALUES ('29cm','P1',?,'ranking:t',9)", (now,))
+    except sqlite3.IntegrityError:
+        dup = True
+    check("E-DB-5 중복 관측은 IntegrityError로 남는다", dup)
+    o = conn.execute("SELECT price_sale, rank, run_id, context FROM observations").fetchone()
+    check("E-DB-4 관측이 뷰로 그대로 읽힌다",
+          tuple(o) == (1000, 3, "R1", "ranking:t"), tuple(o))
+
+    # E-DB-8 ttl_days=NULL은 덮어써야 한다 (set-attrs가 전역 TTL을 먹이는 방식)
+    for ttl in (90, None):
+        conn.execute("INSERT OR REPLACE INTO product_attributes (site, product_id,"
+                     " attr_name, value, basis, decided_at, ttl_days)"
+                     " VALUES ('29cm','P1','핏','와이드','name',?,?)", (now, ttl))
+    got = conn.execute("SELECT ttl_days FROM product_attributes "
+                       "WHERE product_id='P1'").fetchone()[0]
+    check("E-DB-8 ttl_days=NULL이 덮어써진다 (COALESCE로 지키면 안 된다)",
+          got is None, got)
+
+    # E-DB-10 증분 키는 뷰의 마지막 컬럼 _rowid다
+    cols = [d[0] for d in conn.execute("SELECT * FROM observations LIMIT 1").description]
+    check("E-DB-10 _rowid가 뷰의 **마지막** 컬럼이다", cols[-1] == "_rowid", cols[-3:])
+    shutil.rmtree(work, ignore_errors=True)
+
+
+def prune_tests():
+    """솎기 (D45-a) — 값이 바뀐 순간은 안 지운다 (E-DB-13·14)."""
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    intel_db = importlib.import_module("intel_db")
+    prune = importlib.import_module("prune")
+    work = Path(tempfile.mkdtemp(prefix="prune-"))
+    db = str(work / "p.db")
+    conn = intel_db.connect(db)
+    conn.execute("INSERT INTO products (site, product_id, name, first_seen_at, last_seen_at)"
+                 " VALUES ('29cm','P1','상품','2020-01-01 00:00:00','2020-01-01 00:00:00')")
+    # 10시점을 **한 시간 안에** 5분 간격으로 둔다 — 버킷(1시간)당 1개 규칙이 실제로
+    # 물어야 솎기가 검증된다. 가격은 3번째와 7번째에만 바뀌고 순위는 고정이다.
+    prices = [1000, 1000, 2000, 2000, 2000, 2000, 3000, 3000, 3000, 3000]
+    for i, p in enumerate(prices):
+        conn.execute("INSERT INTO observations (site, product_id, observed_at, context,"
+                     " price_sale, rank) VALUES ('29cm','P1',?,'brand:t',?,5)",
+                     ("2020-01-01 00:%02d:00" % (i * 5), p))
+    conn.commit()
+    counts, total = prune.plan(conn, keep_days=0, bucket=3600)
+    check("E-DB-13 예행은 남길 이유를 사유별로 센다",
+          counts.get("change", 0) >= 2 and counts.get("edge", 0) == 2, counts)
+    n = prune.apply_prune(conn)
+    kept = [r[0] for r in conn.execute(
+        "SELECT price_sale FROM observations ORDER BY observed_at")]
+    import itertools
+    seq = [k for k, _ in itertools.groupby(kept)]
+    check("E-DB-14 솎은 뒤에도 가격 변화 순서가 그대로다",
+          seq == [1000, 2000, 3000], (n, seq))
+    check("E-DB-14b 변화 없는 중복만 지워졌다", n > 0 and len(kept) < len(prices),
+          (n, len(kept)))
+    # E-DB-16 못 읽는 시각은 **즉시 걸린다** — NULL로 조용히 들어가면 그 관측은
+    # 시계열에서 사라지고 아무도 모른다 (NOT NULL이 그 몫을 진다)
+    bad = False
+    try:
+        conn.execute("INSERT INTO observations (site, product_id, observed_at, context)"
+                     " VALUES ('29cm','P1','날짜아님','brand:t')")
+    except sqlite3.IntegrityError:
+        bad = True
+    check("E-DB-16 해석 못 하는 시각은 NULL로 새지 않고 즉시 실패한다", bad)
+    shutil.rmtree(work, ignore_errors=True)
+
+
 def main():
     work = Path(tempfile.mkdtemp(prefix="intel-db-test-"))
     db = str(work / "intel.db")
@@ -636,6 +754,12 @@ def main():
 
     print("[15] 프록시 규칙 실행기 (D43)")
     proxy_auto_tests()
+
+    print("[16] 스키마 v2 — 뷰 읽기·쓰기 (D45)")
+    schema_v2_tests()
+
+    print("[17] 솎기 — 변화 순간 보존 (D45-a)")
+    prune_tests()
 
     shutil.rmtree(work, ignore_errors=True)
     print("-" * 56)

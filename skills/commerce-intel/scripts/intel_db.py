@@ -35,6 +35,10 @@ DEFAULT_DB = os.environ.get("INTEL_DB", "data/intel.db")
 STATIC_TTL_DAYS = 90          # D7
 DEFAULT_CYCLE_MINUTES = 1440  # D8 — 갱신 주기 미상일 때 24시간
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from schema_v2 import (SCHEMA_V2, TRIGGERS_V2, VIEWS_V2,   # noqa: E402
+                       select_rowid)
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS products (
     site TEXT NOT NULL,
@@ -147,6 +151,60 @@ CREATE TABLE IF NOT EXISTS sync_state (
 );
 """
 
+# v2에서도 그대로 쓰는 공용 표들 — 사전으로 접을 반복 텍스트가 없다.
+# 새 DB를 v2로 만들 때 SCHEMA_V2와 함께 실행한다.
+SCHEMA_TAIL = """
+CREATE TABLE IF NOT EXISTS platforms (
+    platform_key TEXT PRIMARY KEY,   -- 예: "musinsa" · "zigzag"
+    name TEXT, url TEXT, engine TEXT,
+    discovered_for_brand TEXT,
+    recon TEXT,               -- 정찰 결과 JSON (channel-scout 산출)
+    skill_status TEXT,        -- none/candidate/recon_done/draft/ready
+    updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS runs (
+    run_id TEXT PRIMARY KEY,
+    site TEXT, story TEXT, target TEXT,
+    collected_at TEXT, item_count INTEGER, source_total INTEGER,
+    incomplete INTEGER, notes TEXT, raw_file TEXT, loaded_at TEXT
+);
+CREATE TABLE IF NOT EXISTS proxy_defs (       -- 파생 프록시 정의 카드 (D19)
+    proxy_name TEXT PRIMARY KEY,
+    question TEXT, material TEXT,  -- name/image/badge/detail
+    value_space TEXT,              -- JSON 배열 또는 "numeric"
+    method TEXT,                   -- rule/vision/llm
+    created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS proxy_cache (       -- 판정 캐시 — 재료 지문이 같으면 재사용
+    proxy_name TEXT NOT NULL,
+    site TEXT NOT NULL, product_id TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,     -- 판정 재료 식별자(image_url·name 등)
+    value TEXT, basis TEXT, judged_at TEXT,
+    PRIMARY KEY (proxy_name, site, product_id, fingerprint)
+);
+CREATE TABLE IF NOT EXISTS insights (       -- 인사이트 엔진 산출 (D28)
+    -- 팀원이 읽는 창구는 시트다(D31 개정 2026-08-03). PDF는 네 손에서만 나오므로
+    -- 결과가 DB를 거쳐야 미러가 실어 나른다. 파이프라인 원칙과 같다 — 무엇도 DB를
+    -- 건너뛰지 않는다.
+    run_stamp TEXT NOT NULL,       -- 같은 실행의 결과를 묶는 키 (YYYYMMDD-HHmm)
+    target TEXT NOT NULL,          -- 리포트 대상 이름
+    context TEXT,                  -- 관측 문맥 (쉼표 구분)
+    verdict TEXT NOT NULL,         -- strong / weak / rejected
+    idx INTEGER NOT NULL,          -- 그 갈래 안의 순번 (1부터)
+    claim TEXT, audience TEXT,
+    effect REAL, effect_kind TEXT, n INTEGER, p REAL,
+    holdout TEXT, fails TEXT, recheck TEXT,
+    detail_pdf TEXT, detail_page INTEGER,
+    created_at TEXT,
+    PRIMARY KEY (run_stamp, target, verdict, idx)
+);
+CREATE TABLE IF NOT EXISTS sync_state (
+    table_name TEXT PRIMARY KEY,
+    last_synced_key TEXT,     -- observations는 마지막 rowid, 나머지는 마지막 전체 미러 시각
+    updated_at TEXT
+);
+"""
+
 STATIC_FIELDS = ("name", "url", "image_url", "brand", "category")
 # 속성별 ttl_days는 **명시된 것만 저장한다(미지정=NULL)**. NULL이면 reuse-attrs의
 # 전역 --ttl-days(기본 90=STATIC_TTL_DAYS)를 따른다 — 그래야 --ttl-days 0 같은 명시
@@ -159,12 +217,34 @@ OBS_FIELDS = (
 )
 
 
+def _is_v2(conn):
+    return bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                             "AND name='obs_base'").fetchone())
+
+
 def connect(db_path):
+    """DB를 연다. **v2 스키마면 뷰·트리거를 얹어 옛 이름 그대로 읽고 쓰게 한다**(D45).
+
+    구 스키마 DB는 그대로 둔다 — 자동으로 갈아엎지 않는다. 이관은 `migrate_v2.py`가
+    새 파일에 짓고 검산이 통과한 뒤 사람이 바꿔 끼운다. 정본을 조용히 바꾸지 않는다.
+    """
     parent = Path(db_path).parent
     if str(parent) not in ("", "."):
         parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    empty = not conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1").fetchone()
+    if empty:
+        # **새 DB는 v2로 만든다.** 구 스키마로 시작하면 나중에 또 옮겨야 한다.
+        conn.executescript(SCHEMA_V2)
+        conn.executescript(SCHEMA_TAIL)   # runs·platforms·proxy_*·insights·sync_state
+    if _is_v2(conn):
+        # 뷰·트리거는 매번 다시 만든다(멱등) — 스크립트가 갱신되면 곧바로 반영된다
+        conn.executescript(VIEWS_V2)
+        conn.executescript(TRIGGERS_V2)
+        conn.commit()
+        return conn
     conn.executescript(SCHEMA)
     try:  # 구버전 DB 마이그레이션 — raw_extras(재료 보존, D19)
         conn.execute("ALTER TABLE products ADD COLUMN raw_extras TEXT")
@@ -307,18 +387,20 @@ def _load_variants(conn, site, pid, variants, collected_at, run_id):
         if not oid:
             continue
         conn.execute(
-            "INSERT INTO variants VALUES (?,?,?,?,?,?,?,?) "
-            "ON CONFLICT(site, product_id, option_id) DO UPDATE SET "
-            "option_name=COALESCE(excluded.option_name, option_name), "
-            "color=COALESCE(excluded.color, color), size=COALESCE(excluded.size, size), "
-            "last_seen_at=excluded.last_seen_at",
+            # ON CONFLICT 절이 없다 — v2에서는 뷰의 INSTEAD OF 트리거가 업서트
+            # 의미를 진다(뷰에는 UPSERT를 못 쓴다). 구 스키마에서는 아래 OR REPLACE가
+            # 같은 일을 한다. 덮어쓰기 규칙은 schema_v2.TRIGGERS_V2에 적혀 있다.
+            "INSERT OR REPLACE INTO variants (site, product_id, option_id, option_name,"
+            " color, size, first_seen_at, last_seen_at) VALUES (?,?,?,?,?,?,?,?)",
             (site, pid, oid, v.get("option_name"), v.get("color"), v.get("size"),
              collected_at, collected_at),
         )
         so = v.get("sold_out")
         try:
             conn.execute(
-                "INSERT INTO variant_observations VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO variant_observations (site, product_id, option_id, observed_at,"
+                " sold_out, stock_qty, stock_display, stock_basis, run_id)"
+                " VALUES (?,?,?,?,?,?,?,?,?)",
                 (site, pid, oid, v.get("observed_at") or collected_at,
                  None if so is None else (1 if so else 0),
                  v.get("stock_qty"), v.get("stock_display"),
@@ -535,12 +617,10 @@ def cmd_set_attrs(conn, args):
             skipped += 1
             continue
         conn.execute(
-            "INSERT INTO product_attributes "
+            # ON CONFLICT 없음 — v2는 뷰 트리거가, 구 스키마는 OR REPLACE가 진다
+            "INSERT OR REPLACE INTO product_attributes "
             "(site, product_id, attr_name, value, basis, decided_at, ttl_days) "
-            "VALUES (?,?,?,?,?,?,?) "
-            "ON CONFLICT(site, product_id, attr_name) DO UPDATE SET "
-            "value=excluded.value, basis=excluded.basis, decided_at=excluded.decided_at, "
-            "ttl_days=excluded.ttl_days",
+            "VALUES (?,?,?,?,?,?,?)",
             (it["site"], str(it["product_id"]), it["attr_name"], val,
              it.get("basis") or "unknown", now, it.get("ttl_days")))   # 미지정이면 NULL
         added += 1
@@ -589,10 +669,9 @@ def cmd_tag_lifecycle(conn, args):
         if r["brand"] and aliases and r["brand"].lower() not in aliases:
             continue
         conn.execute(
-            "INSERT INTO product_attributes "
+            "INSERT OR REPLACE INTO product_attributes "
             "(site, product_id, attr_name, value, basis, decided_at, ttl_days) "
-            "VALUES (?,?,?,?,?,?,?) ON CONFLICT(site, product_id, attr_name) "
-            "DO UPDATE SET value=excluded.value, decided_at=excluded.decided_at",
+            "VALUES (?,?,?,?,?,?,?)",
             (r["site"], r["product_id"], "lifecycle", lc, "own-brand-list", now, 3650))
         tagged[lc] += 1
         unmatched_styles.discard(key)
@@ -648,12 +727,12 @@ def cmd_import_snapshots(conn, args):
 
 
 def cmd_export(conn, args):
-    q = f"SELECT * FROM {args.table}"  # 테이블명은 choices로 제한됨
+    # v2에서 옛 이름은 뷰라 rowid가 없다 — 뷰는 물리 키를 `_rowid`로 내준다
+    q = f"{select_rowid(conn, args.table)} FROM {args.table}"
     if args.since_rowid is not None:
-        q += f" WHERE rowid > {int(args.since_rowid)}"
-    q += " ORDER BY rowid"
-    rows = conn.execute(
-        q.replace("SELECT *", "SELECT rowid AS _rowid, *", 1)).fetchall()
+        q += f" WHERE _rowid > {int(args.since_rowid)}"
+    q += " ORDER BY _rowid"
+    rows = conn.execute(q).fetchall()
     if args.format == "json":
         print(json.dumps([dict(r) for r in rows], ensure_ascii=False))
     else:
