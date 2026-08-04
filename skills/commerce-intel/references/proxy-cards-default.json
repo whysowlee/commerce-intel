@@ -26,10 +26,10 @@
         {"value": "데님", "any": ["데님", "denim", "\\bjean"]},
         {"value": "가죽", "any": ["가죽", "레더", "leather", "스웨이드", "suede"]},
         {"value": "니트", "any": ["니트", "knit", "가디건", "cardigan"]},
-        {"value": "울", "any": ["울\\b", "wool", "캐시미어", "cashmere", "모헤어", "mohair"]},
+        {"value": "울", "any": ["\\b울\\b", "wool", "캐시미어", "cashmere", "모헤어", "mohair"]},
         {"value": "린넨", "any": ["린넨", "리넨", "linen"]},
         {"value": "새틴/실크", "any": ["새틴", "satin", "실크", "silk"]},
-        {"value": "코튼", "any": ["코튼", "cotton", "면\\b"]},
+        {"value": "코튼", "any": ["코튼", "cotton", "\\b면\\b"]},
         {"value": "소재 미표기", "any": ["."]}
       ]
     },
@@ -55,7 +55,7 @@
       "method": "rule",
       "value_space": ["시즌 표기 있음", "시즌 표기 없음", "unknown"],
       "rules": [
-        {"value": "시즌 표기 있음", "any": ["\\b(FW|SS|SP|AW)\\s?\\d{2,4}\\b", "\\b\\d{2,4}\\s?(FW|SS|SP|AW)\\b", "여름", "겨울", "봄\\b", "가을", "summer", "winter", "spring", "autumn", "기모", "쿨링"]},
+        {"value": "시즌 표기 있음", "any": ["\\b(FW|SS|SP|AW)\\s?\\d{2,4}\\b", "\\b\\d{2,4}\\s?(FW|SS|SP|AW)\\b", "여름", "겨울", "\\b봄\\b", "가을", "summer", "winter", "spring", "autumn", "기모", "쿨링"]},
         {"value": "시즌 표기 없음", "any": ["."]}
       ]
     },

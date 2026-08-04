@@ -7,6 +7,7 @@
 검증 대상: 적재 멱등성(중복 스킵) · 재사용 판정(check/reuse-attrs TTL) ·
 가격 변경 사건 검출 · 대시보드 산출물 구조.
 """
+import io
 import json
 import os
 import shutil
@@ -350,6 +351,18 @@ def hierarchy_tests():
           not intel_data.incomparable("처음보는값", "또다른값", h))
     check("D42 계층 정보가 없으면 아무것도 거르지 않는다",
           not intel_data.incomparable("미니", "하의", {"anc": set(), "parent": {}}))
+    # E-CH-1·3 사유를 나눠 센다 — 합계만 찍으면 ②로 과하게 빠져도 알 수 없다
+    check("E-CH-1 조상-자손은 사유가 ancestor",
+          intel_data.incomparable_reason("스커트", "미니", h) == "ancestor")
+    check("E-CH-3 부모 갈림은 사유가 branch",
+          intel_data.incomparable_reason("미니", "하의", h) == "branch")
+    check("E-CH-2 형제는 사유가 없다",
+          intel_data.incomparable_reason("미니", "미디", h) is None)
+    # E-CH-6 카탈로그가 없어도 예외를 내지 않는다
+    empty = intel_data.category_hierarchy(str(work / "no.db"),
+                                          catalog_path=str(work / "없는파일.json"))
+    check("E-CH-6 카탈로그 파일이 없어도 죽지 않는다",
+          empty == {"anc": set(), "parent": {}})
     shutil.rmtree(work, ignore_errors=True)
 
 
@@ -380,6 +393,37 @@ def proxy_auto_tests():
     num = {"material": "name", "numeric": {"kind": "char_len"}}
     check("D43 수치 프록시는 float으로 나온다",
           proxy_auto.judge_row(num, Row(name="abcde"))[0] == 5.0)
+
+    # ── 카드 검증 (2026-08-04 리뷰) — 카드는 AI가 쓰므로 검수된 입력이 아니다
+    ok, bad = proxy_auto.validate_cards([
+        {"proxy_name": "broken", "rules": [{"any": ["[unclosed"], "value": "x"}]},
+        {"proxy_name": "nopat", "numeric": {"kind": "count"}},
+        {"proxy_name": "fine", "rules": [{"any": ["[가-힣]"], "value": "한글"}]},
+    ])
+    names = [c["proxy_name"] for c in ok]
+    check("E-PA-8 컴파일 안 되는 정규식은 그 카드만 버린다", names == ["fine"], names)
+    check("E-PA-9 count인데 pattern 없으면 카드를 버린다",
+          any(n == "nopat" for n, _ in bad))
+    check("E-PA-9b judge_row도 죽지 않는다 (직접 호출 경로)",
+          proxy_auto.judge_row({"material": "name", "numeric": {"kind": "count"}},
+                               Row(name="아무거나")) is None)
+    # E-PA-10 입력을 잘라 백트래킹 폭발 여지를 줄인다 (완전 차단은 불가 — 알려진 한계)
+    long_card = {"material": "name", "rules": [{"any": ["끝$"], "value": "y"}]}
+    tail = "가" * (proxy_auto.MATCH_MAX_CHARS + 10) + "끝"
+    check("E-PA-10 매칭 입력은 MATCH_MAX_CHARS로 잘린다",
+          proxy_auto.judge_row(long_card, Row(name=tail)) is None)
+    # E-PA-11 한글은 앞 경계가 없으면 "정면"이 코튼이 된다 (리뷰 발견)
+    import json as _json
+    cards = _json.loads(io.open(
+        "skills/commerce-intel/references/proxy-cards-default.json",
+        encoding="utf-8").read())["cards"]
+    mat = [c for c in cards if c["proxy_name"] == "material_word"][0]
+    check("E-PA-11 '정면 컷'은 코튼으로 판정되지 않는다",
+          proxy_auto.judge_row(mat, Row(name="정면 컷 스커트"))[0] == "소재 미표기")
+    check("E-PA-11b '서울'은 울로 판정되지 않는다",
+          proxy_auto.judge_row(mat, Row(name="서울 스토어 한정"))[0] == "소재 미표기")
+    check("E-PA-11c 진짜 소재 표기는 잡는다",
+          proxy_auto.judge_row(mat, Row(name="면 100% 스커트"))[0] == "코튼")
 
 
 def main():

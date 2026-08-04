@@ -1,23 +1,11 @@
 #!/usr/bin/env python3
 """프록시 자동 생성 실행기 — 카드 묶음을 받아 **rule은 즉석 판정, vision은 배치를 뽑는다** (D43).
 
-## 왜 있나
+## 두 경로를 다 돌린다
 
-D19·D23은 "요청마다 AI가 프록시를 정의한다"고 정했고 D39가 그 프록시를 검정 축에
-연결했다. 그런데 실제로는 **거의 만들어지지 않았다** — 2026-08-04 스커트 리포트에서
-프록시 판정이 0건이었다. 이유는 정책이 아니라 마찰이었다:
-
-1. 옛 §0이 "요청이 기존 축으로 답해지면 만들지 않는다"라 **기본값이 안 만드는 쪽**이었다
-2. `vision` 판정은 서브 에이전트 배치를 손으로 조립해야 해서 매번 거르게 됐다
-
-사용자 결정(2026-08-04): **묻지 않아도 뽑을 수 있는 인사이트는 다 뽑는다.** 그래서
-기본값을 뒤집는다 — 리포트를 만들면 프록시가 **여러 개 자동으로** 생긴다. 사용자가
-특정 항목을 지목하면 그 카드를 더해 함께 돌린다.
-
-**두 경로를 다 돌린다.** 규칙으로 되는 것만 하면 **이미지에서만 나오는 축이 통째로
-빠진다.** 상품명은 브랜드가 쓴 글자일 뿐이고, 실제로 고객이 보는 것은 사진이다 —
-배경·로고 노출·모델 수·색상 수·패턴·촬영 각도·연출 소품 등 값 공간은 넓다. 어느 축을
-만들지는 **AI가 요청과 상품군을 보고 정한다**(D19·D23) — 이 파일에 목록을 박지 않는다.
+규칙으로 되는 것만 하면 **이미지에서만 나오는 축이 통째로 빠진다** — 배경·로고 노출·
+모델 수·색상 수·패턴·촬영 각도 등. 어느 축을 만들지는 **AI가 요청과 상품군을 보고
+정한다**(D19·D23) — 이 파일에 목록을 박지 않는다. 배경은 SPEC-INTEL D43.
 
     method=rule    → 이 스크립트가 즉석 판정. 비용 0, 몇 초
     method=vision  → 이 스크립트가 **배치 파일을 뽑는다**. 캐시에 있는 건 빼고,
@@ -77,10 +65,43 @@ def _material(row, which):
     return row[key] if key in row.keys() else None
 
 
+# 카드의 정규식은 **AI가 즉석에서 쓴다** — 검수된 입력이 아니다. 중첩 수량자의
+# 파국적 백트래킹을 파이썬 `re`로는 완전히 못 막으니(타임아웃 없음) 입력을 자른다.
+# 폭발은 입력 길이에 지수적이고 상품명은 짧아서 잘라도 잃는 게 없다.
+MATCH_MAX_CHARS = 400
+
+
 def _matches(pats, text, mode):
     """`any`는 하나라도, `all`은 전부. 대소문자는 무시한다 — 상품명 표기가 제멋대로다."""
+    text = text[:MATCH_MAX_CHARS]
     hits = [bool(re.search(p, text, re.I)) for p in pats]
     return any(hits) if mode == "any" else (all(hits) if hits else False)
+
+
+def validate_cards(cards):
+    """정규식이 컴파일되는 카드만 남긴다. 버린 카드는 사유와 함께 돌려준다.
+
+    **판정을 시작하기 전에** 걸러야 한다 — 중간에 터지면 그때까지 판정한 것이 함께
+    날아가고, 무엇이 문제였는지도 스택 트레이스로만 남는다.
+    """
+    ok, bad = [], []
+    for c in cards:
+        problem = None
+        for rule in c.get("rules", []):
+            for p in rule.get("any", []) + rule.get("all", []):
+                try:
+                    re.compile(p)
+                except re.error as e:
+                    problem = "정규식 오류 `%s` — %s" % (p, e)
+                    break
+            if problem:
+                break
+        num = c.get("numeric") or {}
+        if not problem and num.get("kind") == "count" and not num.get("pattern"):
+            # kind=count인데 pattern이 없으면 판정 시점에 죽는다 — 여기서 잡는다
+            problem = "numeric.kind=count 인데 pattern이 없다"
+        (bad.append((c.get("proxy_name", "?"), problem)) if problem else ok.append(c))
+    return ok, bad
 
 
 def judge_row(card, row):
@@ -101,7 +122,12 @@ def judge_row(card, row):
         if kind == "word_count":
             return float(len([w for w in re.split(r"\s+", text.strip()) if w])), "단어 수"
         if kind == "count":
-            return float(len(re.findall(num["pattern"], text, re.I))), "패턴 출현 수"
+            # pattern이 없는 카드는 validate_cards가 먼저 걸러내지만, judge_row를
+            # 직접 부르는 쪽(테스트·다른 스크립트)도 죽지 않게 여기서도 막는다
+            pat = num.get("pattern")
+            if not pat:
+                return None
+            return float(len(re.findall(pat, text[:MATCH_MAX_CHARS], re.I))), "패턴 출현 수"
         return None
     for rule in card.get("rules", []):
         mode = "all" if "all" in rule else "any"
@@ -216,6 +242,9 @@ def main():
 
     raw = json.load(open(a.cards, encoding="utf-8"))
     cards = raw["cards"] if isinstance(raw, dict) else raw
+    cards, bad_cards = validate_cards(cards)
+    for name, why in bad_cards:
+        print("  카드 버림 %-16s %s" % (name, why))
     conn = sqlite3.connect(a.db)
     conn.row_factory = sqlite3.Row
     rows = _load_rows(conn, a.context)
@@ -271,6 +300,11 @@ def main():
                   % (mat, len(plan["cards"]),
                      "{:,}".format(plan["unique_materials"]), len(plan["batches"])))
             print("       카드: %s" % ", ".join(c["proxy_name"] for c in plan["cards"]))
+            # 재료가 없어 아예 못 묻는 상품 — 세어만 두고 안 찍으면 "전부 판정했다"로
+            # 읽힌다(2026-08-04 리뷰). 이 PR이 rule 쪽에서 지키는 원칙과 같아야 한다
+            if plan["no_material"]:
+                print("       ※ %s건은 %s가 없어 판정 대상에서 빠졌다 — 결측이지 0이 아니다"
+                      % ("{:,}".format(plan["no_material"]), mat))
         print("  → 배치를 proxy-extractor 에이전트들에 나눠 주고, 결과를 proxy-load")
     conn.close()
     return 0

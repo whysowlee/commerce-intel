@@ -31,13 +31,8 @@ from intel_db import connect as db_connect                  # noqa: E402
 import chart                                                # noqa: E402
 from pdf_doc import Doc                                     # noqa: E402
 
-# 요약에 싣는 개수. **판정 기준이 아니라 표시 개수다** — 자격은 5관문이 정하고
-# 이 숫자는 "요약 한 장에 몇 개까지 올릴까"만 정한다. 5→10 (2026-08-04 사용자 결정):
-# 스커트 실측에서 자격을 통과한 14개 중 5개만 실려 9개가 **기각이 아니라 잘려** 있었다.
-# 관문을 건드리지 않으므로 느슨해지는 것은 없다.
-#
-# 채워지지 않을 수 있다 — 지문 중복 제거가 (범주축, 지표) 단위라 축이 적은 문맥은
-# 10개가 안 나온다. 그때 **빈자리를 약한 단서로 메우지 않는다**(그러면 구분이 무의미해진다).
+# **판정 기준이 아니라 표시 개수다** — 자격은 5관문이 정한다. 축이 적은 문맥은
+# 지문 중복 제거 때문에 다 안 채워지는데, **빈자리를 약한 단서로 메우지 않는다**.
 STRONG_MAX = 10
 WEAK_MAX = 20
 
@@ -66,10 +61,8 @@ def _signature(h):
     "롱 대 하의"가 서로 다른 지문이 되어 5칸 중 3칸을 같은 발견이 차지한다 — 독자가
     얻는 정보는 "카테고리에 따라 후기 수가 다르다" 하나뿐인데 말이다.
 
-    ※ 옛 주석은 "계층 정보가 없어 코드로는 못 가린다"였는데 **이제 가린다**(D42) —
-    실측 카탈로그로 `하의`(다른 가지)와 `미니`(스커트 아래)를 갈라 그 쌍을 검정에서
-    뺀다. 그래도 지문은 굵게 유지한다: 계층이 아니어도 같은 축·같은 지표의 쌍은
-    독자에게 같은 발견 하나이기 때문이다.
+    계층이 안 맞는 쌍은 D42가 따로 거른다. 여기 지문은 그것과 무관하게 굵게 잡는다 —
+    대등한 형제끼리라도 같은 축·같은 지표면 독자에게는 발견 하나다.
     """
     if h["kind"] == "group_compare":
         return ("g", h["cat_field"], h["metric"])
@@ -78,12 +71,9 @@ def _signature(h):
     return ("e",)
 
 
-# 한 청중이 요약을 독점하지 못하게 한다. MD가 원한 건 판매전략·디자인·마케팅으로
-# 나뉘어 나오는 것이지(2026-08-03 인터뷰), 마케팅 발견 5개가 아니다.
-#
-# STRONG_MAX와 함께 올린다(2→4, 2026-08-04). 1차 통과에서 담기는 최대치가
-# 청중 3종 × CAP이라, 2로 두고 표시만 10으로 늘리면 7~10번째 자리를 **청중 균형을
-# 보지 않는 2차 채움**이 가져간다 — 한 청중이 절반을 먹을 수 있고 그건 위 요구와 어긋난다.
+# 한 청중이 요약을 독점하지 못하게 한다(2026-08-03 인터뷰). 1차 통과 최대치가
+# 청중 3종 × CAP이라 STRONG_MAX와 함께 올려야 한다 — 안 그러면 남는 자리를
+# 청중 균형을 안 보는 2차 채움이 가져간다.
 AUDIENCE_CAP = 4
 
 
@@ -157,7 +147,7 @@ def build(db_path, contexts, ai_notes=None):
     return {"generated": res["generated"], "plan": res["plan"], "folded_variants": folded,
             "strong": strong, "weak": weak, "rejected": rejected,
             "eda": res["eda"], "data": res["data"],
-            "lineage_skipped": res.get("lineage_skipped", 0),   # D42 — 서두 경고가 쓴다
+            "lineage_skipped": res.get("lineage_skipped") or {},   # D42 — 서두 경고가 쓴다
             "strong_pool": sum(1 for h in hyps if h["verdict"] == "strong"),
             "verified": sum(1 for h in strong if not h.get("holdout_unverified"))}, res
 
@@ -183,17 +173,18 @@ def honesty_points(res):
                    "(무신사는 `(5 COLORS)`로 한 줄, 자사몰은 색상마다 한 줄이라 "
                    "그대로 세면 플랫폼마다 기준이 달라진다). 품절·재고는 상품 단위 그대로다."
                    % "{:,}".format(folded))
-    # D42: 표기 그대로 쓰는 축의 한계를 **인사이트 PDF 첫 장에서** 밝힌다. 전에는 상세
-    # PDF의 가설별 각주에만 있었는데, 정작 카드만 보고 판단하는 사람은 그걸 안 읽는다
-    # (2026-08-04 사용자가 인사이트 PDF에서 "미니 대 하의"를 발견 — 각주는 있었다).
+    # D42: 표기 그대로 쓰는 축의 한계를 **인사이트 PDF 첫 장에서** 밝힌다 —
+    # 카드만 보고 판단하는 사람은 상세 PDF의 각주를 안 읽는다.
     shown = [h for h in res.get("strong", []) + res.get("weak", [])
              if h.get("kind") == "group_compare"]
     if any(h.get("cat_field") == "category" for h in shown):
+        sk = res.get("lineage_skipped") or {}
         pts.append(
             "카테고리 값은 **사이트 표기 그대로**다 — 상위·하위 분류가 한 축에 섞여 있다"
-            "(예: 「하의」와 「미니」). 포함 관계로 확인된 쌍 %d개는 비교에서 뺐지만, "
-            "사이트가 경로를 안 밝힌 쌍은 못 걸렀다. 두 값이 같은 레벨인지 보고 읽어라."
-            % res.get("lineage_skipped", 0))
+            "(예: 「하의」와 「미니」). 대등하지 않은 쌍 %d개를 비교에서 뺐다"
+            "(상위-하위 %d · 다른 가지 %d). **사이트가 계층을 안 밝힌 값은 못 걸렀으니** "
+            "두 값이 같은 레벨인지 보고 읽어라."
+            % (sum(sk.values()), sk.get("ancestor", 0), sk.get("branch", 0)))
     if any(h.get("cat_field") == "brand" for h in shown):
         pts.append(
             "브랜드 값도 표기 그대로다 — 같은 브랜드가 플랫폼마다 다르게 적히면"

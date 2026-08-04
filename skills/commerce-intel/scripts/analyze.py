@@ -45,7 +45,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import stat_playbook as sp                                          # noqa: E402
 from eda import CAT_AXES, MIN_N, run as run_eda                     # noqa: E402
 from intel_data import (cat_axes, category_hierarchy, collect,  # noqa: E402
-                        incomparable, matched_pairs, num_axes,
+                        incomparable_reason, matched_pairs, num_axes,
                         product_series, style_rows)
 
 # ── 관문 임계 ───────────────────────────────────────────────────────────────
@@ -291,7 +291,7 @@ def run_group(ctx):
     labels = ctx["labels"]
     # D42: 카테고리 축에서만 계층 쌍을 거른다. 브랜드·품절·프록시는 계층이 없다.
     hier = ctx.get("hierarchy") or set()
-    skipped_lineage = 0
+    skipped_pairs = defaultdict(set)
     for cat_field, cat_label in ctx["cat_axes"]:
         groups = defaultdict(list)
         for it in ctx["styles"]:          # 변형이 아니라 스타일 단위 (#7)
@@ -308,11 +308,14 @@ def run_group(ctx):
                 for j in range(i + 1, len(big)):
                     ka, va = big[i]
                     kb, vb = big[j]
-                    # 포함 관계인 쌍은 검정하지 않는다 — "미니가 하의보다 크다"는
-                    # 부분과 전체를 겨루게 하는 것이라 어떤 결과가 나와도 못 쓴다
-                    if cat_field == "category" and incomparable(ka, kb, hier):
-                        skipped_lineage += 1
-                        continue
+                    # 대등하지 않은 쌍은 검정하지 않는다 (D42)
+                    if cat_field == "category":
+                        why = incomparable_reason(ka, kb, hier)
+                        if why:
+                            # 쌍 단위로 센다 — 지표마다 더하면 4쌍이 24로 부풀고
+                            # 리포트가 "쌍 24개를 뺐다"고 거짓말한다
+                            skipped_pairs[why].add((cat_field, ka, kb))
+                            continue
                     a = [x[metric] for x in va if x.get(metric) is not None]
                     b = [x[metric] for x in vb if x.get(metric) is not None]
                     if len(a) < N_MIN or len(b) < N_MIN:
@@ -335,8 +338,9 @@ def run_group(ctx):
                             "높다" if ma > mb else "낮다", _fmt(ma), _fmt(mb)),
                         "audience": audience_of(metric, cat_field),
                     })
-    # 몇 개를 걸렀는지 남긴다 — 조용히 줄어든 검정 수는 "전부 봤다"로 읽힌다
-    ctx["lineage_skipped"] = skipped_lineage
+    # 몇 개를 왜 걸렀는지 남긴다 — 조용히 줄어든 검정 수는 "전부 봤다"로 읽히고,
+    # 사유를 안 나누면 ②(다른 가지)로 과하게 빠져도 알 수 없다
+    ctx["lineage_skipped"] = {k: len(v) for k, v in skipped_pairs.items()}
     return out
 
 
@@ -641,7 +645,7 @@ def analyze(db_path, contexts, ai_notes=None, plan_only=False):
         gate(h, s)
     return {"ok": True, "plan": plan, "eda": eda_res, "data": data,
             "hypotheses": hyps, "generated": len(hyps),
-            "lineage_skipped": ctx.get("lineage_skipped", 0)}   # D42
+            "lineage_skipped": ctx.get("lineage_skipped") or {}}   # D42
 
 
 def main():

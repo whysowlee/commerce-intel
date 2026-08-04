@@ -120,36 +120,14 @@ def downsample_indices(count, limit=MAX_TREND_POINTS):
 
 
 # ── 카테고리 계층 (D42) ────────────────────────────────────────────────────
-# 사이트는 깊이가 다른 카테고리를 한 필드에 섞어 준다. 29CM 스커트 랭킹 실측:
-# 롱·미디·미니는 하위, 하의·여성의류는 상위, 데님·팬츠는 아예 다른 축이다.
-# 그대로 두면 "미니가 하의보다 할인율이 높다" 같은 **포함 관계끼리의 비교**가 강한
-# 주장으로 올라온다(2026-08-04 인사이트 PDF에서 사용자가 발견). 무의미하다 —
-# 미니는 하의의 부분집합이니 "부분이 전체보다 크다"는 문장이 된다.
+# 사이트가 깊이 다른 카테고리를 한 필드에 섞어 줘서 "미니가 하의보다 크다" 같은
+# 부분-전체 비교가 만들어진다. 근거는 실측 카탈로그(사이트가 밝힌 트리)다.
 #
-# **집합 포함으로는 판정할 수 없다**(실측 확인): 상품마다 카테고리가 하나뿐이라
-# 하의로 태깅된 상품과 미니로 태깅된 상품이 서로 겹치지 않는다 — 데이터상 두 값은
-# 무관한 형제로 보인다.
-#
-# 근거는 **실측 카탈로그**(`data/.tools/ranking_targets.json`, 두 플랫폼 1,546개)다.
-# 사이트가 직접 밝힌 트리라 우리가 추정할 것이 없다:
-#     여성의류 > 스커트 > {미니, 미디, 롱, 데님}     ← 넷은 형제. 비교해도 된다
-#     여성의류 > 단독 > 하의                        ← 하의는 **다른 가지**
-# DB의 경로 형태 값(`여성의류 > 스커트 > 미디` 3,468건)도 같은 형식이라 함께 먹인다 —
-# 카탈로그에 없는 값은 그쪽에서 배운다.
-#
-# 기각한 대안: 경로 값만으로 배우기. 그것만으로는 `하의`와 `미니`가 한 경로에 같이
-# 등장한 적이 없어 못 거른다(2026-08-04 실측 — 107→90개로 줄었는데 정작 사용자가
-# 지적한 「미니 대 하의」가 살아남았다). 카탈로그를 봐야 둘의 부모가 다름을 안다.
+# **집합 포함으로는 판정할 수 없다** — 상품마다 카테고리가 하나뿐이라 하의와 미니의
+# 상품 집합이 안 겹친다. 기각한 대안과 실측 수치는 SPEC-INTEL D42에 있다.
 
-# 카탈로그는 **`skills/` 안에 함께 배포된다**(references/). 처음엔 저장소 루트의
-# `data/.tools/ranking_targets.json`만 봤는데, 배포본은 `skills/`만 압축해 나가므로
-# 팀원 환경에서 파일이 없고 **계층 판정이 조용히 죽었다** — 예외도 안 나고 그냥 안
-# 걸러져서 「미니 대 하의」가 다시 리포트에 오른다(2026-08-04 배포 리허설로 발견).
-# 조용히 기능이 빠지는 것이 이 프로젝트에서 제일 나쁜 실패다.
-#
-# 두 곳을 순서대로 본다: 배포본(옆 references/) → 개발 저장소(data/.tools/).
-# 정본은 `data/.tools/`이고 references/ 사본은 배포용 미러다 — package.sh가 둘이
-# 어긋나면 패키징을 멈춘다.
+# 배포본은 `skills/`만 나가므로 카탈로그를 references/에도 둔다. 저장소 루트만 보면
+# 팀원 환경에서 **예외 없이 조용히** 필터가 죽는다. package.sh가 두 사본을 대조한다.
 _HERE = os.path.dirname(os.path.abspath(__file__))
 CATALOG_CANDIDATES = [
     os.path.join(os.path.dirname(_HERE), "references", "ranking_targets.json"),
@@ -214,20 +192,29 @@ def incomparable(a, b, hier):
     없는 근거로 검정을 지우면 "안 나온 것"과 "없는 것"이 섞인다 — 그건 리포트의
     정직성 규칙 위반이다. 대신 리포트 서두 경고가 그 몫을 진다.
     """
+    return incomparable_reason(a, b, hier) is not None
+
+
+def incomparable_reason(a, b, hier):
+    """`incomparable`과 같은 판정에 **사유**를 붙여 돌려준다 — "ancestor" | "branch" | None.
+
+    사유를 나눠 세야 리포트가 "몇 개를 왜 뺐는지"를 말할 수 있다. 합계만 찍으면
+    ②(다른 가지)로 많이 빠졌을 때 그것이 과잉 필터인지 아닌지 독자가 알 수 없다.
+    """
     if not hier or a == b:
-        return a == b
+        return "same" if a == b else None
     anc, parent = hier["anc"], hier["parent"]
     pa = [p.strip() for p in str(a).split(">") if p.strip()]
     pb = [p.strip() for p in str(b).split(">") if p.strip()]
     for x in pa:
         for y in pb:
             if x == y or (x, y) in anc or (y, x) in anc:
-                return True            # ① 같은 것이거나 조상-자손
+                return "ancestor"      # ① 같은 것이거나 조상-자손
     # ② 둘 다 트리에 있는데 부모를 하나도 공유하지 않으면 다른 가지다
     ka, kb = parent.get(pa[-1]), parent.get(pb[-1])
     if ka and kb and not (ka & kb):
-        return True
-    return False
+        return "branch"
+    return None
 
 
 def numeric_axes(data):
