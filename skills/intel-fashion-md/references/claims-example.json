@@ -1,0 +1,61 @@
+{
+  "_설명": "리포트 수치 주장을 sanity_check.py가 재계산·대조할 수 있는 형식. 리포트에 실리는 모든 수치는 여기 항목으로 만든다. observed_to로 검증 시점을 고정한다.",
+  "claims": [
+    {
+      "id": "C1",
+      "desc": "무신사 데님 팬츠(시장 스캔) 표본 수 — 최신 관측 기준",
+      "table": "observations",
+      "filters": { "site": "musinsa.com", "context_prefix": "market:데님 팬츠" },
+      "latest_only": true,
+      "observed_to": "2026-08-04T23:59:59",
+      "metric": "count_rows",
+      "expected": 1317
+    },
+    {
+      "id": "C2",
+      "desc": "같은 표본의 price_sale 중앙값 (null 제외)",
+      "table": "observations",
+      "filters": { "site": "musinsa.com", "context_prefix": "market:데님 팬츠" },
+      "latest_only": true,
+      "observed_to": "2026-08-04T23:59:59",
+      "metric": "median",
+      "field": "price_sale",
+      "expected": 89000
+    },
+    {
+      "id": "C3",
+      "desc": "funnel 비율: 조회 대비 하트 (sum(like)/sum(view), 둘 다 non-null 행만)",
+      "table": "observations",
+      "filters": { "site": "musinsa.com", "context_prefix": "market:데님 팬츠" },
+      "latest_only": true,
+      "observed_to": "2026-08-04T23:59:59",
+      "metric": "ratio",
+      "numerator": "like_count",
+      "denominator": "view_count",
+      "expected": 0.182,
+      "tolerance": 0.0005
+    },
+    {
+      "id": "C4",
+      "desc": "핏별 price_sale 중앙값 (product_attributes '핏'=와이드 필터 예시)",
+      "table": "observations",
+      "filters": { "site": "musinsa.com", "context_prefix": "market:데님 팬츠", "attr:핏": "와이드" },
+      "latest_only": true,
+      "observed_to": "2026-08-04T23:59:59",
+      "metric": "median",
+      "field": "price_sale",
+      "expected": 95000,
+      "min_n": 20
+    },
+    {
+      "id": "C5",
+      "desc": "할인 중 상품 비율 (discount_rate > 0 인 행의 share)",
+      "table": "observations",
+      "filters": { "site": "musinsa.com", "context_prefix": "market:데님 팬츠", "discount_rate": { "op": ">", "value": 0 } },
+      "latest_only": true,
+      "observed_to": "2026-08-04T23:59:59",
+      "metric": "count_rows",
+      "expected": 412
+    }
+  ]
+}

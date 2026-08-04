@@ -14,6 +14,24 @@
 정직한 신원으로 접근하면 사이트가 밝힌 정책 안에 있다.
 **User-Agent를 다른 것으로 위장하지 마라.** 403/429가 나오면 멈춘다.
 
+### ⚠️ robots는 **호스트마다 다르다** (2026-08-04 실측)
+
+`www`의 robots만 보고 API 호스트를 쓰면 안 된다. 실제로 갈렸다:
+
+| 호스트 | robots | 여기서 얻는 것 |
+|---|---|---|
+| `www.musinsa.com` | Claude-User·SearchBot·ClaudeBot **허용** | 화면(렌더 후 값 포함) |
+| `api.musinsa.com` | robots 없음(404) | PLP — 정가·할인·후기·평점·`isAd` |
+| `like.musinsa.com` | robots 없음 | 하트(벌크) |
+| `client.musinsa.com` | robots 없음 | 랭킹(연령·기간·보는 중) |
+| `goods.musinsa.com` | robots 없음 | 리뷰·만족도 설문·유사 상품 |
+| `content.musinsa.com` | robots 없음 | 콘텐츠(룩북·매거진)·스냅 프로필 |
+| **`goods-detail.musinsa.com`** | **`User-agent: *` / `Disallow: /`** | **쓰지 않는다** |
+
+마지막 줄이 §4-1·4-2가 적어 둔 엔드포인트들이다(`stat`·`page-view`·상세 JSON·
+`options`). **문서에 남기되 수집에 쓰지 않는다** — 아래 각 절에 그 표시를 달았다.
+전송 수단을 브라우저로 바꿔도 같다: 그 호스트를 향한 자동 요청이라는 사실이 안 변한다.
+
 ## 수집 경로 — API(경로 A) 우선, 브라우저(경로 B) 백업 (2026-07-30 재개정, SPEC v16)
 
 **경로 A(사이트가 화면을 그릴 때 쓰는 JSON API)가 기본이다.** 목록·랭킹·하트·실시간
@@ -344,7 +362,10 @@ Content-Type: application/json
 - 같은 호스트의 `/like/api/v2/members/liketypes/...`(등록/해제)는 상태를 바꾸는
   조작이므로 **쓰지 않는다**(스킬 비범위)
 
-## 4-1. 실시간 지표 원시값 API (확인, 2026-07-30)
+## 4-1. 실시간 지표 원시값 API — ⛔ **쓰지 않는다** (2026-08-04)
+
+> 아래 엔드포인트는 전부 `goods-detail.musinsa.com`에 있고, **그 호스트의 robots가
+> `Disallow: /`다**(접근 정책 절 참조). 스킴 기록으로만 남긴다 — 수집에 쓰지 마라.
 
 화면이 반올림("3만")·구간("300회 이상")으로 보여주는 값들의 **원시 정수**를 주는
 엔드포인트. PDP가 실제로 부르는 요청을 네트워크 캡처와 JS 번들에서 확인했다.
@@ -386,6 +407,257 @@ POST https://like.musinsa.com/like/api/v2/liketypes/brand/counts
 3. 랭킹 문구가 없는 상품은 `page-view`도 0이다. 다만 관측된 최솟값이 13이라
    **낮은 값(≤12)이 0으로 마스킹되는지는 미검증** — 0을 "아무도 안 본다"로 단정하지 마라
 
+## 4-2. 상품 상세 JSON — ⛔ **호스트 차단** (2026-08-04 실측)
+
+> `goods-detail.musinsa.com`이라 **쓰지 않는다.** 다만 여기 있는 값 상당수가
+> **허용된 `www` 상품 페이지 화면에도 표시된다** — 조회수·누적판매 구간 표기,
+> 월간 랭킹 이력, 후기 수, 문의 수, 품번, 성별, 시즌(브라우저 렌더 실측).
+> 그쪽으로 얻어라. 아래는 무엇이 있는지 아는 용도의 기록이다.
+
+```
+GET https://goods-detail.musinsa.com/api2/goods/{goodsNo}        → 25KB · 키 118개
+GET https://goods-detail.musinsa.com/api2/goods/{goodsNo}/options
+GET https://goods.musinsa.com/api2/review/v1/view/list?goodsNo=..&page=0&pageSize=20&sort=up_cnt_desc
+GET https://goods.musinsa.com/api2/review/v1/view/list/count?goodsNo=..   → 정수 하나
+```
+
+**화면을 열 필요가 없다.** 아래는 비로그인 200으로 실제 받은 것만 적는다.
+
+### 축적 없이 과거를 주는 것 — `rankingRecord`
+
+```json
+"rankingRecord": {"rankingRecordsTop": [
+  {"rank": 2, "gender": "F", "depth1CategoryCode": "003", "depth1CategoryName": "바지",
+   "depth2CategoryCode": "003002", "depth2CategoryName": "데님 팬츠",
+   "year": "2026", "month": "06", "depth": 2}, ...]}
+```
+
+**월별 × 카테고리 × 성별 순위 이력이 그대로 온다.** 우리가 쌓지 않은 과거다 —
+D41에서 "기간별 랭킹을 축적 없이 얻을 수 있나"를 조사했는데, 상품 단위로는
+여기가 답이다. 랭킹 API의 `period`와 달리 **월 단위 이력**이라 성격이 다르다.
+
+### 상품 나이 — 두 날짜가 다르다
+
+| 필드 | 어디 | 5448897 실측 |
+|---|---|---|
+| `goodsCreateDate` | 리뷰 API의 `goods` | `2025-09-12` — **등록일** |
+| `sellStartDate` | 상세 JSON | `2026-06-04` — **판매 개시일** |
+
+누적 지표(하트·누적판매)를 나이로 정규화할 때 **어느 쪽을 쓸지 정해야 한다.**
+둘이 9개월 차이 나므로 아무거나 쓰면 안 된다.
+
+### 리뷰 만족도 설문 — 사이즈·색감·퀄리티
+
+리뷰 객체의 `reviewSurveySatisfaction`에 **응답이 그대로** 들어 있다.
+
+```json
+{"surveyKind": "SATISFACTION", "questions": [
+  {"attribute": "사이즈", "answers": [{"answerShortText": "많이 큼"}]},
+  {"attribute": "화면 대비 색감", "answers": [{"answerShortText": "어두움"}]},
+  {"attribute": "퀄리티", "answers": [...]}]}
+```
+
+화면의 "조금 커요 39%"는 이 응답들의 집계다. **분포 API는 못 찾았고**(`summary`·
+`statistics`·`aggregate` 전부 404/400) 리뷰를 순회해 우리가 세야 한다.
+「미검증」 — 전수 순회로 화면 %와 대조하지 않았다.
+
+### 그 밖에 상세 JSON에 있는 것 (분석에 쓸 만한 것만)
+
+| 필드 | 무엇 | 왜 쓰나 |
+|---|---|---|
+| `baseCategoryFullPath` | `의류 > 바지 > 청/데님 팬츠` | **D42 카테고리 계층의 원천** — 경로를 그대로 준다 |
+| `goodsPrice` | `normalPrice`·`salePrice`·`couponPrice`·`finalPrice` 4종 | 어느 값이 "소비자가 본 가격"인지 이벤트마다 다르다 |
+| `labels[]` | `{"code":"exclusive-musinsa","name":"무신사단독"}` | 배지 = 플랫폼 노출 정책(교란변수) |
+| `reviewBoosting` | 후기 적립 이벤트 진행 여부·포인트 | **리뷰 전환율의 분모 오염 감지** — 부스팅 중이면 리뷰가 는다 |
+| `isMusinsaMonopoly`·`isOutlet`·`isTimeSale`·`isLimitedDc`·`isClearance` | 판매 상태 플래그 | 공급자·플랫폼 설정값(X) |
+| `isSoonOutOfStock`·`isRestock`·`isOutOfStock`·`isShowInventoryCount` | 재고 상태 | 판매량 상한을 만드는 검열 요인 |
+| `styleNo` | 브랜드 자체 품번 (`2A26D1PT01BL`) | 컬러 변형 묶기 — 이름 매칭보다 정확할 수 있다 「미검증」 |
+| `season`·`seasonYear` | 시즌 | 5448897은 `0`/`0000` — **브랜드가 안 채우면 빈 값**이다 |
+| `brandInfo.sinceYear` | 브랜드 설립연도 | 브랜드 나이 |
+| `goodsMaterial.materials` | **빈 배열** | 함정 6 그대로 — 핏·소재를 여기서 못 얻는다 |
+| `similarNo` | 유사 상품 | 5448897은 `0` — 값이 없다 |
+| `goodsReview` | `totalCount`·`satisfactionScore`·`hasSummary` | 후기 수·평점 |
+
+**옵션 재고는 `optionItems`에 수량이 없다** — `price`만 있고 `remainQuantity` 류가
+안 온다(실측). 사이즈별 재고는 기존 옵션 프로브 경로(§재고)를 계속 쓴다.
+
+`review/v1/view/list/count`는 **353**을 주는데 `goodsReview.totalCount`는 **338**이다.
+15 차이가 무엇인지 모른다 — 스타일 후기 포함 여부로 보이나 「미검증」.
+
+## 4-4. 연결 콘텐츠·UGC·유사 상품 (2026-08-04 실측 · 허용 호스트)
+
+브라우저 네트워크 캡처로 찾았다 — **URL을 추측해서는 못 찾는다**(스냅 관련 5개를
+추측으로 때려 봤는데 전부 404/530이었다).
+
+### 상품에 걸린 콘텐츠 (룩북·매거진·뉴스)
+
+```
+GET https://content.musinsa.com/api2/content/v1/musinsa-content/goods-detail/contents
+    ?brandId={slug}&goodsNo={no}&categoryCode=014001&size=10   ← 10건
+    ... &categoryCode=014002&size=5                            ←  5건
+```
+
+`data.list[]`에 **`title`·`representTypeName`(뉴스/룩북…)·`createdAt`·`displayedFrom`·
+`commentCount`·`viewCount`·`landingUrl`·`goodsReleaseAt`**가 온다.
+
+**콘텐츠 효과 이벤트 스터디의 재료다** — 발행일(`displayedFrom`)을 이벤트 시각으로
+잡고 전후 반응을 본다. `categoryCode` 두 값이 무엇을 가르는지는 「미검증」.
+
+### 스냅 프로필 (UGC 작성자)
+
+```
+GET https://content.musinsa.com/api2/content/snap/v1/profiles?ids={id},{id},...
+GET https://content.musinsa.com/api2/content/snap/v1/profiles/liked-snaps/count?ids=..&ids=..
+```
+
+`nickname`·`bio`·`type`(`USER`)·`createdAt`·`profileImageUrl`. **배치 조회된다.**
+`type`으로 **회원 UGC와 브랜드 공식·무신사 코디를 갈라야 한다**(인벤토리 PART B-5:
+셋을 섞으면 자발적 확산력이 플랫폼 푸시와 뒤섞인다).
+
+⚠️ 상품에 달린 **스냅 개수** 자체를 주는 엔드포인트는 아직 못 찾았다. 위 두 요청은
+이미 아는 id 목록을 받아 상세를 채우는 쪽이다 — id를 어디서 얻는지 「미확인」.
+
+### 유사 상품 — 경쟁셋 자동 정의
+
+```
+GET https://goods.musinsa.com/api2/review/v2/view/similar-list?goodsNo={no}
+```
+
+```json
+[{"goodsNo":"5715406","goodsName":"SNYDER WIDE DENIM (DARK BLUE)",
+  "relatedGoodsEstimate":5,"relatedEstimateCount":1,"satisfactionScore":5.0}]
+```
+
+5448897에서는 **자기 자신 + 같은 상품의 다른 컬러 2개**만 왔다(3건). 이름이
+`similar-list`지만 실측은 **컬러 변형**에 가깝다 — 경쟁 브랜드가 아니다.
+다른 상품에서도 그런지는 「미검증」. 컬러 변형 묶기(D34)에는 바로 쓸 수 있다.
+
+### 비디오
+
+```
+GET https://content.musinsa.com/api2/content/v1/musinsa-content/video/goods/{no}
+```
+
+5448897은 `data: null` — **이 상품에 영상이 없다**. 엔드포인트는 살아 있다.
+
+## 4-3. 연령대 × 기간 랭킹 (2026-08-04 실측)
+
+```
+GET https://client.musinsa.com/api/home/web/v5/pans/ranking/sections/200
+    ?storeCode=musinsa&gf=F&ageBand=AGE_BAND_ALL&period=REALTIME
+    &eventPeriod=BASIC_REALTIME&categoryCode=003002&page=1&startRank=1&offset=0
+```
+
+**연령대 × 기간 6조합이 전부 다른 결과를 준다**(md5 대조 — 하나도 같지 않다).
+
+| 파라미터 | 값 |
+|---|---|
+| `ageBand` | `AGE_BAND_ALL` · `AGE_BAND_20` · `AGE_BAND_30` … (인벤토리는 7구간) |
+| `period` | `REALTIME` · `MONTHLY` … (`eventPeriod`도 `BASIC_{period}`로 맞춘다) |
+| `gf` | `A`/`M`/`F` |
+
+응답이 585KB로 크고 GA4 페이로드가 섞여 있다. `type=PRODUCT_COLUMN` 항목에
+`image.rank`·`info.brandName`·`info.productName`·`info.discountRatio`·
+`info.finalPrice`가 있고, `info.additionalInformation[]`에 "N명이 보는 중"이 온다.
+
+⚠️ **기존 §3의 `api.musinsa.com/api2/dp/v1/ranking/goods`와 다른 엔드포인트다.**
+그쪽은 2026-08-04 프로브에서 **400**을 받았다 — 스킴이 바뀐 것인지 파라미터를
+잘못 준 것인지 확인하지 않았다 「미검증」. 둘 중 무엇을 정본으로 할지는 실제
+수집을 붙일 때 정한다.
+
+## 4-5. 화면 실측 · 경로 미확정 (2026-08-04 · 전 탭 조사)
+
+**여기 적힌 것은 전부 실제로 화면에서 본 것이다.** 다만 어느 요청으로 받는지는
+아직 안 잡았다 — 그래서 스킴이 아니라 **"거기에 그 값이 있다"는 기록**이다.
+수집이 필요해지면 여기서 출발해 브라우저 네트워크 캡처로 경로를 잡는다
+(URL 추측은 실패한다 — 스냅에서 5개 시도 전부 404/530이었다).
+
+### 랭킹 탭 — 필터 축이 조합된다
+
+- **섹션**: NEW · 전체 · **급상승** · **오프라인**(오프라인 매장 판매 랭킹) ·
+  부티크 · USED · 아울렛 · 키즈
+- **스타일**: 스트리트 · 미니멀 · 프레피 · 로맨틱 · 걸코어 · 캐주얼 · 워크웨어 ·
+  레트로 · 시크 (9종)
+- **랭킹 3종**: 상품 / 브랜드 / **검색어**
+- 검색어 랭킹: 인기·급상승, **순위 변동폭(▲N)**, 약 1분 갱신 — 수요 키워드 조기 신호
+- 브랜드 랭킹: 브랜드유형(영캐주얼·여성캐주얼·여성디자이너 등 10종) × 카테고리
+- 갱신 표시 "19분 전" (§3의 30분 배치와 일치)
+
+`ageBand`·`period`·`categoryCode`는 §4-3에서 경로까지 확정됐다. **섹션·스타일은
+파라미터를 못 찾았다** — 화면에서 클릭하면 URL이 안 바뀐다(CSR).
+
+### 검색·카테고리 정렬 레버 — 이게 제일 쓸모 있다
+
+정렬 UI: 무신사 추천순 / 신상품(재입고)순 / 가격순 / 할인율순 / 후기순 /
+**판매금액순** / **판매수량순** / **좋아요순** / **조회수순**
+
+뒤 네 개는 **하위 기간 선택**이 붙는다 — 실시간 / 1일 / 1주일 / 1개월 / 3개월 /
+1년 / 전체.
+
+> **왜 중요한가**: `goods-detail`이 막혀 조회수·판매수 원시값을 못 얻는데,
+> **"조회수순 1개월"로 정렬한 목록의 순서 자체가 그 축의 순위**다. 값은 몰라도
+> 순위는 사이트가 매겨 준다 — D48이 구간 표기를 순위로 쓰는 것과 같은 논리다.
+>
+> `sortCode`는 PLP API 파라미터인데(§12) **각 정렬의 코드 문자열을 전수 확정하지
+> 않았다** 「미확정」. `SALE_ONE_MONTH_COUNT`(판매수량 1개월)는 인벤토리에 적혀
+> 있으나 우리가 대조하지 않았다. 정렬을 클릭하며 네트워크를 캡처하면 잡힌다.
+
+상세 필터도 있다: 성별 · 컬러 · 패턴 · **소재** · 가격 구간 · 사이즈 · **핏** ·
+브랜드 · 혜택 · 라인업. **핏·소재는 상세 JSON이 안 주는 값인데**(함정 6 —
+`goodsMaterial.materials`가 빈 배열) 필터로는 존재한다 — 필터를 걸어 목록을 받으면
+그 값을 가진 상품 집합을 얻는다는 뜻이다 「경로 미확정」.
+
+### 상품 상세 화면에만 보이는 것
+
+| 항목 | 실측 | 쓸모 |
+|---|---|---|
+| **문의 수** | `문의 862` (정보 탭) | **재입고 문의 = 리오더 수요 시그널** |
+| 문의 유형 | 상품상세문의 / **재입고 문의** | 위를 유형별로 가른다 |
+| 도착 예정일·**도착 확률** | `99%` | 배송 신뢰도 |
+| AI 후기 요약(Beta) | 있음 | 요약문 자체가 텍스트 자산 |
+| 리뷰어 체형 | 성별·키·몸무게 | 사이즈 커브 보정 |
+| **월간 랭킹 히스토리** | `2026년 6월 데님 팬츠 여성 2위` | 축적 없이 과거 순위 (§4-2 `rankingRecord`) |
+| 실측 사이즈표 | 부위별 cm | 핏 비교 |
+
+### 세일 탭 — 유일한 실시간 소진 신호
+
+- **선착순 특가 재고 카운터**: `4/10개 남음` + 진행률 바
+- 타이머 3종: 당일(HH:MM:SS) · 타임세일(N일 HH:MM:SS) · 기획전(종료까지 N일)
+- 카드에 **정가가 안 나온다** — 할인율·할인가만. 정가는 PLP API에서 얻는다
+
+> 재고 카운터의 시간당 감소는 **그 가격점에서의 순간 수요율**이다. 우리가 가진
+> 어떤 값보다 직접적인 수요 신호인데, **경로 미확정**이라 아직 못 받는다.
+
+### 발매 탭
+
+발매 유형 라벨: 신상 · 재발매 · 인기 재발매 · **단독 발매** · **선발매** · 한정 ·
+컬래버. 발매일시가 **분 단위**로 나오고, 정렬에 **댓글순**이 있다(발매 소식 댓글 =
+사전 수요). 예정 건에는 알림 버튼.
+
+### 스냅 (UGC) — 필터 축이 곧 세그먼트
+
+- 유형: **회원 스냅 / 브랜드 스냅 / 무신사 코디** ← **반드시 분리 집계**한다.
+  섞으면 자발적 확산력이 플랫폼 푸시와 뒤섞인다
+- 필터: 성별 · 계절 · 스타일 15종 · **키/몸무게** · **TPO 12종** · 카테고리 · 브랜드
+- 총 게시물 수가 화면에 뜬다(전체 약 129만 · 여성 약 67만) — 시장 규모 프록시
+- 브랜드 프로필(`/snap/profile/{id}`): **팔로워 수** + 「스냅」(공식) / 「태그」(UGC) 2탭
+
+프로필 상세와 좋아요 수는 §4-4에서 경로가 잡혔다. **상품에 달린 스냅 개수**와
+목록 조회 경로는 아직 「미확정」.
+
+### 콘텐츠 탭
+
+섹션: 뉴스 · 오프라인 · 인터뷰 · 스페셜 · **룩북** · **무신사 쇼츠** · 비디오 ·
+댓글 급상승 매거진. 룩북 카드에 **브랜드명 · 발행시점 · 좋아요 · 댓글**.
+상품에 걸린 콘텐츠는 §4-4에서 경로가 잡혔고, **탭 전체 목록**은 「미확정」.
+
+### 그 밖
+
+- 글로벌 스토어 탭이 **별도 스토어**로 갈린다: MUSINSA / BEAUTY / SPORTS / OUTLET /
+  BOUTIQUE / KICKS / KIDS / USED / SNAP
+- 브랜드샵에 **브랜드 내 랭킹**(실시간·일간·주간·월간, 30위까지)이 있다
+- 축약 표기(`N천`·`N만`·`이상`)는 화면 전반에 쓰인다 — D48의 밴드 규칙을 적용한다
+
 ### 함정 1 — 조회수를 정수로 담지 마라
 
 무신사 조회수는 **`"300회 이상 (최근 1개월)"`처럼 구간으로 표기된다.**
@@ -399,8 +671,24 @@ POST https://like.musinsa.com/like/api/v2/liketypes/brand/counts
 
 > 2026-07-30 부기: 구간 표기의 **원시 정수를 주는 API를 찾았다**(§4-1 `stat.pageViewTotal`,
 > 404 실측 → 화면 "300회 이상"). 구간을 정수로 만들어내지 말라는 원칙은 그대로지만,
-> 원시값을 직접 조회하는 것은 그 문제가 없다. **`view_count`를 이 값으로 채울지는
-> SPEC 소관이라 지시 전까지 `null` 유지.**
+> 원시값을 직접 조회하는 것은 그 문제가 없다.
+>
+> **2026-08-04 확정(D48): `view_count`는 계속 `null`이다. 대신 구간 표기를
+> 순서형 축으로 쓴다.**
+>
+> `stat.pageViewTotal`로 채우려 했으나 **그 API가 사는 `goods-detail.musinsa.com`은
+> robots가 `Disallow: /`다**(2026-08-04 실측, Claude 예외 없음, 2회 재확인).
+> `www`의 robots만 보고 하위 호스트를 아무도 안 봤던 것이다. 그래서 쓰지 않는다.
+>
+> **얻는 방법**: 허용된 `www.musinsa.com/products/{no}` 페이지를 브라우저로 열어
+> 화면에 표시된 문구를 읽는다 — `조회수 1.2만 회 이상 (최근 1개월)`. 서버 HTML에는
+> 없고 렌더 후에 보인다(실측: HTML 198KB에 문구 0건 → 렌더 후 표시됨).
+>
+> **정수로 담지 않는 원칙은 그대로다.** 다만 **구간의 하한은 정확하므로 순서는
+> 오차 없이 매겨진다** — "1.2만 이상"이 12,000보다 크다는 것은 틀림이 없다.
+> 분석 층이 `view_band`(하한 정수)를 파생해 **순위 기반 통계에만** 쓴다
+> (Cliff δ·Spearman은 둘 다 순위 기반이라 그대로 성립한다).
+> **평균·합계·비율의 분모로는 쓰지 않는다** — 퍼널 전환율은 원시 정수가 있을 때만.
 
 ### 함정 2 — 하트가 세 종류다
 

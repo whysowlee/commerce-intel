@@ -610,6 +610,29 @@ def modeling_tests():
     check("E-MD-5 분모가 0이면 만들지 않는다 (나눗셈 폭발·가짜 100%)",
           itz["cvr_view_like"] is None and itz["cvr_like_buy"] is None, itz)
 
+    # ── 구간 표기 → 순서형 축 (D48) ──────────────────────────────────
+    # 원시 정수를 주는 API는 robots가 막혀 쓰지 않는다. 화면 구간 표기를 쓰되
+    # **하한만 정확하므로 순위로만** 쓴다.
+    for disp, want in [("1.2만 회 이상 (최근 1개월)", 12000), ("2.7천 개 이상", 2700),
+                       ("300회 이상", 300), ("1,500개 이상", 1500),
+                       ("5억 이상", 500000000)]:
+        check("E-MD-19 구간 하한을 정확히 읽는다 (%s)" % disp,
+              d.band_floor(disp) == want, d.band_floor(disp))
+    for bad in ("없음", "", None, "1.2만 회", "조회수"):
+        check("E-MD-20 구간 표기가 아니면 만들지 않는다 (%r)" % bad,
+              d.band_floor(bad) is None, d.band_floor(bad))
+    b = d.add_bands({"view_count_display": "1.2만 회 이상",
+                     "purchase_count_display": "2.7천 개 이상"})
+    check("E-MD-21 밴드가 축으로 붙는다",
+          b["view_band"] == 12000 and b["purchase_band"] == 2700 and b["like_band"] is None, b)
+    # **밴드를 비율 분모로 쓰면 전환율이 부풀려진다** — 하한이라서다
+    f = d.add_funnel(dict(b))
+    check("E-MD-22 밴드로는 퍼널 비율을 만들지 않는다",
+          f["cvr_view_like"] is None and f["cvr_view_buy"] is None, f)
+    check("E-MD-23 밴드의 역할은 response",
+          all(d.role_of(x) == "response"
+              for x in ("view_band", "purchase_band", "like_band")))
+
     if ins is None:
         print("  SKIP  E-MD-6~10 무영향·액션 — reportlab 미설치")
         return
@@ -721,6 +744,53 @@ def incremental_key_tests():
         check("E-DB-22 %s 헤더에 _rowid가 안 섞인다" % table,
               "_rowid" not in h, h[-2:] if h else h)
     shutil.rmtree(work, ignore_errors=True)
+
+
+def collector_tests():
+    """수집기 (D48 · E-CO) — 네트워크에 붙지 않고 순수 함수만 검증한다.
+
+    `plp()`는 HTTP를 타므로 여기서 부르지 않는다. **네트워크 없이 확인할 수 있는
+    것**을 고정한다: 쿼리 인코딩, 커버리지 판정, 카드 매핑.
+    """
+    import importlib.util
+    import urllib.parse
+    path = ROOT / "data" / ".tools" / "musinsa_collect.py"
+    if not path.exists():
+        print("  SKIP  수집기 — 파일 없음")
+        return
+    spec = importlib.util.spec_from_file_location("musinsa_collect", str(path))
+    mc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mc)
+
+    # E-CO-4 값을 그대로 붙이면 한글·& 에서 쿼리가 깨진다
+    q = urllib.parse.urlencode({"brand": "한글슬러그", "sortCode": "A&B", "page": "1"})
+    check("E-CO-4 쿼리 파라미터가 인코딩된다",
+          "%" in q and "&B" not in q.replace("%26B", ""), q)
+
+    # E-CO-3 총계 0에서 커버리지 판정이 죽지 않는다
+    for total, items, want in [(None, 0, "모름"), (0, 0, "0"), (100, 50, "50.0"),
+                               (100, 100, "100.0")]:
+        cov = (100.0 * items / total) if total else None
+        try:
+            if cov is None:
+                note = "" if total is None else "총계 0"
+            else:
+                note = "%.1f%%%s" % (cov, "" if cov >= 99.0 else " 미완주")
+            ok = True
+        except Exception as e:
+            ok, note = False, "%s: %s" % (type(e).__name__, e)
+        check("E-CO-3 커버리지 판정이 total=%r에서 안 죽는다" % total, ok, note)
+
+    # E-CO 카드 매핑 — reviewScore는 100점 척도다(94 = 4.7)
+    it = mc._plp_item({"goodsNo": 1, "goodsName": "n", "reviewScore": 94,
+                       "reviewCount": 5, "normalPrice": 1000, "finalPrice": 700,
+                       "finalDiscount": 30, "isSoldOut": False, "isAd": True})
+    check("E-CO 평점을 20으로 나눈다 (94 → 4.7)", it["rating"] == 4.7, it["rating"])
+    check("E-CO 광고 슬롯을 raw_extras에 남긴다",
+          it["raw_extras"]["is_ad"] is True, it["raw_extras"])
+    none_score = mc._plp_item({"goodsNo": 2, "reviewScore": None})
+    check("E-CO 평점이 없으면 만들지 않는다 (0으로 채우지 않는다)",
+          none_score["rating"] is None, none_score["rating"])
 
 
 def main():
@@ -925,6 +995,9 @@ def main():
 
     print("[19] 증분 키 — 실제 sqlite3 (뷰·물리 테이블)")
     incremental_key_tests()
+
+    print("[20] 수집기 — 인코딩·커버리지·카드 매핑 (D48)")
+    collector_tests()
 
     shutil.rmtree(work, ignore_errors=True)
     print("-" * 56)
