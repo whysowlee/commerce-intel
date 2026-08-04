@@ -32,7 +32,7 @@ import sys
 
 try:
     from reportlab.lib import colors
-    from reportlab.lib.enums import TA_LEFT
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib.units import mm
@@ -76,17 +76,29 @@ BG_SOFT = colors.HexColor("#F7F8FA")
 BG_ROW = colors.HexColor("#FAFBFC")
 BG_HEAD = colors.HexColor("#F2F4F7")
 
+# 장식 전용 악센트 — 제목 밑줄·카드 왼쪽 바·통계 스트립. 여기 한 줄만 바꾸면 된다.
+ACCENT = colors.HexColor("#3A5060")
+
+# 청중 배지. **라벨을 지우지 않으므로** 색을 못 봐도 읽힌다(색약 규칙 D12-d).
+AUDIENCE_BADGE = {
+    "판매전략": (colors.HexColor("#1B4F9C"), colors.white),   # 파랑
+    "마케팅":  (colors.HexColor("#B3541E"), colors.white),   # 주황
+    "디자인":  (colors.HexColor("#2E6B4F"), colors.white),   # 초록
+}
+BADGE_WEAK = (colors.HexColor("#E7EAEE"), colors.HexColor("#4A515C"))   # 약한 단서 — 채우지 않는다
+BADGE_DEFAULT = (colors.HexColor("#4A515C"), colors.white)
+
 
 def _styles():
     _ensure_font()
     base = dict(fontName=FONT, textColor=INK, alignment=TA_LEFT,
                 wordWrap="CJK")   # 한글은 글자 단위가 아니라 어절로 끊는다
     return {
-        "h1": ParagraphStyle("h1", **base, fontSize=19, leading=24, spaceAfter=2),
+        "h1": ParagraphStyle("h1", **base, fontSize=21, leading=26, spaceAfter=3),
         "sub": ParagraphStyle("sub", **dict(base, textColor=MUTED),
-                              fontSize=8.5, leading=12, spaceAfter=10),
-        "h2": ParagraphStyle("h2", **base, fontSize=13, leading=17,
-                             spaceBefore=14, spaceAfter=5),
+                              fontSize=8.5, leading=12, spaceAfter=8),
+        "h2": ParagraphStyle("h2", **base, fontSize=13.5, leading=18,
+                             spaceBefore=16, spaceAfter=4),
         "h3": ParagraphStyle("h3", **base, fontSize=11, leading=15,
                              spaceBefore=8, spaceAfter=3),
         "body": ParagraphStyle("body", **base, fontSize=9.8, leading=14.5, spaceAfter=5),
@@ -94,9 +106,13 @@ def _styles():
                                 fontSize=8.2, leading=11.5, spaceAfter=3),
         "cell": ParagraphStyle("cell", **base, fontSize=8.6, leading=11.8),
         "cellhead": ParagraphStyle("cellhead", **base, fontSize=8.6, leading=11.8),
-        "claim": ParagraphStyle("claim", **base, fontSize=10.5, leading=15, spaceAfter=3),
+        "claim": ParagraphStyle("claim", **base, fontSize=10.8, leading=15.5, spaceAfter=3),
         "evidence": ParagraphStyle("evidence", **dict(base, textColor=MUTED),
                                    fontSize=8.2, leading=11.5),
+        # 통계 스트립 — 큰 숫자 + 작은 라벨 (pdf-design stats strip)
+        "stat_num": ParagraphStyle("stat_num", **base, fontSize=17, leading=20, spaceAfter=1),
+        "stat_label": ParagraphStyle("stat_label", **dict(base, textColor=MUTED),
+                                     fontSize=7.6, leading=10),
     }
 
 
@@ -156,15 +172,18 @@ class Doc:
         self.h1(title)
         if subtitle:
             self.flow.append(Paragraph(esc(subtitle), self.s["sub"]))
-            self.flow.append(_Rule(1.2, INK))
-            self.flow.append(Spacer(1, 8))
+            # 제목 블록 마감 — 전폭 얇은 선 대신 짧고 굵은 악센트 바(pdf-design 패턴).
+            # 가는 전폭 선보다 시선이 제목에 모이고, 본문 표의 선들과 위계가 갈린다.
+            self.flow.append(_Rule(2.6, ACCENT, width=74))
+            self.flow.append(Spacer(1, 12))
 
     # ── 텍스트 ──────────────────────────────────────────────────────────
     def h1(self, text):
         self.flow.append(Paragraph(esc(text), self.s["h1"]))
 
     def h2(self, text, anchor=None):
-        el = [Paragraph(esc(text), self.s["h2"]), _Rule(1.0, INK), Spacer(1, 5)]
+        # 제목 아래 짧은 악센트 바 — 전폭 밑줄보다 깔끔하고 표 머리선과 혼동되지 않는다
+        el = [Paragraph(esc(text), self.s["h2"]), _Rule(2.0, ACCENT, width=52), Spacer(1, 7)]
         if anchor:
             el.insert(0, _Anchor(anchor, self))
         # 제목만 남고 내용이 다음 장으로 넘어가는 꼴을 막는다
@@ -202,6 +221,7 @@ class Doc:
         t.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, -1), BG_SOFT),
             ("BOX", (0, 0), (-1, -1), 0.6, RULE_STRONG),
+            ("LINEBEFORE", (0, 0), (0, -1), 2.5, RULE_STRONG),   # 카드와 같은 문법의 왼쪽 바
             ("LEFTPADDING", (0, 0), (-1, -1), 8),
             ("RIGHTPADDING", (0, 0), (-1, -1), 8),
             ("TOPPADDING", (0, 0), (-1, -1), 3),
@@ -212,6 +232,60 @@ class Doc:
         self.flow.append(t)
         self.flow.append(Spacer(1, 10))
 
+    # ── 통계 스트립 (pdf-design stats strip 이식 · 2026-08-04) ──────────
+    def stats(self, items):
+        """핵심 수치 3~4개를 한 줄로 — 왼쪽 악센트 바 + 큰 숫자 + 작은 라벨.
+
+        요약 리포트 머리에서 "이 리포트에 뭐가 몇 개 있나"를 첫눈에 답한다.
+        숫자와 라벨이 전부 텍스트라 색이 없어도(흑백 인쇄) 그대로 읽힌다.
+        items: [(라벨, 값)] — 값이 str이면 그대로, 수면 천 단위 구분해 그린다.
+        """
+        items = [(l, v) for l, v in items if v is not None]
+        if not items:
+            return
+        n = len(items)
+        cells = []
+        for label, value in items:
+            text = value if isinstance(value, str) else "{:,}".format(value)
+            cells.append([Paragraph(b(esc(text)), self.s["stat_num"]),
+                          Paragraph(esc(label), self.s["stat_label"])])
+        t = Table([cells], colWidths=[self._content_width() / n] * n)
+        style = [("VALIGN", (0, 0), (-1, -1), "TOP"),
+                 ("TOPPADDING", (0, 0), (-1, -1), 2),
+                 ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                 ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                 ("RIGHTPADDING", (0, 0), (-1, -1), 6)]
+        for i in range(n):
+            style.append(("LINEBEFORE", (i, 0), (i, 0), 2.5, ACCENT))
+        t.setStyle(TableStyle(style))
+        self.flow.append(t)
+        self.flow.append(Spacer(1, 12))
+
+    # ── 배지 ────────────────────────────────────────────────────────────
+    def _badge_row(self, badges):
+        """색이 다른 작은 라벨 여러 개를 한 줄로. 각 배지는 글자 폭만큼만 차지한다.
+
+        폭을 stringWidth로 재서 준다 — 고정 폭을 주면 「디자인」과 「판매전략」이 같은
+        칸에 들어가 짧은 쪽에 빈 공간이 남는다. 마지막 칸은 남는 폭을 먹여 왼쪽 정렬.
+        """
+        cells, widths = [], []
+        for text, (_bg, fg) in badges:
+            st = ParagraphStyle("badge", parent=self.s["small"], textColor=fg,
+                                fontSize=7.6, leading=9.5, spaceAfter=0, alignment=TA_CENTER)
+            cells.append(Paragraph(b(esc(text)), st))
+            widths.append(pdfmetrics.stringWidth(text, FONT, 7.6) + 14)
+        cells.append("")
+        widths.append(max(self._content_width() - sum(widths) - 18, 1))
+        t = Table([cells], colWidths=widths, rowHeights=[13.5])
+        style = [("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                 ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE")]
+        for i, (_, (bg, _fg)) in enumerate(badges):
+            style.append(("BACKGROUND", (i, 0), (i, 0), bg))
+            style.append(("RIGHTPADDING", (i, 0), (i, 0), 5))   # 배지 사이 간격
+        t.setStyle(TableStyle(style))
+        return t
+
     # ── 카드 (가설 하나 = 카드 하나) ────────────────────────────────────
     def card(self, claim, audience=None, evidence=None, weak=False,
              detail_link=None, anchor=None):
@@ -221,13 +295,11 @@ class Doc:
         색이 아니라 **선 굵기와 라벨**로 구분되므로 흑백 인쇄에서도 살아남는다.
         """
         inner = []
-        head = []
-        if audience:
-            head.append("[%s]" % esc(audience))
-        if weak:
-            head.append("[약한 단서]")
-        prefix = (b(" ".join(head)) + " ") if head else ""
-        inner.append(Paragraph(md(prefix + esc(claim)), self.s["claim"]))
+        badges = ([(audience, AUDIENCE_BADGE.get(audience, BADGE_DEFAULT))] if audience else []) \
+            + ([("약한 단서", BADGE_WEAK)] if weak else [])
+        if badges:
+            inner.append(self._badge_row(badges))
+        inner.append(Paragraph(md(esc(claim)), self.s["claim"]))
         if detail_link:
             inner.append(Paragraph("→ 상세: %s" % esc(detail_link), self.s["small"]))
         if evidence:
@@ -239,11 +311,14 @@ class Doc:
         t.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, -1), BG_ROW if weak else colors.white),
             ("BOX", (0, 0), (-1, -1), 0.6, RULE),
-            ("LINEBEFORE", (0, 0), (0, -1), 2.5, RULE_STRONG if weak else INK),
-            ("LEFTPADDING", (0, 0), (-1, -1), 9),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 9),
-            ("TOPPADDING", (0, 0), (-1, -1), 7),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+            # 강한 주장은 악센트 색 + 더 굵은 바. 색을 못 봐도 굵기(3.0 대 2.5)와
+            # 배경·「약한 단서」배지로 갈리므로 흑백 원칙은 그대로다.
+            ("LINEBEFORE", (0, 0), (0, -1),
+             2.5 if weak else 3.0, RULE_STRONG if weak else ACCENT),
+            ("LEFTPADDING", (0, 0), (-1, -1), 10),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+            ("TOPPADDING", (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
         ]))
         el = [t, Spacer(1, 6)]
         if anchor:
@@ -266,7 +341,7 @@ class Doc:
         t = Table(data, colWidths=cw, repeatRows=1)   # 페이지 넘어가면 머리행 반복
         style = [
             ("BACKGROUND", (0, 0), (-1, 0), BG_HEAD),
-            ("LINEBELOW", (0, 0), (-1, 0), 1.0, RULE_STRONG),
+            ("LINEBELOW", (0, 0), (-1, 0), 1.2, INK),   # 머리행은 본문 선보다 확실히 굵게
             ("LINEBELOW", (0, 1), (-1, -1), 0.4, RULE),
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ("LEFTPADDING", (0, 0), (-1, -1), 5),
@@ -310,14 +385,21 @@ class Doc:
         return out_path
 
     def _footer(self, canvas, doc):
-        """쪽번호와 출처. 인쇄물은 어디서 났는지 항상 적혀 있어야 한다."""
+        """쪽번호와 출처. 인쇄물은 어디서 났는지 항상 적혀 있어야 한다.
+
+        위에 얇은 선을 그어 본문과 시각적으로 끊는다(pdf-design 푸터 패턴).
+        문서 제목을 함께 적어 낱장으로 돌아다녀도 출처를 안다.
+        """
         canvas.saveState()
+        w = self.pagesize[0]
+        _, right, bottom, left = self.margins
+        canvas.setStrokeColor(RULE)
+        canvas.setLineWidth(0.6)
+        canvas.line(left, bottom - 4, w - right, bottom - 4)
         canvas.setFont(FONT, 7.5)
         canvas.setFillColor(MUTED)
-        w = self.pagesize[0]
-        _, _, bottom, left = self.margins
-        canvas.drawString(left, bottom - 9, "commerce-intel")
-        canvas.drawRightString(w - self.margins[1], bottom - 9, "%d" % doc.page)
+        canvas.drawString(left, bottom - 14, _glyphs("commerce-intel · %s" % self.title))
+        canvas.drawRightString(w - right, bottom - 14, "%d" % doc.page)
         canvas.restoreState()
 
     # ── 내부 ────────────────────────────────────────────────────────────
@@ -333,15 +415,22 @@ class Doc:
 
 
 _MD_BOLD = re.compile(r"\*\*(.+?)\*\*", re.S)
+# 강조·인라인 코드. **굵게를 먼저 치환한 뒤** 남은 홑별표만 기울임으로 본다 —
+# 순서를 바꾸면 `**굵게**`의 바깥 별표 한 쌍이 기울임으로 잘못 잡힌다.
+_MD_ITALIC = re.compile(r"(?<!\*)\*(?!\*)([^*\n]+?)\*(?!\*)")
+_MD_CODE = re.compile(r"`([^`\n]+?)`")
 
 
 def md(text):
-    """`**굵게**`를 reportlab 마크업으로 바꾼다.
+    """마크다운 인라인 표기를 reportlab 마크업으로 바꾼다 — `**굵게**` · `*기울임*` · `` `코드` ``.
 
-    리포트 문구를 쓸 때 마크다운이 손에 익어 `**`를 그냥 치게 되는데, 변환하지 않으면
-    별표가 그대로 인쇄된다. 이스케이프 뒤에 돌려야 본문의 `<`가 태그로 새지 않는다.
+    리포트 문구를 쓸 때 마크다운이 손에 익어 그냥 치게 되는데, 변환하지 않으면
+    별표와 백틱이 그대로 인쇄된다(2026-08-04 사용자 지적 — 상세 PDF에 `*안 한 것*`이
+    별표째 찍혔다). 이스케이프 뒤에 돌려야 본문의 `<`가 태그로 새지 않는다.
     """
-    return _MD_BOLD.sub(r"<b>\1</b>", text)
+    text = _MD_BOLD.sub(r"<b>\1</b>", text)
+    text = _MD_ITALIC.sub(r"<i>\1</i>", text)
+    return _MD_CODE.sub(r'<font face="Courier">\1</font>', text)
 
 
 def _has_markup(text):
@@ -349,18 +438,23 @@ def _has_markup(text):
 
 
 class _Rule(Flowable):
-    """가로줄. 제목 밑줄과 카드 안 구분선에 쓴다."""
+    """가로줄. 제목 밑 악센트 바와 카드 안 구분선에 쓴다.
 
-    def __init__(self, thickness=0.5, color=RULE):
+    width를 주면 그 폭(pt)만큼만 왼쪽 정렬로 그린다 — 제목 아래 짧은 악센트 바
+    (pdf-design 패턴). 안 주면 전폭.
+    """
+
+    def __init__(self, thickness=0.5, color=RULE, width=None):
         Flowable.__init__(self)
         self.thickness = thickness
         self.color = color
+        self.fixed_width = width
         self.width = 0
         self.height = thickness
 
     def wrap(self, availWidth, availHeight):
-        self.width = availWidth
-        return (availWidth, self.thickness)
+        self.width = min(self.fixed_width, availWidth) if self.fixed_width else availWidth
+        return (self.width, self.thickness)
 
     def draw(self):
         self.canv.setStrokeColor(self.color)
@@ -397,6 +491,7 @@ if __name__ == "__main__":
         "상관은 인과가 아니다 — 여러 조합을 훑다 발견한 패턴은 가설이지 결론이 아니다.",
         "지금 팔리고 있는 것만 보고 있다(판매 종료 상품은 수집 시점에 이미 없다).",
     ])
+    d.stats([("강한 주장", 2), ("약한 단서", 1), ("상품", 1317), ("검정한 가설", 24)])
     d.h2("강한 주장")
     d.card("할인율 20% 구간에서 판매 증분이 다른 구간의 3배였다.",
            audience="판매전략", evidence="n=42 · 효과크기 1.4 · 관측 창 2026-07-01~07-28",

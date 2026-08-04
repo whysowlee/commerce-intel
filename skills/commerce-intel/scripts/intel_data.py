@@ -17,6 +17,7 @@ D27로 폐기됐지만 이 부분은 산출 형식과 무관하다 — 상품별
     data["meta"]["stock"] # 옵션(사이즈) 재고 요약
 """
 import json
+import os
 import re
 import sqlite3
 import statistics as st
@@ -116,6 +117,117 @@ def downsample_indices(count, limit=MAX_TREND_POINTS):
         return list(range(count))
     idx = [round(i * (count - 1) / (limit - 1)) for i in range(limit)]
     return sorted(set(idx))
+
+
+# ── 카테고리 계층 (D42) ────────────────────────────────────────────────────
+# 사이트가 깊이 다른 카테고리를 한 필드에 섞어 줘서 "미니가 하의보다 크다" 같은
+# 부분-전체 비교가 만들어진다. 근거는 실측 카탈로그(사이트가 밝힌 트리)다.
+#
+# **집합 포함으로는 판정할 수 없다** — 상품마다 카테고리가 하나뿐이라 하의와 미니의
+# 상품 집합이 안 겹친다. 기각한 대안과 실측 수치는 SPEC-INTEL D42에 있다.
+
+# 배포본은 `skills/`만 나가므로 카탈로그를 references/에도 둔다. 저장소 루트만 보면
+# 팀원 환경에서 **예외 없이 조용히** 필터가 죽는다. package.sh가 두 사본을 대조한다.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+CATALOG_CANDIDATES = [
+    os.path.join(os.path.dirname(_HERE), "references", "ranking_targets.json"),
+    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(_HERE))),
+                 "data", ".tools", "ranking_targets.json"),
+]
+
+
+def find_catalog():
+    """실측 카탈로그 위치. 없으면 None — 그때는 DB 경로 값만으로 계층을 배운다."""
+    for p in CATALOG_CANDIDATES:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def _feed_path(parts, anc, parent):
+    for i, node in enumerate(parts):
+        if i:
+            parent.setdefault(node, set()).add(parts[i - 1])
+        for j in range(i + 1, len(parts)):
+            anc.add((node, parts[j]))
+
+
+def category_hierarchy(db_path, catalog_path=None):
+    """카테고리 계층 — {"anc": {(상위,하위)}, "parent": {값: {부모들}}, "umbrella": {값}}.
+
+    한 값이 부모를 여럿 가질 수 있다(`하의`는 단독·홈웨어·남성의류 밑에 다 있다).
+
+    `umbrella`는 **트리 어딘가에서 자식을 거느린 값**이다. `하의`는 `남성의류 > 하의 >
+    데님 팬츠`에서 부모 노릇을 하므로 우산이고, `미니`는 어디서도 부모가 아니라
+    리프 전용이다. 이 구분이 "겉보기 형제"와 "굵기가 다른 값"을 가른다.
+    """
+    anc, parent = set(), {}
+    path = catalog_path or find_catalog()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            cat = json.load(fh)
+        for site in ("musinsa", "29cm"):
+            for e in cat.get(site, {}).get("entries", []):
+                _feed_path([p.strip() for p in e.get("path", []) if p.strip()], anc, parent)
+    except (OSError, TypeError, ValueError, KeyError):
+        pass    # 카탈로그가 없어도 DB 경로만으로 돌아간다 — 덜 걸러질 뿐이다
+    try:
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute(
+            "SELECT DISTINCT category FROM products WHERE category LIKE '%>%'").fetchall()
+        conn.close()
+        for (c,) in rows:
+            _feed_path([p.strip() for p in c.split(">") if p.strip()], anc, parent)
+    except sqlite3.Error:
+        pass
+    # 자식을 거느린 적이 있는 값 = 우산. parent 맵의 값들이 곧 그 목록이다.
+    umbrella = {p for ps in parent.values() for p in ps}
+    return {"anc": anc, "parent": parent, "umbrella": umbrella}
+
+
+def incomparable(a, b, hier):
+    """두 카테고리 값을 대등하게 비교할 수 없나 — 참이면 그 쌍을 검정하지 않는다.
+
+    거르는 경우는 둘이다:
+      ① **조상-자손** — `스커트` 대 `미니`. 부분과 전체를 겨루는 문장이 된다
+      ② **굵기가 다르다** — `미니`(리프 전용) 대 `하의`(다른 가지에서 자식을 거느린
+         우산). 트리에서 직접 이어지진 않지만 한쪽이 다른 쪽을 포함할 수 있는 폭이다
+
+    **다른 가지라는 것만으로는 거르지 않는다**(2026-08-04 리뷰로 좁혔다). `미니`와
+    `후드`는 부모가 갈리지만 **둘 다 리프**라 대등한 비교다 — 이걸 거르면
+    "스커트 계열이 아우터 계열보다 할인율이 높다" 같은 정상 비교까지 사라진다.
+
+    **모르면 거르지 않는다.** 둘 중 하나라도 트리에 없으면 판단 근거가 없고,
+    없는 근거로 검정을 지우면 "안 나온 것"과 "없는 것"이 섞인다 — 그건 리포트의
+    정직성 규칙 위반이다. 대신 리포트 서두 경고가 그 몫을 진다.
+
+    남는 한계: 우산끼리는 깊이가 달라도 통과한다(`여성의류` 대 `하의`). 한 값이
+    트리마다 다른 깊이에 있어 깊이로는 못 가른다 — 서두 경고가 그 몫을 진다.
+    """
+    return incomparable_reason(a, b, hier) is not None
+
+
+def incomparable_reason(a, b, hier):
+    """`incomparable`과 같은 판정에 **사유**를 붙여 돌려준다 — "ancestor" | "granularity" | None.
+
+    사유를 나눠 세야 리포트가 "몇 개를 왜 뺐는지"를 말할 수 있다. 합계만 찍으면
+    한쪽 사유로 과하게 빠져도 독자가 알 수 없다.
+    """
+    if not hier or a == b:
+        return "same" if a == b else None
+    anc = hier["anc"]
+    umbrella = hier.get("umbrella") or set()
+    pa = [p.strip() for p in str(a).split(">") if p.strip()]
+    pb = [p.strip() for p in str(b).split(">") if p.strip()]
+    for x in pa:
+        for y in pb:
+            if x == y or (x, y) in anc or (y, x) in anc:
+                return "ancestor"      # ① 같은 것이거나 조상-자손
+    # ② 한쪽만 우산이면 굵기가 다르다. 둘 다 우산이거나 둘 다 리프면 대등하다.
+    ua, ub = pa[-1] in umbrella, pb[-1] in umbrella
+    if ua != ub:
+        return "granularity"
+    return None
 
 
 def numeric_axes(data):

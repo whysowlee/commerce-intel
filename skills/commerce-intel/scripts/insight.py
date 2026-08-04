@@ -31,7 +31,9 @@ from intel_db import connect as db_connect                  # noqa: E402
 import chart                                                # noqa: E402
 from pdf_doc import Doc                                     # noqa: E402
 
-STRONG_MAX = 5
+# **판정 기준이 아니라 표시 개수다** — 자격은 5관문이 정한다. 축이 적은 문맥은
+# 지문 중복 제거 때문에 다 안 채워지는데, **빈자리를 약한 단서로 메우지 않는다**.
+STRONG_MAX = 10
 WEAK_MAX = 20
 
 # ── 선별 ────────────────────────────────────────────────────────────────────
@@ -59,9 +61,8 @@ def _signature(h):
     "롱 대 하의"가 서로 다른 지문이 되어 5칸 중 3칸을 같은 발견이 차지한다 — 독자가
     얻는 정보는 "카테고리에 따라 후기 수가 다르다" 하나뿐인데 말이다.
 
-    ※ 실제로 이 데이터에는 `하의`(상위 카테고리)와 `미니`(하위)가 같은 축에 섞여 있어
-    비교 자체가 성립하지 않는 쌍이 만들어진다. 계층 정보가 없어 코드로는 못 가리므로,
-    지문을 굵게 잡아 **한 축에서 하나만** 내보내는 것으로 피해를 줄인다.
+    계층이 안 맞는 쌍은 D42가 따로 거른다. 여기 지문은 그것과 무관하게 굵게 잡는다 —
+    대등한 형제끼리라도 같은 축·같은 지표면 독자에게는 발견 하나다.
     """
     if h["kind"] == "group_compare":
         return ("g", h["cat_field"], h["metric"])
@@ -70,9 +71,10 @@ def _signature(h):
     return ("e",)
 
 
-# 한 청중이 요약을 독점하지 못하게 한다. MD가 원한 건 판매전략·디자인·마케팅으로
-# 나뉘어 나오는 것이지(2026-08-03 인터뷰), 마케팅 발견 5개가 아니다.
-AUDIENCE_CAP = 2
+# 한 청중이 요약을 독점하지 못하게 한다(2026-08-03 인터뷰). 1차 통과 최대치가
+# 청중 3종 × CAP이라 STRONG_MAX와 함께 올려야 한다 — 안 그러면 남는 자리를
+# 청중 균형을 안 보는 2차 채움이 가져간다.
+AUDIENCE_CAP = 4
 
 
 def _select(hyps, cap):
@@ -145,6 +147,7 @@ def build(db_path, contexts, ai_notes=None):
     return {"generated": res["generated"], "plan": res["plan"], "folded_variants": folded,
             "strong": strong, "weak": weak, "rejected": rejected,
             "eda": res["eda"], "data": res["data"],
+            "lineage_skipped": res.get("lineage_skipped") or {},   # D42 — 서두 경고가 쓴다
             "strong_pool": sum(1 for h in hyps if h["verdict"] == "strong"),
             "verified": sum(1 for h in strong if not h.get("holdout_unverified"))}, res
 
@@ -170,6 +173,23 @@ def honesty_points(res):
                    "(무신사는 `(5 COLORS)`로 한 줄, 자사몰은 색상마다 한 줄이라 "
                    "그대로 세면 플랫폼마다 기준이 달라진다). 품절·재고는 상품 단위 그대로다."
                    % "{:,}".format(folded))
+    # D42: 표기 그대로 쓰는 축의 한계를 **인사이트 PDF 첫 장에서** 밝힌다 —
+    # 카드만 보고 판단하는 사람은 상세 PDF의 각주를 안 읽는다.
+    shown = [h for h in res.get("strong", []) + res.get("weak", [])
+             if h.get("kind") == "group_compare"]
+    if any(h.get("cat_field") == "category" for h in shown):
+        sk = res.get("lineage_skipped") or {}
+        pts.append(
+            "카테고리 값은 **사이트 표기 그대로**다 — 상위·하위 분류가 한 축에 섞여 있다"
+            "(예: 「하의」와 「미니」). 대등하지 않은 쌍 %d개를 비교에서 뺐다"
+            "(상위-하위 %d · 굵기 차이 %d). **사이트가 계층을 안 밝힌 값은 못 걸렀으니** "
+            "두 값이 같은 레벨인지 보고 읽어라."
+            % (sum(sk.values()), sk.get("ancestor", 0), sk.get("granularity", 0)))
+    if any(h.get("cat_field") == "brand" for h in shown):
+        pts.append(
+            "브랜드 값도 표기 그대로다 — 같은 브랜드가 플랫폼마다 다르게 적히면"
+            "(「로우클래식」 대 「LOW CLASSIC」) 브랜드 차이가 아니라 **플랫폼 차이**를 "
+            "보고 있는 것이다.")
     return pts
 
 
@@ -180,6 +200,12 @@ def build_insight_pdf(res, out_path, target, detail_pages):
                 datetime.now().strftime("%Y-%m-%d %H:%M"),
                 g["observed_from"], g["observed_to"], res["generated"]))
     d.honesty(honesty_points(res))
+    # 머리 통계 스트립 — "이 리포트에 뭐가 몇 개 있나"를 첫 화면에서 답한다
+    # (pdf-design stats strip · 2026-08-04). 숫자는 본문 섹션 제목의 개수와 같다.
+    d.stats([("강한 주장", len(res["strong"])),
+             ("약한 단서", len(res["weak"])),
+             ("상품(관측 단위)", g["rows"]),
+             ("검정한 가설", res["generated"])])
 
     d.h2("강한 주장 (%d개)" % len(res["strong"]))
     if not res["strong"]:
@@ -279,9 +305,10 @@ def build_detail_pdf(res, out_path, target):
 
 
 _AXIS_CAVEAT = {
-    "category": "**카테고리 값은 사이트 표기 그대로다.** 상위 분류와 하위 분류가 같은 축에 "
-                "섞여 있을 수 있고, 그런 쌍은 대등한 비교가 아니다 — 위 두 값이 같은 "
-                "레벨인지 확인하고 읽어라.",
+    "category": "**카테고리 값은 사이트 표기 그대로다.** 상위·하위가 한 축에 섞여 있어서, "
+                "DB의 경로 형태 값(`여성의류 > 스커트 > 미디`)에서 배운 포함 관계로 "
+                "그런 쌍을 걸러냈다(D42). **경로를 밝히지 않은 쌍은 못 걸렀다** — "
+                "위 두 값이 같은 레벨인지 확인하고 읽어라.",
     "brand": "**브랜드 값은 사이트 표기 그대로다.** 같은 브랜드가 플랫폼마다 다르게 적히면"
              "(예: 「로우클래식」과 「LOW CLASSIC」) 두 그룹은 브랜드 차이가 아니라 "
              "**플랫폼 차이**를 보고 있는 것이다 — 표기를 먼저 확인해라.",

@@ -1,0 +1,146 @@
+{
+  "_note": "기본 프록시 카드 묶음 (D43). **정본이 아니라 출발점이다** — AI가 요청과 상품군을 보고 더하고 뺀다. rule 카드는 상품명·브랜드명에서 즉석 판정(비용 0)하고, vision 카드는 proxy_auto.py가 배치를 뽑아 proxy-extractor 서브 에이전트가 판정한다. 사용자가 특정 축을 지목하면 그 카드를 더해 함께 돌린다.",
+  "_vision_scope": "이미지에서 뽑을 수 있는 축은 여기 적힌 것보다 훨씬 넓다 — 소재 질감, 실루엣, 기장, 여밈 방식, 촬영 조명, 모델 포즈, 계절감 등. 여기 든 것은 상품군을 덜 타는 것들을 골라 놓은 출발점이고, 요청에 맞는 축은 AI가 새로 쓴다(D19: 하드코딩하지 않는다).",
+  "_coverage_warning": "상품군이 바뀌면(슈즈·가방) 어휘가 안 맞아 rule 카드 상당수가 자동으로 버려진다 — 정상이다. 그때 AI가 그 상품군 어휘로 카드를 새로 쓴다. vision 카드는 상품군을 덜 탄다.",
+  "_cost_note": "vision 카드는 이미지 지문 기준으로 캐시되고 같은 이미지를 쓰는 색상 변형은 한 번만 판정한다. 그래도 rule보다 훨씬 비싸므로 카드 수를 늘릴 때는 질문이 실제로 결정을 바꾸는지 보고 늘린다.",
+  "cards": [
+    {
+      "proxy_name": "name_lang",
+      "question": "상품명이 영문인가 한국어인가 — 브랜드가 어느 고객을 상정하고 쓴 이름인가",
+      "material": "name",
+      "method": "rule",
+      "value_space": ["혼합", "한국어", "영문", "unknown"],
+      "rules": [
+        {"value": "혼합", "all": ["[가-힣]", "[A-Za-z]{2}"]},
+        {"value": "한국어", "any": ["[가-힣]"]},
+        {"value": "영문", "any": ["[A-Za-z]{2}"]}
+      ]
+    },
+    {
+      "proxy_name": "material_word",
+      "question": "상품명이 소재를 밝히는가, 밝힌다면 어느 소재인가",
+      "material": "name",
+      "method": "rule",
+      "value_space": ["데님", "가죽", "니트", "울", "린넨", "새틴/실크", "코튼", "소재 미표기", "unknown"],
+      "rules": [
+        {"value": "데님", "any": ["데님", "denim", "\\bjeans?\\b"]},
+        {"value": "가죽", "any": ["가죽", "레더", "leather", "스웨이드", "suede"]},
+        {"value": "니트", "any": ["니트", "knit", "가디건", "cardigan"]},
+        {"value": "울", "any": ["\\b울\\b", "wool", "캐시미어", "cashmere", "모헤어", "mohair"]},
+        {"value": "린넨", "any": ["린넨", "리넨", "linen"]},
+        {"value": "새틴/실크", "any": ["새틴", "satin", "실크", "silk"]},
+        {"value": "코튼", "any": ["코튼", "cotton", "\\b면\\b"]},
+        {"value": "소재 미표기", "any": ["."]}
+      ]
+    },
+    {
+      "proxy_name": "color_word",
+      "question": "상품명이 컬러를 밝히는가 — 색을 이름에 넣는 브랜드와 안 넣는 브랜드가 갈린다",
+      "material": "name",
+      "method": "rule",
+      "value_space": ["블랙", "화이트/아이보리", "베이지/브라운", "네이비/블루", "그 외 유채색", "컬러 미표기", "unknown"],
+      "rules": [
+        {"value": "블랙", "any": ["블랙", "black", "\\bBK\\b"]},
+        {"value": "화이트/아이보리", "any": ["화이트", "white", "아이보리", "ivory", "크림", "cream"]},
+        {"value": "베이지/브라운", "any": ["베이지", "beige", "브라운", "brown", "카멜", "camel", "khaki", "카키"]},
+        {"value": "네이비/블루", "any": ["네이비", "navy", "블루", "blue"]},
+        {"value": "그 외 유채색", "any": ["레드", "red", "핑크", "pink", "그린", "green", "옐로", "yellow", "퍼플", "purple", "오렌지", "orange", "민트", "mint", "라벤더"]},
+        {"value": "컬러 미표기", "any": ["."]}
+      ]
+    },
+    {
+      "proxy_name": "season_tag",
+      "question": "상품명에 시즌·계절 신호가 있는가 — 시즌을 박는 브랜드는 재고 회전을 다르게 본다",
+      "material": "name",
+      "method": "rule",
+      "value_space": ["시즌 표기 있음", "시즌 표기 없음", "unknown"],
+      "rules": [
+        {"value": "시즌 표기 있음", "any": ["\\b(FW|SS|SP|AW)\\s?\\d{2,4}\\b", "\\b\\d{2,4}\\s?(FW|SS|SP|AW)\\b", "여름", "겨울", "\\b봄\\b", "가을", "summer", "winter", "spring", "autumn", "기모", "쿨링"]},
+        {"value": "시즌 표기 없음", "any": ["."]}
+      ]
+    },
+    {
+      "proxy_name": "name_length",
+      "question": "상품명이 얼마나 긴가 — 설명을 이름에 욱여넣는 상품과 이름만 두는 상품",
+      "material": "name",
+      "method": "rule",
+      "numeric": {"kind": "char_len"}
+    },
+    {
+      "proxy_name": "option_marker",
+      "question": "상품명이 색상/구성 옵션을 표기하는가 — 표기 방식이 플랫폼마다 다르다",
+      "material": "name",
+      "method": "rule",
+      "value_space": ["다색 표기", "세트/팩 표기", "단일 색 표기", "옵션 미표기", "unknown"],
+      "rules": [
+        {"value": "다색 표기", "any": ["\\d\\s?(COLOR|컬러)", "\\d종", "\\d colors"]},
+        {"value": "세트/팩 표기", "any": ["\\bset\\b", "세트", "\\d\\s?pack", "\\d팩", "셋업"]},
+        {"value": "단일 색 표기", "any": ["\\((블랙|화이트|네이비|베이지|블루|그레이|브라운|핑크|black|white|navy|beige|blue|grey|gray|brown|pink)\\)"]},
+        {"value": "옵션 미표기", "any": ["."]}
+      ]
+    },
+    {
+      "proxy_name": "thumb_cut",
+      "question": "대표 썸네일이 착용컷인가 제품 단독컷인가",
+      "material": "image",
+      "method": "vision",
+      "value_space": ["제품 단독컷", "착용컷(얼굴 나옴)", "착용컷(얼굴 안 나옴)", "unknown"]
+    },
+    {
+      "proxy_name": "thumb_bg",
+      "question": "대표 썸네일의 배경이 어떤 종류인가",
+      "material": "image",
+      "method": "vision",
+      "value_space": ["단색 배경(밝음)", "단색 배경(어두움)", "실내 공간", "야외/거리", "unknown"]
+    },
+    {
+      "proxy_name": "thumb_crop",
+      "question": "대표 썸네일이 상품을 어느 범위로 잡았는가",
+      "material": "image",
+      "method": "vision",
+      "value_space": ["전신", "상반신/하반신", "부분 확대(디테일)", "unknown"]
+    },
+    {
+      "proxy_name": "model_count",
+      "question": "대표 썸네일에 사람이 몇 명 있는가",
+      "material": "image",
+      "method": "vision",
+      "value_space": ["0명(제품만)", "1명", "2명 이상", "unknown"]
+    },
+    {
+      "proxy_name": "logo_visible",
+      "question": "대표 썸네일에서 브랜드 로고·레터링이 눈에 띄게 노출되는가",
+      "material": "image",
+      "method": "vision",
+      "value_space": ["로고 뚜렷", "로고 작게/일부", "로고 없음", "unknown"]
+    },
+    {
+      "proxy_name": "pattern_type",
+      "question": "상품 표면이 무지인가 패턴·프린트가 있는가",
+      "material": "image",
+      "method": "vision",
+      "value_space": ["무지", "체크/스트라이프", "플로럴/그래픽 프린트", "텍스처·자수", "unknown"]
+    },
+    {
+      "proxy_name": "color_count",
+      "question": "상품 자체에 색이 몇 가지 쓰였는가 (배경·모델 제외)",
+      "material": "image",
+      "method": "vision",
+      "value_space": ["단색", "2색", "3색 이상", "unknown"]
+    },
+    {
+      "proxy_name": "styling_items",
+      "question": "대표 썸네일에 이 상품 말고 코디 아이템이 함께 연출됐는가",
+      "material": "image",
+      "method": "vision",
+      "value_space": ["단독 연출", "상하의 코디", "가방·신발까지 풀 코디", "unknown"]
+    },
+    {
+      "proxy_name": "shot_angle",
+      "question": "대표 썸네일의 촬영 각도가 어떤가",
+      "material": "image",
+      "method": "vision",
+      "value_space": ["정면", "측면/사선", "뒷면", "평면(눕혀 찍음)", "unknown"]
+    }
+  ]
+}

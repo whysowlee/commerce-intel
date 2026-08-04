@@ -7,6 +7,7 @@
 검증 대상: 적재 멱등성(중복 스킵) · 재사용 판정(check/reuse-attrs TTL) ·
 가격 변경 사건 검출 · 대시보드 산출물 구조.
 """
+import io
 import json
 import os
 import shutil
@@ -317,6 +318,127 @@ def data_rule_tests():
 
 
 
+def hierarchy_tests():
+    """카테고리 계층 판정 (D42) — 대등하지 않은 쌍을 검정에서 뺀다.
+
+    실측 카탈로그가 근거다. 사이트에 붙지 않고 인라인 카탈로그로 검증한다 —
+    `ranking_targets.json`이 갱신돼도 이 테스트는 규칙만 본다.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import intel_data
+
+    work = Path(tempfile.mkdtemp(prefix="hier-"))
+    cat = work / "catalog.json"
+    cat.write_text(json.dumps({"29cm": {"entries": [
+        {"path": ["여성의류", "스커트", "미니"]},
+        {"path": ["여성의류", "스커트", "미디"]},
+        {"path": ["여성의류", "스커트", "데님"]},
+        {"path": ["여성의류", "단독", "하의"]},
+        {"path": ["여성의류", "아우터", "후드"]},     # 다른 가지의 순수 리프
+        {"path": ["남성의류", "하의", "데님 팬츠"]},   # 하의가 우산임을 드러낸다
+    ]}}, ensure_ascii=False), encoding="utf-8")
+    h = intel_data.category_hierarchy(str(work / "no.db"), catalog_path=str(cat))
+
+    check("D42 조상-자손은 비교하지 않는다 (스커트 ⊃ 미니)",
+          intel_data.incomparable("스커트", "미니", h))
+    check("D42 형제는 비교한다 (미니 대 미디 — 둘 다 스커트 아래)",
+          not intel_data.incomparable("미니", "미디", h))
+    # 사용자가 인사이트 PDF에서 잡은 바로 그 쌍이다 (2026-08-04)
+    check("D42 굵기가 다르면 비교하지 않는다 (리프 미니 대 우산 하의)",
+          intel_data.incomparable("미니", "하의", h))
+    check("D42 경로 표기와 조각 표기가 같은 것으로 걸린다",
+          intel_data.incomparable("여성의류 > 스커트 > 미디", "미디", h))
+    # **모르면 거르지 않는다** — 없는 근거로 검정을 지우면 안 본 것이 없는 것이 된다
+    check("D42 트리에 없는 값은 거르지 않는다 (판단 근거가 없다)",
+          not intel_data.incomparable("처음보는값", "또다른값", h))
+    check("D42 계층 정보가 없으면 아무것도 거르지 않는다",
+          not intel_data.incomparable("미니", "하의", {"anc": set(), "parent": {}}))
+    # E-CH-1·3 사유를 나눠 센다 — 합계만 찍으면 ②로 과하게 빠져도 알 수 없다
+    check("E-CH-1 조상-자손은 사유가 ancestor",
+          intel_data.incomparable_reason("스커트", "미니", h) == "ancestor")
+    check("E-CH-3 굵기 차이는 사유가 granularity",
+          intel_data.incomparable_reason("미니", "하의", h) == "granularity")
+    check("E-CH-2 형제는 사유가 없다",
+          intel_data.incomparable_reason("미니", "미디", h) is None)
+    # E-CH-6 카탈로그가 없어도 예외를 내지 않는다
+    empty = intel_data.category_hierarchy(str(work / "no.db"),
+                                          catalog_path=str(work / "없는파일.json"))
+    check("E-CH-6 카탈로그 파일이 없어도 죽지 않는다",
+          empty["anc"] == set() and empty["parent"] == {})
+    # E-CH-10 다른 가지라는 것만으로 거르지 않는다 (2026-08-04 리뷰로 좁힌 규칙).
+    # 옛 규칙("부모가 갈리면 제외")은 "스커트 계열 대 아우터 계열" 같은 정상 비교까지
+    # 지웠다 — 둘 다 리프면 대등하다.
+    check("E-CH-10 다른 가지의 순수 리프끼리는 비교한다 (미니 대 후드)",
+          not intel_data.incomparable("미니", "후드", h))
+    check("E-CH-11 우산 대 리프는 굵기가 달라 거른다 (하의 대 미니)",
+          intel_data.incomparable_reason("미니", "하의", h) == "granularity")
+    check("E-CH-12 우산끼리는 비교한다 (스커트 대 아우터)",
+          not intel_data.incomparable("스커트", "아우터", h))
+    check("E-CH-13 우산 판별은 트리 전체를 본다 (하의는 남성의류 아래서 부모)",
+          "하의" in h["umbrella"] and "미니" not in h["umbrella"])
+    shutil.rmtree(work, ignore_errors=True)
+
+
+def proxy_auto_tests():
+    """프록시 규칙 실행기 (D43) — rule 즉석 판정과 vision 배치 묶기."""
+    sys.path.insert(0, str(SCRIPTS))
+    import proxy_auto
+
+    class Row(dict):
+        def keys(self):
+            return dict.keys(self)
+
+    card = {"proxy_name": "t", "material": "name", "method": "rule",
+            "value_space": ["데님", "그 외"],
+            "rules": [{"value": "데님", "any": ["데님", "denim"]},
+                      {"value": "그 외", "any": ["."]}]}
+    check("D43 규칙은 위에서부터 먼저 맞는 것이 값이다",
+          proxy_auto.judge_row(card, Row(name="워시드 데님 스커트"))[0] == "데님")
+    check("D43 대소문자를 가리지 않는다",
+          proxy_auto.judge_row(card, Row(name="DENIM SKIRT"))[0] == "데님")
+    check("D43 재료가 없으면 판정하지 않는다 (저장 대상이 아니다)",
+          proxy_auto.judge_row(card, Row(name=None)) is None)
+    # all은 전부 맞아야 한다 — 혼합 판정이 이 규칙에 걸려 있다
+    mix = {"material": "name", "rules": [{"value": "혼합", "all": ["[가-힣]", "[A-Za-z]{2}"]}]}
+    check("D43 all은 전부 맞을 때만",
+          proxy_auto.judge_row(mix, Row(name="LOW 스커트"))[0] == "혼합"
+          and proxy_auto.judge_row(mix, Row(name="스커트")) is None)
+    num = {"material": "name", "numeric": {"kind": "char_len"}}
+    check("D43 수치 프록시는 float으로 나온다",
+          proxy_auto.judge_row(num, Row(name="abcde"))[0] == 5.0)
+
+    # ── 카드 검증 (2026-08-04 리뷰) — 카드는 AI가 쓰므로 검수된 입력이 아니다
+    ok, bad = proxy_auto.validate_cards([
+        {"proxy_name": "broken", "rules": [{"any": ["[unclosed"], "value": "x"}]},
+        {"proxy_name": "nopat", "numeric": {"kind": "count"}},
+        {"proxy_name": "fine", "rules": [{"any": ["[가-힣]"], "value": "한글"}]},
+    ])
+    names = [c["proxy_name"] for c in ok]
+    check("E-PA-8 컴파일 안 되는 정규식은 그 카드만 버린다", names == ["fine"], names)
+    check("E-PA-9 count인데 pattern 없으면 카드를 버린다",
+          any(n == "nopat" for n, _ in bad))
+    check("E-PA-9b judge_row도 죽지 않는다 (직접 호출 경로)",
+          proxy_auto.judge_row({"material": "name", "numeric": {"kind": "count"}},
+                               Row(name="아무거나")) is None)
+    # E-PA-10 입력을 잘라 백트래킹 폭발 여지를 줄인다 (완전 차단은 불가 — 알려진 한계)
+    long_card = {"material": "name", "rules": [{"any": ["끝$"], "value": "y"}]}
+    tail = "가" * (proxy_auto.MATCH_MAX_CHARS + 10) + "끝"
+    check("E-PA-10 매칭 입력은 MATCH_MAX_CHARS로 잘린다",
+          proxy_auto.judge_row(long_card, Row(name=tail)) is None)
+    # E-PA-11 한글은 앞 경계가 없으면 "정면"이 코튼이 된다 (리뷰 발견)
+    import json as _json
+    cards = _json.loads(io.open(
+        "skills/commerce-intel/references/proxy-cards-default.json",
+        encoding="utf-8").read())["cards"]
+    mat = [c for c in cards if c["proxy_name"] == "material_word"][0]
+    check("E-PA-11 '정면 컷'은 코튼으로 판정되지 않는다",
+          proxy_auto.judge_row(mat, Row(name="정면 컷 스커트"))[0] == "소재 미표기")
+    check("E-PA-11b '서울'은 울로 판정되지 않는다",
+          proxy_auto.judge_row(mat, Row(name="서울 스토어 한정"))[0] == "소재 미표기")
+    check("E-PA-11c 진짜 소재 표기는 잡는다",
+          proxy_auto.judge_row(mat, Row(name="면 100% 스커트"))[0] == "코튼")
+
+
 def main():
     work = Path(tempfile.mkdtemp(prefix="intel-db-test-"))
     db = str(work / "intel.db")
@@ -501,6 +623,12 @@ def main():
 
     print("[13] 데이터 규칙 (B계열 이식 — HTML과 무관)")
     data_rule_tests()
+
+    print("[14] 카테고리 계층 판정 (D42)")
+    hierarchy_tests()
+
+    print("[15] 프록시 규칙 실행기 (D43)")
+    proxy_auto_tests()
 
     shutil.rmtree(work, ignore_errors=True)
     print("-" * 56)

@@ -12,8 +12,8 @@ compatibility: 웹 요청 도구로 수집이 된다(서버 렌더 HTML 임베�
 metadata:
   version: 0.1.0
   status: draft            # draft → ready 승격은 사용자가 한다
-  refresh-cycle: unverified
-  measured-at: "2026-08-03"
+  refresh-cycle: "unverified · 크론 잠정 60분"   # brands만 updatedAt 노출(1회 관측), items는 항상 null (§R)
+  measured-at: "2026-08-04"   # 가장 최근 실측일
 ---
 
 # platform-musinsa-global
@@ -39,9 +39,11 @@ DB 적재·분석·리포트와 공통 규칙(속도·차단 중단·추정 금�
   임베드 JSON만 쓴다.** (2026-08-03 실측)
 - **정직한 Claude 신원(`Claude-User`)으로 접근한다. UA 위장 금지.** 403/429/캡차/CF 챌린지가
   뜨면 **즉시 중단·보고**한다(우회 금지 — SPEC-INTEL D30 선).
-- **수집 방식은 ⓐ 사용자 지시 건별 수집만** — robots `*: Disallow: /` 구조가 W컨셉·EQL·SSF와
-  같으므로 D30을 적용한다. **크론 무인 축적은 사용자 명시 승인 전까지 하지 않는다.** 랭킹
-  축적은 국내 무신사·29CM 몫이다. ("기본 플랫폼 스킬"이 축적 허가는 아니다 — EQL·SSF도 그렇다.)
+- **랭킹 크론 축적이 허용된다**(D41, 2026-08-04 사용자 승인). 구 D30은 이 사이트를
+  "건별 수집만, 크론은 **사용자 명시 승인 전까지** 보류"로 뒀는데 **그 승인이 나왔다.**
+  robots(`*: Disallow: /` + Claude 봇 허용, `/api/` 제외)는 그대로이고 바뀐 것은 우리
+  판단이다 — 이력은 SPEC-INTEL D30·D41에 있다. **주기는 frontmatter `refresh-cycle`**을
+  따른다(§R — brands 랭킹만 `updatedAt`을 밝히고 1회 관측이라 「미검증」).
 
 ## 수집 절차
 
@@ -76,7 +78,8 @@ DB 적재·분석·리포트와 공통 규칙(속도·차단 중단·추정 금�
 - **region을 `meta.target`에 넣어 나눠 축적한다** — `무신사글로벌 여성데님(HK)` 형식.
   국가마다 context가 갈려 시계열이 안 섞인다. HK·JP를 한 축적으로 뭉개지 않는다
 - 국가 비교는 여러 region 스냅샷을 **분석 단에서 나란히** 본다(각각 한 나라의 한 시점)
-- crontab 무인 축적 금지(D30) — 사용자가 그 나라 랭킹을 물을 때 그 자리에서 스냅샷
+- **crontab 축적이 허용된다**(D41). region마다 `meta.target`을 달리해 **국가별로 나눠**
+  쌓는다 — HK·JP를 한 축적으로 뭉개지 않는다(위 규칙 그대로)
 
 ## 이 플랫폼의 노출 지표
 

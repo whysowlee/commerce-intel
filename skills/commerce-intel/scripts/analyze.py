@@ -44,8 +44,9 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import stat_playbook as sp                                          # noqa: E402
 from eda import CAT_AXES, MIN_N, run as run_eda                     # noqa: E402
-from intel_data import (cat_axes, collect, matched_pairs,  # noqa: E402
-                        num_axes, product_series, style_rows)
+from intel_data import (cat_axes, category_hierarchy, collect,  # noqa: E402
+                        incomparable_reason, matched_pairs, num_axes,
+                        product_series, style_rows)
 
 # ── 관문 임계 ───────────────────────────────────────────────────────────────
 # 임계는 2026-08-03에 한 번 완화했다. 우리가 모으는 데이터는 표본이 크지 않고
@@ -288,6 +289,9 @@ def run_group(ctx):
     out = []
     usable = _usable_metrics(ctx["eda"])
     labels = ctx["labels"]
+    # D42: 카테고리 축에서만 계층 쌍을 거른다. 브랜드·품절·프록시는 계층이 없다.
+    hier = ctx.get("hierarchy") or set()
+    skipped_pairs = defaultdict(set)
     for cat_field, cat_label in ctx["cat_axes"]:
         groups = defaultdict(list)
         for it in ctx["styles"]:          # 변형이 아니라 스타일 단위 (#7)
@@ -304,6 +308,14 @@ def run_group(ctx):
                 for j in range(i + 1, len(big)):
                     ka, va = big[i]
                     kb, vb = big[j]
+                    # 대등하지 않은 쌍은 검정하지 않는다 (D42)
+                    if cat_field == "category":
+                        why = incomparable_reason(ka, kb, hier)
+                        if why:
+                            # 쌍 단위로 센다 — 지표마다 더하면 4쌍이 24로 부풀고
+                            # 리포트가 "쌍 24개를 뺐다"고 거짓말한다
+                            skipped_pairs[why].add((cat_field, ka, kb))
+                            continue
                     a = [x[metric] for x in va if x.get(metric) is not None]
                     b = [x[metric] for x in vb if x.get(metric) is not None]
                     if len(a) < N_MIN or len(b) < N_MIN:
@@ -326,6 +338,9 @@ def run_group(ctx):
                             "높다" if ma > mb else "낮다", _fmt(ma), _fmt(mb)),
                         "audience": audience_of(metric, cat_field),
                     })
+    # 몇 개를 왜 걸렀는지 남긴다 — 조용히 줄어든 검정 수는 "전부 봤다"로 읽히고,
+    # 사유를 안 나누면 ②(다른 가지)로 과하게 빠져도 알 수 없다
+    ctx["lineage_skipped"] = {k: len(v) for k, v in skipped_pairs.items()}
     return out
 
 
@@ -345,8 +360,9 @@ def run_corr(ctx):
             "pairs": pairs, "eda": c, "vanity": c.get("vanity_pair"),
             "effect": r, "effect_kind": "순위 상관", "p": sp.perm_test_corr(pairs),
             "n": len(pairs), "trend": sp.binned_trend(pairs),
-            "claim": "%s가 높을수록 %s가 %s (순위 상관 %+.2f)" % (
-                c["x_label"], c["y_label"], "높다" if (r or 0) > 0 else "낮다", r or 0),
+            "claim": "%s 높을수록 %s %s (순위 상관 %+.2f)" % (
+                _josa(c["x_label"], "이가"), _josa(c["y_label"], "이가"),
+                "높다" if (r or 0) > 0 else "낮다", r or 0),
             "audience": audience_of(c["y"], c["x"]),
         })
     return out
@@ -401,8 +417,8 @@ def run_paired(ctx):
                 "metric_label": ctx["labels"].get(metric, metric),
                 "effect": res["effect"], "effect_kind": "쌍체 우세도", "p": res["p"],
                 "n": res["n_pairs"],
-                "claim": "같은 상품 %d쌍에서 %s의 %s가 %s보다 %s (중앙값 차 %s)" % (
-                    res["n_pairs"], sa, ctx["labels"].get(metric, metric), sb,
+                "claim": "같은 상품 %d쌍에서 %s의 %s %s보다 %s (중앙값 차 %s)" % (
+                    res["n_pairs"], sa, _josa(ctx["labels"].get(metric, metric), "이가"), sb,
                     "높다" if res["median_diff"] > 0 else "낮다",
                     _fmt(abs(res["median_diff"]))),
                 "audience": audience_of(metric),
@@ -598,7 +614,8 @@ def analyze(db_path, contexts, ai_notes=None, plan_only=False):
            "eda": eda_res, "data": data,
            "series": product_series(db_path, contexts),
            "cat_axes": cats, "num_axes": num_axes(data),
-           "labels": dict(num_axes(data) + cats)}
+           "labels": dict(num_axes(data) + cats),
+           "hierarchy": category_hierarchy(db_path)}   # D42
 
     plan = make_plan(ctx, ai_notes)
     if plan_only:
@@ -627,7 +644,8 @@ def analyze(db_path, contexts, ai_notes=None, plan_only=False):
     for h, s in zip(hyps, survive):
         gate(h, s)
     return {"ok": True, "plan": plan, "eda": eda_res, "data": data,
-            "hypotheses": hyps, "generated": len(hyps)}
+            "hypotheses": hyps, "generated": len(hyps),
+            "lineage_skipped": ctx.get("lineage_skipped") or {}}   # D42
 
 
 def main():
