@@ -85,6 +85,27 @@ intel-collect → intel-store → intel-explore → [intel-analyze → intel-ins
 - **절대값이 아니라 비율**, 단 **구간 표기로는 비율을 만들지 않는다**(하한이라 부풀려진다)
 - **랭킹 상위 = 상품력이 아니다** — 노출↔판매 되먹임이 있다
 
+## 0-c. 리포트를 내보내기 전에 수치를 재검증한다 (D52)
+
+**5관문은 "이 발견이 우연인가"를 본다. 수치가 맞는지는 안 본다.** 둘은 다른 질문이다
+— 계산이 틀려도 5관문은 통과한다(틀린 값으로 일관되게 계산하면 그렇다).
+
+`../intel-fashion-md/scripts/sanity_check.py`가 **DB에서 다시 계산해 대조**한다.
+AI·난수·네트워크를 쓰지 않아서 같은 DB면 언제 돌려도 같은 답이 나온다 — clean
+세션 재현 검증도 이 스크립트 재실행이다.
+
+```bash
+python3 ../intel-fashion-md/scripts/sanity_check.py \
+    --db data/intel.db --claims output/claims-<대상>-<날짜>.json
+```
+
+    exit 0  전 claim 일치 → 리포트 내보내도 된다
+    exit 1  일치하되 경고(n<30 등) → 경고를 리포트에 병기한다
+    exit 2  하나라도 불일치·해석 불가 → **내보내지 마라.** 원인부터 본다
+
+claims 형식은 `../intel-fashion-md/references/claims-example.json`.
+**리포트에 싣는 수치만 claim으로 만든다** — 전부 만들면 아무도 안 쓴다.
+
 ## 1. 방법론을 먼저 정한다 (2단계)
 
 ```bash
