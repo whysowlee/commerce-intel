@@ -33,6 +33,7 @@ import sqlite3
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime
 
@@ -78,7 +79,9 @@ def plp(params, max_pages=None):
     "몇 건 받았다"만으로는 다 받았는지 알 수 없어서다 — 상한에 걸려 잘려도
     똑같이 "수집 완료"로 보인다(2026-08-04에 실제로 81.5%만 받았다).
     """
-    url = PLP + "?" + "&".join("%s=%s" % kv for kv in params.items())
+    # **값을 그대로 이어 붙이지 않는다** — 한글 카테고리명이나 `&`가 섞이면
+    # 쿼리가 깨지거나 다른 파라미터로 오인식된다(한글 slug로 실제 예외 발생).
+    url = PLP + "?" + urllib.parse.urlencode(params)
     out, seen, pages, total, cap = [], set(), 0, None, max_pages
     while url and (cap is None or pages < cap):
         code, d = _req(url)
@@ -240,13 +243,18 @@ def main():
             params.update(category=a.category, caller="CATEGORY")
             target, story = "market:%s(gf=%s)" % (a.category, a.gf), "market-scan"
         items, pages, total = plp(params)
+        # 커버리지는 **총계를 알고 그 값이 0보다 클 때만** 계산된다.
+        # 전에는 `cov`는 `if total`(0도 falsy)로, 출력 분기는 `total is None`으로
+        # 판정해 기준이 어긋나 있었다 — `total=0`이면 cov가 None인데 출력 쪽은
+        # 계산하려 들어 TypeError로 죽었다(존재하지 않는 브랜드에서 재현. PR #10 리뷰).
         cov = (100.0 * len(items) / total) if total else None
-        print("PLP %s — %d건 / %d페이지%s" % (
-            target, len(items), pages,
-            ("" if total is None else
-             " · 사이트 총계 %s (커버리지 %.1f%%)%s" % (
-                 "{:,}".format(total), cov,
-                 "" if cov >= 99.0 else "  ← 완주가 아니다"))))
+        if cov is None:
+            note = "" if total is None else " · 사이트 총계 0 (대상이 없다)"
+        else:
+            note = " · 사이트 총계 %s (커버리지 %.1f%%)%s" % (
+                "{:,}".format(total), cov,
+                "" if cov >= 99.0 else "  ← 완주가 아니다")
+        print("PLP %s — %d건 / %d페이지%s" % (target, len(items), pages, note))
         if a.with_likes:
             lk = likes([i["product_id"] for i in items])
             for i in items:
@@ -259,6 +267,10 @@ def main():
                      "notes": "PLP(api.musinsa.com) · 조회수·누적판매는 이 경로에 없다"
                               " — goods-detail은 robots Disallow (D48)"}, items)
     elif a.cmd == "reviews":
+        # plp와 같은 가드. 없으면 `context=None`으로 조회돼 0건이 나오고
+        # **인자를 빠뜨렸다는 신호 없이 빈 파일이 저장된다** (PR #10 리뷰)
+        if not (a.goods or a.from_db):
+            sys.exit("--goods 나 --from-db 중 하나는 필요하다.")
         if a.goods:
             gs = list(a.goods)
         else:
