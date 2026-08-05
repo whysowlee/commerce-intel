@@ -100,6 +100,13 @@ def validate_cards(cards):
         if not problem and num.get("kind") == "count" and not num.get("pattern"):
             # kind=count인데 pattern이 없으면 판정 시점에 죽는다 — 여기서 잡는다
             problem = "numeric.kind=count 인데 pattern이 없다"
+        if not problem and num.get("pattern"):
+            # numeric.pattern도 rules와 같은 검증을 받는다 (PR #13 3R Blocker 5) —
+            # lazy 판정(D65-8) 이후 이 정규식은 리포트 파이프라인 안에서 돈다
+            try:
+                re.compile(num["pattern"])
+            except re.error as e:
+                problem = "numeric.pattern 정규식 오류 `%s` — %s" % (num["pattern"], e)
         (bad.append((c.get("proxy_name", "?"), problem)) if problem else ok.append(c))
     return ok, bad
 
@@ -158,6 +165,17 @@ def _cached(conn, proxy_name):
         return set()
 
 
+def _card_proxy(card):
+    """카드 → proxy-load가 먹는 정의 dict. `label`(D56)과 **rule 본문**(D65-8)을
+    함께 넘긴다 — 본문이 defs에 저장돼야 분석이 캐시 miss를 즉석(lazy) 판정한다."""
+    proxy = {k: card[k] for k in
+             ("proxy_name", "question", "material", "method", "label",
+              "rules", "numeric")
+             if k in card}
+    proxy["value_space"] = "numeric" if card.get("numeric") else card.get("value_space")
+    return proxy
+
+
 def run_rules(rows, cards):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     out = []
@@ -172,13 +190,7 @@ def run_rules(rows, cards):
                            "value": value, "basis": basis,
                            "fingerprint": str(_material(r, card.get("material", "name"))),
                            "judged_at": now})
-        # `label`도 넘긴다 (D56) — 리포트 축 이름이 여기서 오지 않으면
-        # `denim_rise` 같은 내부 이름이 그대로 PDF에 찍힌다
-        proxy = {k: card[k] for k in
-                 ("proxy_name", "question", "material", "method", "label")
-                 if k in card}
-        proxy["value_space"] = "numeric" if card.get("numeric") else card.get("value_space")
-        out.append({"proxy": proxy, "judgments": judged,
+        out.append({"proxy": _card_proxy(card), "judgments": judged,
                     "_coverage": len(judged) / len(rows) if rows else 0})
     return out
 
@@ -241,7 +253,10 @@ def main():
     ap.add_argument("--batch-size", type=int, default=30,
                     help="배치 하나에 담을 재료 수 (기본 30)")
     ap.add_argument("--min-coverage", type=float, default=0.10,
-                    help="이 비율 미만으로만 판정된 rule 카드는 버린다 (기본 0.10)")
+                    help="이 비율 미만으로만 판정된 rule 카드는 버린다 (기본 0.10, --eager 전용)")
+    ap.add_argument("--eager", action="store_true",
+                    help="rule 카드를 지금 전량 판정한다 (D65-8 이전의 기본 동작). "
+                         "없으면 정의만 내보내고 판정은 분석 시점에 lazy로 된다")
     a = ap.parse_args()
 
     raw = json.load(open(a.cards, encoding="utf-8"))
@@ -249,52 +264,79 @@ def main():
     cards, bad_cards = validate_cards(cards)
     for name, why in bad_cards:
         print("  카드 버림 %-16s %s" % (name, why))
-    conn = sqlite3.connect(a.db)
-    conn.row_factory = sqlite3.Row
+    from schema_v3 import open_db, proxy_connect, proxy_db_path
+    # 프록시 경로를 **정본을 열기 전에** 확인한다 (PR #13 3R Blocker 4).
+    # 정본이 Turso인데 PROXY_DB_URL이 없으면 경로가 빈 문자열이고, 그대로
+    # 연결하면 임시 DB가 생겨 판정 캐시가 매번 증발한다 — 비전 판정 비용이
+    # 조용히 반복된다. 다른 호출부(intel_data·sync_sheets)는 스킵하면 되지만
+    # 이 도구의 일 자체가 프록시라 명시적으로 죽는 것이 맞다.
+    # (로컬 경로가 아직 없는 것은 정상이다 — 첫 등록이 이 도구의 일이고,
+    #  proxy_connect가 파일을 만든다.)
+    ppath = proxy_db_path(a.db)
+    if not ppath:
+        sys.exit("프록시 DB 경로가 없다 — 정본이 Turso면 PROXY_DB_URL·"
+                 "PROXY_DB_TOKEN을 설정하라 (docs/TURSO-SETUP.md)")
+    conn = open_db(a.db)             # 로컬 경로·libsql:// URL 둘 다 (D67)
+    # 캐시는 별도 proxy.db에 있다 (D65-8) — 비전 배치 계획이 이걸 본다
+    pconn = proxy_connect(ppath)
     rows = _load_rows(conn, a.context)
     print("상품 %s건 · 카드 %d장" % ("{:,}".format(len(rows)), len(cards)))
 
     # ── rule ────────────────────────────────────────────────────────────
+    # 기본은 **lazy**다 (D65-8): 정의(카드 본문 포함)만 내보내고, 판정은 분석
+    # (intel_data.collect)이 캐시 miss를 만난 시점에 즉석으로 한다. --eager는
+    # 지금 전량 판정하는 옛 동작 — 커버리지·값 다양성 필터는 판정이 있어야
+    # 성립하므로 eager 쪽에만 있다.
     rule_cards = [c for c in cards if c.get("method", "rule") == "rule"]
     kept, dropped = [], []
-    for r in run_rules(rows, rule_cards):
-        name = r["proxy"]["proxy_name"]
-        # 커버리지가 바닥이면 축으로 못 쓴다 — 그룹 비교는 값마다 n이 필요하다.
-        # **버렸다는 사실을 찍는다.** 조용히 빠지면 "신호가 없었다"로 읽힌다.
-        if r["_coverage"] < a.min_coverage:
-            dropped.append((name, "커버리지 %.0f%%" % (100 * r["_coverage"])))
-            continue
-        if r["proxy"].get("value_space") != "numeric" \
-                and len({j["value"] for j in r["judgments"]}) < 2:
-            dropped.append((name, "값이 1종뿐 — 비교 상대가 없다"))
-            continue
-        kept.append({"proxy": r["proxy"], "judgments": r["judgments"]})
+    if a.eager:
+        for r in run_rules(rows, rule_cards):
+            name = r["proxy"]["proxy_name"]
+            # 커버리지가 바닥이면 축으로 못 쓴다 — 그룹 비교는 값마다 n이 필요하다.
+            # **버렸다는 사실을 찍는다.** 조용히 빠지면 "신호가 없었다"로 읽힌다.
+            if r["_coverage"] < a.min_coverage:
+                dropped.append((name, "커버리지 %.0f%%" % (100 * r["_coverage"])))
+                continue
+            if r["proxy"].get("value_space") != "numeric" \
+                    and len({j["value"] for j in r["judgments"]}) < 2:
+                dropped.append((name, "값이 1종뿐 — 비교 상대가 없다"))
+                continue
+            kept.append({"proxy": r["proxy"], "judgments": r["judgments"]})
+    else:
+        kept = [{"proxy": _card_proxy(c), "judgments": []} for c in rule_cards]
 
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
     json.dump(kept, open(a.out, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-    print("\n[rule] 즉석 판정")
-    for r in kept:
-        vals = {}
-        for j in r["judgments"]:
-            vals[j["value"]] = vals.get(j["value"], 0) + 1
-        top = ", ".join("%s %s" % (k, v) for k, v in
-                        sorted(vals.items(), key=lambda kv: -kv[1])[:4])
-        print("  채택 %-18s %5d건 (%3.0f%%) — %s"
-              % (r["proxy"]["proxy_name"], len(r["judgments"]),
-                 100 * len(r["judgments"]) / (len(rows) or 1), top))
-    for name, why in dropped:
-        print("  버림 %-18s %s" % (name, why))
+    if a.eager:
+        print("\n[rule] 즉석 판정 (--eager)")
+        for r in kept:
+            vals = {}
+            for j in r["judgments"]:
+                vals[j["value"]] = vals.get(j["value"], 0) + 1
+            top = ", ".join("%s %s" % (k, v) for k, v in
+                            sorted(vals.items(), key=lambda kv: -kv[1])[:4])
+            print("  채택 %-18s %5d건 (%3.0f%%) — %s"
+                  % (r["proxy"]["proxy_name"], len(r["judgments"]),
+                     100 * len(r["judgments"]) / (len(rows) or 1), top))
+        for name, why in dropped:
+            print("  버림 %-18s %s" % (name, why))
+    else:
+        print("\n[rule] 정의 %d장 내보냄 — 판정은 분석 시점에 lazy (지금 하려면 --eager)"
+              % len(kept))
     print("  → intel_db.py proxy-load %s" % a.out)
 
     # ── vision ──────────────────────────────────────────────────────────
     vision_cards = [c for c in cards if c.get("method") in ("vision", "llm")]
     if vision_cards and not a.batch_dir:
-        print("\n[vision] 카드 %d장이 있는데 --batch-dir이 없어 건너뛴다 — "
-              "**빠졌다는 사실을 리포트에 적어라**" % len(vision_cards))
+        # lazy 기본 흐름(D66)에서 정의 등록 단계는 배치를 안 뽑는 게 정상이다.
+        # 판정이 필요해지면(분석의 unjudged) --batch-dir을 주고 다시 부른다.
+        print("\n[vision] 카드 %d장 — 정의만 등록 대상. 판정 배치는 분석이 요구할 때 "
+              "--batch-dir로 뽑는다(D66). **그때까지 이 축은 리포트에 미판정 결측으로 "
+              "보인다**" % len(vision_cards))
     elif vision_cards:
         os.makedirs(a.batch_dir, exist_ok=True)
         print("\n[vision] 서브 에이전트에 던질 배치 — 재료 하나에 질문 여러 개")
-        for plan in plan_vision(conn, rows, vision_cards, a.batch_size):
+        for plan in plan_vision(pconn, rows, vision_cards, a.batch_size):
             mat = plan["material"]
             for i, batch in enumerate(plan["batches"], 1):
                 path = os.path.join(a.batch_dir, "%s-%03d.json" % (mat, i))
@@ -311,6 +353,7 @@ def main():
                       % ("{:,}".format(plan["no_material"]), mat))
         print("  → 배치를 proxy-extractor 에이전트들에 나눠 주고, 결과를 proxy-load")
     conn.close()
+    pconn.close()
     return 0
 
 

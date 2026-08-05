@@ -30,6 +30,8 @@ SCRIPTS = ROOT / "skills" / "commerce-intel" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from intel_data import brand_key            # noqa: E402  (표기 정규화 — D51)
+from schema_v3 import (PROXY_SCHEMA, assign_category,  # noqa: E402  (v3 — D65)
+                       proxy_db_path)
 
 SRC_DEFAULT = ROOT / "data" / "intel.db"
 OUT_DEFAULT = ROOT / "skills" / "commerce-intel" / "assets" / "seed-intel.db"
@@ -44,7 +46,10 @@ SEED_RUN_TARGET_LIKE = "%브랜드랭킹 상위30%"
 # 인사이트는 근거 데이터가 아니라 주장이라 product 키가 없다 — context로 고른다.
 SEED_INSIGHT_CONTEXTS_LIKE = ("brand:2000아카이브스%", "market:데님팬츠(여성%")
 
-# 상품 키에 매달린 것들 — 범위 상품에 걸린 행만 간다
+# 상품 키에 매달린 것들 — 범위 상품에 걸린 행만 간다.
+# proxy_cache는 v3부터 별도 proxy.db에 살지만(D65-8) seed는 **한 파일**로 나간다 —
+# copy_proxy()가 proxy.db에서 떼어 seed 안에 담고, 팀원 쪽 merge가 도로
+# 자기 proxy.db로 돌려 넣는다.
 PRODUCT_SCOPED = ("observations", "variants", "variant_observations",
                   "product_attributes", "proxy_cache")
 # 전량 간다 — 데이터가 아니라 해석에 필요한 계약·정의다
@@ -118,16 +123,20 @@ def copy_rows(src: sqlite3.Connection, dst_path: Path) -> dict[str, int]:
             params).rowcount
         counts[table] = n
 
+    # **런이 관측보다 먼저다** (D59와 같은 함정). v3 관측 뷰 트리거는 NEW.run_id를
+    # `SELECT id FROM runs`로 푸는데, 런이 아직 없으면 참조가 NULL로 풀리고 예외도
+    # 없다. 그래서 런 선별을 dst가 아니라 **main의 범위 관측**으로 미리 계산한다.
+    insert("runs",
+           "WHERE target LIKE ? OR run_id IN ("
+           "  SELECT o.run_id FROM main.observations o"
+           "  JOIN scope sc ON sc.site=o.site AND sc.product_id=o.product_id"
+           "  UNION SELECT vo.run_id FROM main.variant_observations vo"
+           "  JOIN scope sc ON sc.site=vo.site AND sc.product_id=vo.product_id)",
+           (SEED_RUN_TARGET_LIKE,))
     insert("products", "WHERE (site, product_id) IN (SELECT site, product_id FROM scope)")
     for t in PRODUCT_SCOPED:
         if t in tables:
             insert(t, "WHERE (site, product_id) IN (SELECT site, product_id FROM scope)")
-    # 런은 ① target으로 고른 것 ② 옮긴 관측이 참조하는 것 — 둘의 합집합.
-    # 관측이 어느 수집에서 왔는지가 이력이라, 참조가 끊기면 재현이 불가능해진다.
-    insert("runs",
-           "WHERE target LIKE ? OR run_id IN (SELECT run_id FROM dst.observations "
-           "UNION SELECT run_id FROM dst.variant_observations)",
-           (SEED_RUN_TARGET_LIKE,))
     for t in WHOLE:
         if t in tables:
             insert(t, "")
@@ -139,6 +148,58 @@ def copy_rows(src: sqlite3.Connection, dst_path: Path) -> dict[str, int]:
     src.commit()
     src.execute("DETACH DATABASE dst")
     return counts
+
+
+def copy_categories(src: sqlite3.Connection, dst_path: Path) -> int:
+    """seed 상품에 카테고리를 다시 단다 (v3 — D65-3).
+
+    상품은 뷰 트리거로 들어갔는데 트리거는 NEW.category를 못 받는다(경로 분해 —
+    schema_v3 docstring). 소스 뷰가 도로 편 경로 문자열을 assign_category()로
+    계층에 넣는다 — 이걸 빼먹으면 seed의 카테고리만 조용히 빈다.
+    """
+    dst = sqlite3.connect(dst_path)
+    cache, n = {}, 0
+    for site, pid in [tuple(r) for r in dst.execute("SELECT site, product_id FROM products")]:
+        row = src.execute("SELECT category FROM products WHERE site=? AND product_id=?",
+                          (site, pid)).fetchone()
+        if row and row[0]:
+            assign_category(dst, site, pid, row[0], cache)
+            n += 1
+    dst.commit()
+    dst.close()
+    return n
+
+
+def copy_proxy(src_db: Path, dst_path: Path) -> dict[str, int]:
+    """proxy.db(D65-8)에서 정의 전량 + 범위 상품의 판정만 seed 파일 안에 담는다.
+
+    seed는 한 파일로 나가는 게 계약이다 — 팀원의 `intel_db.py merge`가 이 표를
+    자기 proxy.db로 돌려 넣는다(_merge_proxy). 정본이 아직 v2(한 파일)면
+    copy_rows의 PRODUCT_SCOPED·WHOLE 경로가 이미 담았으므로 여기 올 일이 없다.
+    """
+    ppath = Path(proxy_db_path(str(src_db)))
+    if not ppath.exists():
+        return {}
+    dst = sqlite3.connect(dst_path)
+    if not dst.execute("SELECT 1 FROM sqlite_master WHERE name='proxy_defs'").fetchone():
+        dst.executescript(PROXY_SCHEMA)
+    dst.execute("ATTACH DATABASE ? AS px", (str(ppath),))
+    # 컬럼을 명시한다 — `SELECT *`는 두 DB의 컬럼 순서 일치를 암묵 가정한다
+    # (스키마가 한쪽만 늘면 조용히 어긋난다 — 이 파일의 다른 insert와 같은 규칙)
+    dcols = "proxy_name, question, material, value_space, method, created_at, label, rules"
+    ccols = "proxy_name, site, product_id, fingerprint, value, basis, judged_at"
+    n_def = dst.execute(
+        f"INSERT OR IGNORE INTO main.proxy_defs ({dcols}) "
+        f"SELECT {dcols} FROM px.proxy_defs").rowcount
+    n_cache = dst.execute(
+        f"INSERT OR IGNORE INTO main.proxy_cache ({ccols}) "
+        f"SELECT {ccols} FROM px.proxy_cache c "
+        "WHERE (c.site, c.product_id) IN (SELECT site, product_id FROM main.products)"
+    ).rowcount
+    dst.commit()
+    dst.execute("DETACH DATABASE px")
+    dst.close()
+    return {"proxy_defs": n_def, "proxy_cache": n_cache}
 
 
 def verify(dst_path: Path, src_path: Path) -> list[str]:
@@ -208,6 +269,8 @@ def main() -> int:
         clone_schema(src, out_path)
         n_brand, n_run = build_scope(src)
         counts = copy_rows(src, out_path)
+        counts["product_categories"] = copy_categories(src, out_path)   # v3 (D65-3)
+        counts.update(copy_proxy(src_path, out_path))                   # v3 (D65-8)
         src.close()
         print(f"  범위 상품 — 브랜드(2000아카이브스) {n_brand} · 런(브랜드랭킹 상위30) {n_run}")
         for t, n in sorted(counts.items()):

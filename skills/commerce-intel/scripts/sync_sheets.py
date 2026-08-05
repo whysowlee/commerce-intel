@@ -24,9 +24,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from intel_db import connect  # noqa: E402
-from schema_v2 import rowid_parts  # noqa: E402
+from schema_v3 import (proxy_connect, proxy_db_exists,  # noqa: E402
+                       proxy_db_path, rowid_parts)
 
-FULL_TABLES = ("products", "variants", "platforms", "runs", "proxy_defs")
+# 프록시 표 2종은 별도 DB(proxy.db — D65-8)에서 읽는다. 탭 구성은 그대로 —
+# 팀원이 보는 창구가 파일 분리 때문에 달라질 이유는 없다.
+FULL_TABLES = ("products", "variants", "platforms", "runs",
+               "brand_aliases", "brand_platforms", "proxy_defs")
+PROXY_TABLES = ("proxy_defs", "proxy_cache")
 INCR_TABLES = ("observations", "variant_observations", "proxy_cache")
 # 스토리별 뷰 탭 — 정본이 아니라 파생이다(context 접두사로 걸러 상품별 최신 관측만).
 # 스토리 안의 세부 대상은 context 열(앞쪽)로 구분한다 — 시트 필터로 걸러 본다.
@@ -37,14 +42,16 @@ VIEW_HEADERS = ["썸네일", "site", "context", "product_id", "상품명", "브�
                 "핏", "관측시각", "정가", "판매가", "할인율", "후기수", "평점", "하트",
                 "누적판매", "보는중", "품절", "순위"]
 TABLE_DESC = {  # 안내 탭에 싣는 원본 탭 설명
-    "products": "상품 정적 속성(이름·브랜드·카테고리·핏). 상품당 1행, 전체 다시 쓰기",
+    "products": "상품 정적 속성(이름·브랜드·카테고리). 상품당 1행, 전체 다시 쓰기",
     "observations": "시점별 관측 원본(가격·하트·순위…). append only, context 열이 출처",
     "variants": "옵션(컬러·사이즈) 구성. 옵션 수집 시 생성",
     "variant_observations": "옵션별 재고 관측. 재고 프로브 시 생성",
     "platforms": "입점처 누적 카탈로그. channel-scout 실행 시 생성",
+    "brand_aliases": "브랜드 표기 별명(플랫폼별 변형). 수집이 자동 등록(candidate)",
+    "brand_platforms": "브랜드-입점처 매핑. channel-scout·수집이 채운다",
     "runs": "수집 실행 이력",
-    "proxy_defs": "AI 파생 프록시 정의. 프록시 사용 시 생성",
-    "proxy_cache": "프록시 판정 캐시. 프록시 사용 시 생성",
+    "proxy_defs": "AI 파생 프록시 정의 (proxy.db). 프록시 사용 시 생성",
+    "proxy_cache": "프록시 판정 캐시 (proxy.db). 프록시 사용 시 생성",
 }
 NOTICE = ("이 스프레드시트는 로컬 정본 DB(data/intel.db)의 단방향 미러입니다. "
           "여기서 고친 값은 정본에 반영되지 않고 다음 동기화 때 덮일 수 있습니다.")
@@ -116,9 +123,16 @@ def rows_of(conn, table, since_rowid=None):
 
 
 def view_rows(conn, prefix):
-    """한 스토리(context 접두사)의 상품별 최신 관측을 사람이 읽을 표로 만든다."""
+    """한 스토리(context 접두사)의 상품별 최신 관측을 사람이 읽을 표로 만든다.
+
+    핏은 v3부터 product_attributes가 유일한 정본이다(D65-2) — 옛 attributes(JSON)
+    컬럼은 없다.
+    """
     rows = conn.execute("""
-        SELECT p.site, p.product_id, p.name, p.brand, p.category, p.attributes, p.image_url,
+        SELECT p.site, p.product_id, p.name, p.brand, p.category, p.image_url,
+               (SELECT a.value FROM product_attributes a
+                WHERE a.site = p.site AND a.product_id = p.product_id
+                  AND a.attr_name = '핏') AS fit,
                o.context, o.observed_at, o.price_original, o.price_sale, o.discount_rate,
                o.review_count, o.rating, o.like_count, o.purchase_count,
                o.viewers_now, o.sold_out, o.rank
@@ -136,7 +150,7 @@ def view_rows(conn, prefix):
         if key in seen:
             continue
         seen.add(key)
-        fit = (json.loads(r["attributes"]) if r["attributes"] else {}).get("핏") or ""
+        fit = r["fit"] or ""
         so = "" if r["sold_out"] is None else ("품절" if r["sold_out"] else "판매중")
         # 썸네일: 시트가 인셀 렌더하는 =IMAGE() 수식 (value_input_option=USER_ENTERED 필요)
         img = f'=IMAGE("{r["image_url"]}")' if r["image_url"] else ""
@@ -236,6 +250,13 @@ def main():
         print(reason, file=sys.stderr)
         sys.exit(code)
     conn = connect(args.db)
+    # 프록시 표는 별도 DB에 산다 (D65-8). 파일이 없으면(아직 프록시 미사용) 그 탭은
+    # 빈 테이블과 같게 다룬다 — 진행점(sync_state)은 여전히 정본 쪽에 남는다.
+    ppath = proxy_db_path(args.db)
+    pconn = proxy_connect(ppath) if proxy_db_exists(ppath) else None
+
+    def src_of(table):
+        return pconn if table in PROXY_TABLES else conn
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     existing = {ws.title: ws for ws in sh.worksheets()}
@@ -247,7 +268,11 @@ def main():
             print(f"{title}: 데이터 없음 — 탭 삭제")
 
     for table in FULL_TABLES:
-        headers, data, _ = rows_of(conn, table)
+        c = src_of(table)
+        if c is None:              # proxy.db가 아직 없다 — 빈 테이블과 같다
+            drop_if_empty(table)
+            continue
+        headers, data, _ = rows_of(c, table)
         if not data:               # 빈 테이블은 탭을 만들지 않는다 (있으면 지운다)
             drop_if_empty(table)
             continue
@@ -283,9 +308,12 @@ def main():
         if t.startswith("뷰_") and t not in {v[0] for v in VIEWS}:
             drop_if_empty(t)
 
-    # 관측 테이블들은 rowid 기준 증분 append — 빈 테이블은 탭을 만들지 않는다
+    # 관측 테이블들은 rowid 기준 증분 append — 빈 테이블은 탭을 만들지 않는다.
+    # proxy_cache는 proxy.db에서 읽지만 **진행점은 정본의 sync_state**에 남는다 —
+    # 미러 상태는 미러를 도는 쪽(정본)의 것이다.
     for table in INCR_TABLES:
-        total = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        c = src_of(table)
+        total = c.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] if c else 0
         if total == 0:
             drop_if_empty(table)
             continue
@@ -293,11 +321,11 @@ def main():
         row = conn.execute(
             "SELECT last_synced_key FROM sync_state WHERE table_name=?", (table,)).fetchone()
         last = int(row["last_synced_key"]) if row and row["last_synced_key"] else 0
-        result = rows_of(conn, table, since_rowid=last)
+        result = rows_of(c, table, since_rowid=last)
         headers, data, max_rowid = result[0], result[1], result[2]
-        # `_rowid`는 증분 키일 뿐 데이터가 아니다 — v2에서 옛 이름은 뷰라
+        # `_rowid`는 증분 키일 뿐 데이터가 아니다 — 옛 이름은 뷰라
         # PRAGMA가 이것까지 돌려준다. 빼지 않으면 헤더가 데이터보다 한 칸 길어진다.
-        full_headers = [d[1] for d in conn.execute(f"PRAGMA table_info({table})")
+        full_headers = [d[1] for d in c.execute(f"PRAGMA table_info({table})")
                         if d[1] != "_rowid"]
         ws = ensure_ws(sh, table, len(full_headers))
         # 빈 열은 셀 한도(워크북 1천만)를 갉아먹는다 — 관측 탭은 계속 자라므로
@@ -352,7 +380,7 @@ def main():
         if got is not None and got != total:
             audit.append((table, total, got))
             if args.repair:
-                hdr, alldata, maxr = rows_of(conn, table)
+                hdr, alldata, maxr = rows_of(c, table)
                 rebuild_tab(ws, hdr, alldata)
                 conn.execute(
                     "INSERT INTO sync_state VALUES (?, ?, ?) ON CONFLICT(table_name) "

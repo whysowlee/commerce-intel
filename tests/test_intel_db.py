@@ -420,12 +420,16 @@ def proxy_auto_tests():
     ok, bad = proxy_auto.validate_cards([
         {"proxy_name": "broken", "rules": [{"any": ["[unclosed"], "value": "x"}]},
         {"proxy_name": "nopat", "numeric": {"kind": "count"}},
+        {"proxy_name": "badnum", "numeric": {"kind": "count", "pattern": "[bad"}},
         {"proxy_name": "fine", "rules": [{"any": ["[가-힣]"], "value": "한글"}]},
     ])
     names = [c["proxy_name"] for c in ok]
     check("E-PA-8 컴파일 안 되는 정규식은 그 카드만 버린다", names == ["fine"], names)
     check("E-PA-9 count인데 pattern 없으면 카드를 버린다",
           any(n == "nopat" for n, _ in bad))
+    # 3R Blocker 5 — numeric.pattern도 rules와 같은 컴파일 검증을 받는다
+    check("E-PA-12 numeric.pattern이 깨진 카드도 버린다 (lazy 판정이 리포트 안에서 돈다)",
+          any(n == "badnum" for n, _ in bad), bad)
     check("E-PA-9b judge_row도 죽지 않는다 (직접 호출 경로)",
           proxy_auto.judge_row({"material": "name", "numeric": {"kind": "count"}},
                                Row(name="아무거나")) is None)
@@ -447,42 +451,103 @@ def proxy_auto_tests():
           proxy_auto.judge_row(mat, Row(name="면 100% 스커트"))[0] == "코튼")
 
 
-def schema_v2_tests():
-    """스키마 v2 (D45) — 뷰가 원본처럼 읽히고 써지는가 (E-DB).
+def schema_v3_tests():
+    """스키마 v3 (D65) — 뷰가 원본처럼 읽히고 써지는가 (E-DB) + v3 신규 계약.
 
-    옛 이름이 뷰가 됐다는 것이 이 스키마의 전부다. 뷰가 한 군데라도 어긋나면
-    분석 전체가 조용히 틀린 값을 본다 — 예외가 안 나는 종류라 여기서 고정한다.
+    옛 이름이 뷰라는 규약(D45)은 그대로다. v3에서 더해진 계약: 컨텍스트 접두사
+    CHECK · 카테고리 계층 왕복 · 브랜드 대표명/별명 · runs 정수 PK FK · obs_attr.
     """
     sys.path.insert(0, str(SCRIPTS))
     import importlib
     intel_db = importlib.import_module("intel_db")
-    work = Path(tempfile.mkdtemp(prefix="v2-"))
-    db = str(work / "v2.db")
+    schema_v3 = importlib.import_module("schema_v3")
+    work = Path(tempfile.mkdtemp(prefix="v3-"))
+    db = str(work / "v3.db")
     conn = intel_db.connect(db)
 
-    # E-DB-12 새 DB는 v2다
+    # E-DB-12 새 DB는 v3다
     tabs = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     views = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='view'")}
-    check("E-DB-12 새 DB는 v2로 만들어진다", "obs_base" in tabs and "products" in views,
-          sorted(tabs)[:6])
+    check("E-DB-12 새 DB는 v3로 만들어진다 (product_categories·obs_attr 존재)",
+          {"obs_base", "product_categories", "obs_attr", "brand_aliases",
+           "brand_platforms"} <= tabs and "products" in views, sorted(tabs)[:8])
 
     now = "2026-08-04 10:00:00"
     conn.execute("INSERT INTO runs (run_id, site, story, target, collected_at) "
                  "VALUES ('R1','29cm','brand-linesheet','T',?)", (now,))
-    # E-DB-4·11 뷰로 INSERT하고 URL이 접혔다 펴진다
+    # E-DB-4·11 뷰로 INSERT하고 URL이 접혔다 펴진다 (v3: attributes·seen_at 없음)
     conn.execute(
-        "INSERT INTO products (site, product_id, name, url, image_url, brand, category,"
-        " attributes, attributes_basis, static_verified_at, first_seen_at, last_seen_at,"
-        " raw_extras) VALUES ('29cm','P1','상품','https://a.test/goods/1',"
-        "'https://img.a.test/x.jpg','브랜드','미니',NULL,NULL,?,?,?,NULL)", (now, now, now))
-    r = conn.execute("SELECT url, image_url, brand, first_seen_at FROM products "
+        "INSERT INTO products (site, product_id, name, url, image_url, brand,"
+        " static_verified_at) VALUES ('29cm','P1','상품','https://a.test/goods/1',"
+        "'https://img.a.test/x.jpg','브랜드',?)", (now,))
+    r = conn.execute("SELECT url, image_url, brand, static_verified_at FROM products "
                      "WHERE product_id='P1'").fetchone()
     check("E-DB-4·11 뷰 INSERT 후 URL·시각이 그대로 왕복한다",
           r["url"] == "https://a.test/goods/1"
           and r["image_url"] == "https://img.a.test/x.jpg"
-          and r["first_seen_at"] == now, tuple(r))
+          and r["static_verified_at"] == now, tuple(r))
     check("E-DB-11 호스트가 사전으로 접혔다",
           conn.execute("SELECT COUNT(*) FROM hosts").fetchone()[0] == 2)
+
+    # E-DB-30 카테고리 계층 왕복 (D65-3) — 경로가 계층 행으로 접혔다 도로 펴진다
+    schema_v3.assign_category(conn, "29cm", "P1", "여성의류 > 스커트 > 미니")
+    got = conn.execute("SELECT category FROM products WHERE product_id='P1'").fetchone()[0]
+    check("E-DB-30 카테고리 경로가 계층으로 접혔다 도로 펴진다",
+          got == "여성의류 > 스커트 > 미니", got)
+    depths = dict(conn.execute("SELECT name, depth FROM categories"))
+    check("E-DB-30b depth는 플랫폼 경로 위치 그대로 (1·2·3)",
+          depths == {"여성의류": 1, "스커트": 2, "미니": 3}, depths)
+    check("E-DB-30c 상품 카테고리는 N:M 매핑 행이다 (source='platform')",
+          conn.execute("SELECT COUNT(*) FROM product_categories "
+                       "WHERE source='platform'").fetchone()[0] == 1)
+    # 같은 이름이 다른 부모 아래 공존한다 — UNIQUE(name, parent)
+    schema_v3.ensure_category_path(conn, "남성의류 > 스커트")
+    check("E-DB-30d 같은 이름이 다른 부모 아래 두 행이다",
+          conn.execute("SELECT COUNT(*) FROM categories WHERE name='스커트'")
+          .fetchone()[0] == 2)
+
+    # E-DB-31 컨텍스트 접두사 CHECK (D65-1) — 4종 밖은 물리 표가 거부한다
+    bad = False
+    try:
+        conn.execute("INSERT INTO contexts (name) VALUES ('elsewhere:x')")
+    except sqlite3.IntegrityError:
+        bad = True
+    check("E-DB-31 접두사 4종 밖 컨텍스트는 CHECK가 거부한다", bad)
+    check("E-DB-31b 접두사 4종은 통과한다", all(
+        conn.execute("INSERT OR IGNORE INTO contexts (name) VALUES (?)",
+                     (p + ":t",)).rowcount == 1
+        for p in ("brand", "market", "ranking", "adhoc")))
+
+    # E-DB-32 브랜드 대표명·별명 (D65-4) — 표기 변형이 candidate 별명으로 붙는다
+    rep = intel_db.resolve_brand(conn, "브랜드", "29cm", {})
+    check("E-DB-32 대표명 완전일치는 그대로", rep == "브랜드", rep)
+    rep2 = intel_db.resolve_brand(conn, "브 랜 드", "29cm", {})
+    check("E-DB-32b 표기 변형은 대표명으로 풀리고 별명이 등록된다",
+          rep2 == "브랜드" and conn.execute(
+              "SELECT verify_status FROM brand_aliases WHERE notation='브 랜 드'")
+          .fetchone()[0] == "candidate", rep2)
+    check("E-DB-32c 한글·영문은 묶이지 않는다 (음차 매칭 없음)",
+          intel_db.resolve_brand(conn, "Brand", "29cm", {}) == "Brand")
+
+    # E-DB-33 runs 정수 PK + 정식 FK (D65-7)
+    rid = conn.execute("SELECT id FROM runs WHERE run_id='R1'").fetchone()[0]
+    check("E-DB-33 runs.id는 정수 PK다", isinstance(rid, int), rid)
+    fk = conn.execute("PRAGMA foreign_key_list(obs_base)").fetchall()
+    check("E-DB-33b obs_base.run_id가 runs(id)를 정식 FK로 가리킨다",
+          any(f[2] == "runs" and f[3] == "run_id" for f in fk), fk)
+    # E-DB-33c 미등록 run_id는 NULL로 새지 않고 즉시 죽는다 (PR #13 리뷰 — D59 함정)
+    loud = False
+    try:
+        conn.execute("INSERT INTO observations (site, product_id, observed_at, "
+                     "context, price_sale, run_id) VALUES "
+                     "('29cm','P1','2026-08-04 11:00:00','brand:t',1,'없는런')")
+    except sqlite3.IntegrityError:
+        loud = True
+    check("E-DB-33c 미등록 run_id는 트리거가 거부한다 (NULL로 흘리지 않는다)", loud)
+    check("E-DB-33d run_id 없는 관측(NULL)은 여전히 허용된다",
+          conn.execute("INSERT INTO observations (site, product_id, observed_at, "
+                       "context, price_sale) VALUES "
+                       "('29cm','P1','2026-08-04 11:30:00','brand:t',2)").rowcount >= 0)
 
     # E-DB-6 부분 SET UPDATE
     conn.execute("UPDATE products SET brand='새브랜드' WHERE site='29cm' AND product_id='P1'")
@@ -501,7 +566,8 @@ def schema_v2_tests():
     except sqlite3.IntegrityError:
         dup = True
     check("E-DB-5 중복 관측은 IntegrityError로 남는다", dup)
-    o = conn.execute("SELECT price_sale, rank, run_id, context FROM observations").fetchone()
+    o = conn.execute("SELECT price_sale, rank, run_id, context FROM observations "
+                     "WHERE context='ranking:t'").fetchone()
     check("E-DB-4 관측이 뷰로 그대로 읽힌다",
           tuple(o) == (1000, 3, "R1", "ranking:t"), tuple(o))
 
@@ -515,9 +581,17 @@ def schema_v2_tests():
     check("E-DB-8 ttl_days=NULL이 덮어써진다 (COALESCE로 지키면 안 된다)",
           got is None, got)
 
+    # E-DB-34 obs_attr (D65-6) — 관측에 비정형 지표가 행으로 붙는다
+    obs_rowid = conn.execute("SELECT _rowid FROM observations LIMIT 1").fetchone()[0]
+    conn.execute("INSERT INTO obs_attr (obs_id, attr_name, value, basis) "
+                 "VALUES (?,?,?,?)", (obs_rowid, "sns_언급수", "37", "api"))
+    check("E-DB-34 시점 속성이 관측 id에 매달린다",
+          conn.execute("SELECT value FROM obs_attr WHERE obs_id=?",
+                       (obs_rowid,)).fetchone()[0] == "37")
+
     # E-DB-17 URL 접기 규칙이 파이썬과 트리거 SQL에서 **같아야** 한다 (PR #9 리뷰).
     # 경로 없는 URL이 갈리면 같은 호스트가 사전에 두 항목으로 쪼개진다.
-    from schema_v2 import split_url, _HOST, _PATH
+    from schema_v3 import split_url, _HOST, _PATH
     for url in ("https://cdn.example.com", "https://a.test/x/y", "노프로토콜경로",
                 "", None):        # 빈 문자열·NULL도 같은 결과여야 한다 (PR #9 리뷰)
         hid, path = split_url(conn, url, {})
@@ -545,8 +619,8 @@ def prune_tests():
     work = Path(tempfile.mkdtemp(prefix="prune-"))
     db = str(work / "p.db")
     conn = intel_db.connect(db)
-    conn.execute("INSERT INTO products (site, product_id, name, first_seen_at, last_seen_at)"
-                 " VALUES ('29cm','P1','상품','2020-01-01 00:00:00','2020-01-01 00:00:00')")
+    conn.execute("INSERT INTO products (site, product_id, name, static_verified_at)"
+                 " VALUES ('29cm','P1','상품','2020-01-01 00:00:00')")
     # 10시점을 **한 시간 안에** 5분 간격으로 둔다 — 버킷(1시간)당 1개 규칙이 실제로
     # 물어야 솎기가 검증된다. 가격은 3번째와 7번째에만 바뀌고 순위는 고정이다.
     prices = [1000, 1000, 2000, 2000, 2000, 2000, 3000, 3000, 3000, 3000]
@@ -731,41 +805,47 @@ def incremental_key_tests():
     import importlib
     intel_db = importlib.import_module("intel_db")
     sync_sheets = importlib.reload(importlib.import_module("sync_sheets"))
-    schema_v2 = importlib.import_module("schema_v2")
+    schema_v3 = importlib.import_module("schema_v3")
 
     work = Path(tempfile.mkdtemp(prefix="rid-"))
     db = str(work / "k.db")
-    conn = intel_db.connect(db)                # 새 DB = v2
+    conn = intel_db.connect(db)                # 새 DB = v3
     conn.execute("INSERT INTO runs (run_id, site, story, target, collected_at) "
                  "VALUES ('R','29cm','brand-linesheet','T','2026-08-04 10:00:00')")
-    conn.execute("INSERT INTO products (site, product_id, name, first_seen_at,"
-                 " last_seen_at) VALUES ('29cm','P','n','2026-08-04 10:00:00',"
-                 "'2026-08-04 10:00:00')")
+    conn.execute("INSERT INTO products (site, product_id, name, static_verified_at)"
+                 " VALUES ('29cm','P','n','2026-08-04 10:00:00')")
+    # proxy_cache는 별도 proxy.db다 (D65-8) — 증분 미러도 그쪽 커넥션을 탄다
+    pconn = schema_v3.proxy_connect(schema_v3.proxy_db_path(db))
+    pconn.execute("INSERT INTO proxy_defs (proxy_name, value_space, method) "
+                  "VALUES ('px','[\"v\"]','rule')")
     for i in range(5):
         conn.execute("INSERT INTO observations (site, product_id, observed_at,"
                      " context, price_sale) VALUES ('29cm','P',?,'brand:t',?)",
                      ("2026-08-04 1%d:00:00" % i, 1000 + i))
-        conn.execute("INSERT INTO proxy_cache VALUES ('px','29cm',?,?,?,?,?)",
-                     ("P%d" % i, "fp%d" % i, "v", "b", "2026-08-04 10:00:00"))
+        pconn.execute("INSERT INTO proxy_cache VALUES ('px','29cm',?,?,?,?,?)",
+                      ("P%d" % i, "fp%d" % i, "v", "b", "2026-08-04 10:00:00"))
     conn.commit()
+    pconn.commit()
 
-    for table, want_type in (("observations", "view"), ("proxy_cache", "table")):
-        typ = conn.execute("SELECT type FROM sqlite_master WHERE name=?",
-                           (table,)).fetchone()[0]
+    for c, table, want_type in ((conn, "observations", "view"),
+                                (pconn, "proxy_cache", "table")):
+        typ = c.execute("SELECT type FROM sqlite_master WHERE name=?",
+                        (table,)).fetchone()[0]
         check("E-DB-20 %s는 %s다 (두 경로를 다 탄다)" % (table, want_type),
               typ == want_type, typ)
-        sel, key = schema_v2.rowid_parts(conn, table)
+        sel, key = schema_v3.rowid_parts(c, table)
         # **WHERE에 별칭이 아니라 진짜 참조 가능한 표현식이 들어가야 한다**
         check("E-DB-20b %s의 WHERE 키가 %s" % (table, "rowid" if typ == "table" else "_rowid"),
               key == ("rowid" if typ == "table" else "_rowid"), key)
         try:
-            h, d, m = sync_sheets.rows_of(conn, table, since_rowid=2)
+            h, d, m = sync_sheets.rows_of(c, table, since_rowid=2)
             ok, detail = (len(d) == 3 and m == 5), (len(d), m)
         except Exception as e:
             ok, detail = False, "%s: %s" % (type(e).__name__, e)
         check("E-DB-21 %s 증분 조회가 실제로 돈다 (since=2 → 3행)" % table, ok, detail)
         check("E-DB-22 %s 헤더에 _rowid가 안 섞인다" % table,
               "_rowid" not in h, h[-2:] if h else h)
+    pconn.close()
     shutil.rmtree(work, ignore_errors=True)
 
 
@@ -788,6 +868,134 @@ def context_tests():
           co({"story": "brand-linesheet", "target": "market:X"}) == "brand:market:X")
     check("E-CX-5 target이 비어도 죽지 않는다",
           co({"story": "ranking-snapshot"}) == "ranking:")
+
+
+def blocker3r_tests():
+    """PR #13 3라운드 Blocker 회귀 — 이관 가드·프록시 가드·lazy 판정 격리."""
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    intel_db = importlib.import_module("intel_db")
+    migrate_v3 = importlib.import_module("migrate_v3")
+    schema_v3 = importlib.import_module("schema_v3")
+    schema_v2 = importlib.import_module("schema_v2")
+    work = Path(tempfile.mkdtemp(prefix="b3r-"))
+
+    # ── B2: 이미 v3인 DB에 재실행하면 가드가 막는다 (obs_base는 v2·v3 공통이라
+    #    구 가드는 통과했다 — product_categories가 v3 표식이다)
+    v3db = str(work / "v3.db")
+    intel_db.connect(v3db).close()
+    guarded = False
+    try:
+        migrate_v3.migrate(v3db, str(work / "out.db"), str(work / "px.staging"))
+    except SystemExit as e:
+        guarded = "이미 v3" in str(e)
+    check("E-MG-1 v3 정본 재실행은 가드가 막는다 (Blocker 2)", guarded)
+
+    # ── B1: 이관은 스테이징에만 쓴다 — 라이브 proxy.db는 건드리지 않는다
+    v2db = str(work / "v2.db")
+    src = sqlite3.connect(v2db)
+    src.executescript(schema_v2.SCHEMA_V2)
+    src.execute("CREATE TABLE runs (run_id TEXT PRIMARY KEY, site TEXT, story TEXT,"
+                " target TEXT, collected_at TEXT, item_count INTEGER,"
+                " source_total INTEGER, incomplete INTEGER, notes TEXT,"
+                " raw_file TEXT, loaded_at TEXT)")
+    src.execute("CREATE TABLE sync_state (table_name TEXT PRIMARY KEY,"
+                " last_synced_key TEXT, updated_at TEXT)")
+    src.execute("INSERT INTO sync_state VALUES ('observations', '0', 'x')")
+    src.commit(); src.close()
+    live_proxy = work / "proxy.db"
+    live_proxy.write_text("살아있는 프록시 — 이관이 건드리면 안 된다")
+    staging = str(work / "proxy.db.staging")
+    migrate_v3.migrate(v2db, str(work / "v2-out.db"), staging)
+    check("E-MG-2 라이브 proxy.db가 이관 중 보존된다 (Blocker 1 — 스테이징에만 쓴다)",
+          live_proxy.read_text() == "살아있는 프록시 — 이관이 건드리면 안 된다")
+    check("E-MG-2b 프록시 스테이징 파일이 별도로 만들어진다", os.path.exists(staging))
+
+    # ── B3: 이관에서 행이 떨어지면 그 표의 미러 진행점을 리셋한다
+    g = sqlite3.connect(str(work / "g.db"))
+    g.execute("CREATE TABLE sync_state (table_name TEXT PRIMARY KEY,"
+              " last_synced_key TEXT, updated_at TEXT)")
+    g.execute("INSERT INTO sync_state VALUES ('observations', '500', 'x')")
+    migrate_v3._guard_sync_progress(g, "observations", 10, 10)
+    check("E-MG-3 행 보존이면 진행점 유지",
+          g.execute("SELECT last_synced_key FROM sync_state").fetchone()[0] == "500")
+    migrate_v3._guard_sync_progress(g, "observations", 10, 9)
+    check("E-MG-3b 드롭이 있으면 진행점 리셋 — 다음 미러가 전량 재동기화 (Blocker 3)",
+          g.execute("SELECT last_synced_key FROM sync_state").fetchone()[0] is None)
+
+    # ── B4: 정본이 Turso인데 프록시 URL이 없으면 proxy_auto가 명시적으로 죽는다
+    cards_f = work / "cards.json"
+    cards_f.write_text(json.dumps([{"proxy_name": "t", "material": "name",
+                                    "method": "rule", "value_space": ["a"],
+                                    "rules": [{"any": ["."], "value": "a"}]}]),
+                       encoding="utf-8")
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("PROXY_DB_URL", "INTEL_PROXY_DB")}
+    r = subprocess.run([sys.executable, str(SCRIPTS / "proxy_auto.py"),
+                        "--db", "libsql://fake.turso.io", "--cards", str(cards_f),
+                        "--out", str(work / "o.json")],
+                       capture_output=True, text=True, env=env)
+    check("E-PA-13 Turso 정본 + 프록시 URL 미설정이면 임시 DB로 새지 않고 죽는다 (Blocker 4)",
+          r.returncode != 0 and "PROXY_DB_URL" in (r.stdout + r.stderr),
+          "exit=%d %s" % (r.returncode, (r.stdout + r.stderr)[:80]))
+
+    # ── B5: 깨진 카드 규칙이 collect()를 죽이지 않는다 (lazy 판정 격리)
+    lzdb = str(work / "lz.db")
+    conn = intel_db.connect(lzdb)
+    conn.execute("INSERT INTO products (site, product_id, name) VALUES ('s','1','상품')")
+    conn.execute("INSERT INTO observations (site, product_id, observed_at, context,"
+                 " price_sale) VALUES ('s','1','2026-08-05 10:00:00','brand:t',100)")
+    conn.commit(); conn.close()
+    pcon = schema_v3.proxy_connect(str(work / "proxy2.db"))
+    pcon.execute("INSERT INTO proxy_defs (proxy_name, material, value_space, method,"
+                 " rules) VALUES ('bad_rule','name','[\"a\"]','rule',?)",
+                 (json.dumps({"rules": [{"any": ["[unclosed"], "value": "a"}]}),))
+    pcon.commit(); pcon.close()
+    import importlib as _il
+    intel_data = _il.import_module("intel_data")
+    old_env = os.environ.get("INTEL_PROXY_DB")
+    os.environ["INTEL_PROXY_DB"] = str(work / "proxy2.db")
+    try:
+        data = intel_data.collect(lzdb, None)
+        ok_lz = all(it.get("px_bad_rule") is None for it in data["items"])
+        check("E-LZ-1 깨진 정규식 카드가 리포트 파이프라인을 죽이지 않는다 (Blocker 5)",
+              ok_lz, [it.get("px_bad_rule") for it in data["items"]])
+    except Exception as e:
+        check("E-LZ-1 깨진 정규식 카드가 리포트 파이프라인을 죽이지 않는다 (Blocker 5)",
+              False, "%s: %s" % (type(e).__name__, e))
+    finally:
+        if old_env is None:
+            os.environ.pop("INTEL_PROXY_DB", None)
+        else:
+            os.environ["INTEL_PROXY_DB"] = old_env
+    shutil.rmtree(work, ignore_errors=True)
+
+
+def check_run_tests():
+    """팀 중복 수집 방지 (D67) — **시간대 회귀 포함** (PR #13 리뷰 Blocker).
+
+    collected_at은 로컬 시간 문자열이다. 컷오프를 SQL `datetime('now')`(UTC)로
+    계산하면 KST에서 창이 9시간 넓어진다 — "2시간 전 수집, 1시간 창"이 중복으로
+    오판된다. 그 케이스를 고정한다.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    intel_db = importlib.import_module("intel_db")
+    work = Path(tempfile.mkdtemp(prefix="ckrun-"))
+    conn = intel_db.connect(str(work / "r.db"))
+    two_h_ago = (datetime.now() - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute("INSERT INTO runs (run_id, site, story, target, collected_at) "
+                 "VALUES ('R2H','musinsa','ranking-snapshot','스커트',?)", (two_h_ago,))
+    conn.commit()
+    dup = intel_db.check_duplicate_run(conn, "musinsa", "ranking-snapshot", "스커트", 3)
+    check("E-DR-1 창 안(2시간 전, 창 3시간)의 수집은 중복으로 잡힌다",
+          dup and dup["run_id"] == "R2H", dup)
+    dup = intel_db.check_duplicate_run(conn, "musinsa", "ranking-snapshot", "스커트", 1)
+    check("E-DR-2 창 밖(2시간 전, 창 1시간)은 중복이 아니다 — UTC 혼용이면 "
+          "KST에서 여기가 중복으로 오판된다", dup is None, dup)
+    check("E-DR-3 다른 target은 남의 일이다",
+          intel_db.check_duplicate_run(conn, "musinsa", "ranking-snapshot", "바지", 24) is None)
+    shutil.rmtree(work, ignore_errors=True)
 
 
 def modeling_role_tests():
@@ -955,15 +1163,21 @@ def proxy_space_tests():
     버려 오염을 찾아도 exit 0이었다).
     """
     import tempfile
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    schema_v3 = importlib.import_module("schema_v3")
     work = Path(tempfile.mkdtemp())
     db = str(work / "px.db")
     run([SCRIPTS / "intel_db.py", "--db", db, "init"], work, db)
     con = sqlite3.connect(db)
     con.execute("INSERT INTO products (site, product_id, name) VALUES ('musinsa','1','상품 A')")
-    con.execute("INSERT INTO proxy_defs (proxy_name, question, material, value_space, method, created_at) "
-                "VALUES ('name_lang','q','name','[\"영문\",\"한국어\"]','rule','2026-08-05')")
-    con.execute("INSERT INTO proxy_cache VALUES ('name_lang','musinsa','1','상품 A','화성어','b','2026-08-05')")
     con.commit(); con.close()
+    # 프록시 표는 정본 옆 proxy.db다 (D65-8) — CLI(--db)가 같은 폴더를 본다
+    pcon = schema_v3.proxy_connect(str(work / "proxy.db"))
+    pcon.execute("INSERT INTO proxy_defs (proxy_name, question, material, value_space, method, created_at) "
+                 "VALUES ('name_lang','q','name','[\"영문\",\"한국어\"]','rule','2026-08-05')")
+    pcon.execute("INSERT INTO proxy_cache VALUES ('name_lang','musinsa','1','상품 A','화성어','b','2026-08-05')")
+    pcon.commit(); pcon.close()
 
     # E-PXS-2 — 오염이면 exit 2, --fix 후 0. 반환값이 아니라 프로세스 코드다
     r = run([SCRIPTS / "intel_db.py", "--db", db, "proxy-audit"], work, db)
@@ -975,18 +1189,18 @@ def proxy_space_tests():
     check("E-PXS-2c 청소 후 exit 0", r.returncode == 0, r.returncode)
 
     # E-PXS-1 — 순서만 바뀐 재적재는 캐시를 안 지우고, 실질 변경은 지운다
-    con = sqlite3.connect(db)
-    con.execute("INSERT INTO proxy_cache VALUES ('name_lang','musinsa','1','상품 A','영문','b','2026-08-05')")
-    con.commit(); con.close()
+    pcon = schema_v3.proxy_connect(str(work / "proxy.db"))
+    pcon.execute("INSERT INTO proxy_cache VALUES ('name_lang','musinsa','1','상품 A','영문','b','2026-08-05')")
+    pcon.commit(); pcon.close()
     reorder = work / "reorder.json"
     reorder.write_text(json.dumps({
         "proxy": {"proxy_name": "name_lang", "question": "q", "material": "name",
                   "value_space": ["한국어", "영문"], "method": "rule"},
         "judgments": []}, ensure_ascii=False), encoding="utf-8")
     run([SCRIPTS / "intel_db.py", "--db", db, "proxy-load", reorder], work, db)
-    con = sqlite3.connect(db)
-    n = con.execute("SELECT COUNT(*) FROM proxy_cache").fetchone()[0]
-    con.close()
+    pcon = schema_v3.proxy_connect(str(work / "proxy.db"))
+    n = pcon.execute("SELECT COUNT(*) FROM proxy_cache").fetchone()[0]
+    pcon.close()
     check("E-PXS-1 원소 순서만 바뀐 값 공간은 캐시를 지우지 않는다", n == 1, n)
     real = work / "real.json"
     real.write_text(json.dumps({
@@ -994,21 +1208,21 @@ def proxy_space_tests():
                   "value_space": ["한국어", "영문", "혼합"], "method": "rule"},
         "judgments": []}, ensure_ascii=False), encoding="utf-8")
     r = run([SCRIPTS / "intel_db.py", "--db", db, "proxy-load", real], work, db)
-    con = sqlite3.connect(db)
-    n = con.execute("SELECT COUNT(*) FROM proxy_cache").fetchone()[0]
-    con.close()
+    pcon = schema_v3.proxy_connect(str(work / "proxy.db"))
+    n = pcon.execute("SELECT COUNT(*) FROM proxy_cache").fetchone()[0]
+    pcon.close()
     check("E-PXS-1b 실질 변경은 옛 캐시를 버리고 그 사실을 찍는다",
           n == 0 and "버린다" in r.stdout, "n=%d stdout=%s" % (n, r.stdout.strip()[:60]))
 
     # E-PXS-3 — 오염이 남은 채 분석에 들어가면 그 축을 통째로 뺀다 (읽기 안전망)
+    pcon = schema_v3.proxy_connect(str(work / "proxy.db"))
+    pcon.execute("INSERT INTO proxy_cache VALUES "
+                 "('name_lang','musinsa','1','상품 A','금성어','b','2026-08-05')")
+    pcon.commit(); pcon.close()
     con = sqlite3.connect(db)
-    con.execute("INSERT INTO proxy_cache VALUES "
-                "('name_lang','musinsa','1','상품 A','금성어','b','2026-08-05')")
     con.execute("INSERT INTO observations (site, product_id, observed_at, context, price_sale) "
                 "VALUES ('musinsa','1','2026-08-05 10:00:00','brand:테스트',1000)")
     con.commit(); con.close()
-    sys.path.insert(0, str(SCRIPTS))
-    import importlib
     intel_data = importlib.import_module("intel_data")
     data = intel_data.collect(db, None)
     meta = next(p for p in data["meta"]["proxies"] if p["name"] == "name_lang")
@@ -1290,8 +1504,8 @@ def main():
     print("[15] 프록시 규칙 실행기 (D43)")
     proxy_auto_tests()
 
-    print("[16] 스키마 v2 — 뷰 읽기·쓰기 (D45)")
-    schema_v2_tests()
+    print("[16] 스키마 v3 — 뷰 읽기·쓰기 + v3 계약 (D45·D65)")
+    schema_v3_tests()
 
     print("[17] 솎기 — 변화 순간 보존 (D45-a)")
     prune_tests()
@@ -1311,6 +1525,12 @@ def main():
     print("[21] 문맥 문자열·역할 규칙 (D51)")
     context_tests()
     modeling_role_tests()
+
+    print("[21c] 팀 중복 수집 방지 — 시간대 회귀 (D67 · E-DR)")
+    check_run_tests()
+
+    print("[21d] 3라운드 Blocker 회귀 — 이관·프록시 가드·lazy 격리 (E-MG·E-PA-13·E-LZ)")
+    blocker3r_tests()
 
     print("[21b] 프록시 값 공간 위생 (D53 · E-PXS)")
     proxy_space_tests()
