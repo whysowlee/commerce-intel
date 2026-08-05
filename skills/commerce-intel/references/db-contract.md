@@ -46,7 +46,11 @@
 - `reviews[]`(리뷰 본문)는 수집하지 않는다. 담겨 있으면 검증기가 경고한다.
 - **`raw_extras`는 선택 필드다**(재료 보존 — D19). 화면에 노출된 부가 표시물(배지·
   라벨 문자열)을 원문 그대로 담는다: `{"badges": ["[아이유 착용]"], "labels": [...]}`.
-  해석하지 않는다 — 파생 프록시의 재료다(`proxy-extraction.md`).
+  해석하지 않는다 — 파생 프록시의 재료다(`proxy-extraction.md`). DB에 컬럼으로
+  저장되지는 않는다(D65-2) — raw JSON이 원문 보존처다.
+- **`obs_attrs`는 선택 필드다**(D65-6). 계약 밖 **시점 지표**(SNS 언급수·트렌드 점수
+  등)를 `{"이름": 값}` 또는 `{"이름": {"value": 값, "basis": "api"}}`로 담으면
+  적재가 관측에 매달아(obs_attr) 시계열로 쌓는다. 값 `null`은 저장하지 않는다.
 - **`variants[]`는 선택 필드다**(옵션 정교화 — SPEC-INTEL §6). 스키마·프로브 계층·
   판매수량 계산 규칙은 `variant-collection.md`가 정본이다. 없음/`null` = 미수집,
   `[]` = 옵션 없는 상품 — 구분한다. 옵션별 판매수량은 계약에 없다(재고 감소분으로 계산).
@@ -67,25 +71,43 @@
   독립 총계(API totalCount 또는 화면 총계)만 담고, 없으면 `null` + notes에 근거.
   총계를 읽은 시점의 **필터 상태(품절 포함 여부 등)를 notes에 함께 적는다.**
 
-## 2. 정본 DB (SQLite `data/intel.db`)
+## 2. 정본 DB (SQLite `data/intel.db` + `data/proxy.db` — 스키마 v3, D65)
 
 파이프라인: 수집 → raw JSON → 검증 → **적재(load)** → 시트 미러. 도구는 `scripts/intel_db.py`.
+아래 표 이름은 전부 **뷰**다(D45) — 물리 저장은 정수 사전·대리키(`schema_v3.py`)이고,
+읽고 쓰는 계약은 뷰가 진다. v1·v2 파일은 열리지 않는다 — `migrate_v3.py`로 이관한다.
 
 | 테이블 | 내용 | 키 | 갱신 |
 |---|---|---|---|
-| `products` | 정적 속성 + `attributes`(핏 등 비싼 판단·**하위호환용 레거시 JSON**) + `static_verified_at` | (site, product_id) | upsert — 새 값이 비어 있지 않을 때만 덮고, 실질 attributes는 기존 값을 지킨다 |
-| `product_attributes` (D35) | **동적 속성 — 축을 행으로.** attr_name(핏·컬러·소재·넥라인·시즌)·value·basis·decided_at·**ttl_days**(속성별 만료). 스키마 변경 없이 축이 늘고, proxy_cache와 같은 모양이라 AI 프록시 판정(D19)도 여기로. **판정 실패(null)는 저장하지 않는다**(재판정 차단 방지). 첫 connect에서 products.attributes JSON을 1회 멱등 이관 | (site, product_id, attr_name) | upsert (set-attrs) — 표가 JSON을 덮는다 |
-| `observations` | 시변 값 전부 + `context` | (site, product_id, observed_at, context) | **append only** |
-| `platforms` | **누적 입점처 카탈로그** — 브랜드 모드·카테고리 모드·특화 탐색 어느 경로로 발견됐든 전부 여기 쌓이고 잊히지 않는다. `recon` JSON에 정찰 결과, 카탈로그 기준 충족 여부(`fashion_catalog: true` — ①패션/해당 품목 주력 ②비로그인 열람 ③규모 확인 가능), **`specialty`(특화 품목 또는 "종합")** — 특화몰을 무관한 상품군 후보에서 거르는 데 쓴다 — 와 **생존 상태(활성/철수/폐업/차단 + 마지막 확인 시각)**. 죽은 플랫폼도 지우지 않고 상태만 바꾼다(이력도 데이터다). `skill_status`(none/candidate/recon_done/draft/ready) | platform_key | upsert |
-| `variants` | 옵션(SKU) 구성 — option_id·option_name·color·size | (site, product_id, option_id) | upsert (빈 값은 기존 값 유지) |
-| `variant_observations` | 옵션별 재고 관측 — sold_out·stock_qty·stock_display·`stock_basis`(option_api/probe_read/probe_cart) | (site, product_id, option_id, observed_at) | **append only** |
-| `proxy_defs` | 파생 프록시 정의 카드 — question·material·value_space·method | proxy_name | upsert |
-| `proxy_cache` | 프록시 판정 캐시 — value·basis. **재료 지문(fingerprint)이 현재 재료와 같을 때만 유효** — 이미지 교체 시 자동 무효화 | (proxy_name, site, product_id, fingerprint) | insert only |
-| `runs` | 수집 실행 이력(raw 파일 경로 포함) | run_id | append |
-| `sync_state` | 시트 미러 진행 상태 | table_name | 내부용 |
+| `products` | 정적 속성 — 이름·URL·이미지·브랜드(대표명)·카테고리(계층에서 도로 편 파생 값)·`static_verified_at`. **attributes JSON·first/last_seen_at·raw_extras는 v3에서 제거**(D65-2 — 속성은 product_attributes가 유일 정본, 원문 부가 정보는 raw JSON에 있다) | (site, product_id) | upsert — 새 값이 비어 있지 않을 때만 덮는다 |
+| `product_attributes` (D35) | **동적 속성 — 축을 행으로.** attr_name(핏·컬러·소재·시즌·`ai_카테고리_대/중/소`)·value·basis·decided_at·**ttl_days**(속성별 만료). 수집 JSON의 attributes도 적재 때 여기로 직행한다. AI 분류 카테고리는 `ai_카테고리_*` 행(basis=llm)이다 — 플랫폼 카테고리(product_categories)와 섞지 않는다(D65-3). **판정 실패(null)는 저장하지 않는다** | (site, product_id, attr_name) | upsert (set-attrs) |
+| `categories` | **계층 카테고리** — name·parent_category_id(self-FK)·depth(플랫폼이 정해준 깊이, 1=최상위). 같은 이름이 다른 부모 아래 공존한다(UNIQUE(name, parent)) | category_id | 적재가 경로를 분해해 자동 생성 |
+| `product_categories` | 상품-카테고리 **N:M** — source='platform'(플랫폼 원본만). 쓰기는 파이썬 `assign_category()`가 유일한 통로다(뷰 트리거는 경로 분해를 못 한다) | (pk, category_id, source) | insert or ignore |
+| `brands` + `brand_aliases` | 브랜드 **대표명**(representative_name) + 플랫폼별 표기 별명. 수집 표기가 대표명·별명에 없고 brand_key(D51)로 기존 브랜드와 일치하면 **candidate 별명**이 자동 등록된다(`resolve_brand`). 확정/기각은 사람이 verify_status로. 음차 매칭은 하지 않는다 | brand_id / (brand_id, notation) | 적재가 자동 |
+| `brand_platforms` | 브랜드-입점처 **N:M** — brand_page_url·discovered_at·product_count. 구 `platforms.discovered_for_brand`(쉼표 텍스트)를 대체(D65-5) | (brand_id, platform_key) | channel-scout 결과 적재 |
+| `observations` | 시변 값 전부 + `context` + `run_id`(runs.id 정식 FK — D65-7) | (site, product_id, observed_at, context) | **append only** |
+| `obs_attr` | **시점별 비정형 지표**(D65-6) — SNS 언급수·트렌드 점수 등 간헐 지표를 관측 id에 key-value로. 고정 지표는 observations 컬럼 그대로. 수집 JSON의 `items[].obs_attrs`가 여기로 온다 | (obs_id, attr_name) | upsert |
+| `platforms` | **누적 입점처 카탈로그** — 브랜드 모드·카테고리 모드·특화 탐색 어느 경로로 발견됐든 전부 여기 쌓이고 잊히지 않는다. `recon` JSON에 정찰 결과, 카탈로그 기준 충족 여부(`fashion_catalog: true` — ①패션/해당 품목 주력 ②비로그인 열람 ③규모 확인 가능), **`specialty`(특화 품목 또는 "종합")** 와 **생존 상태(활성/철수/폐업/차단 + 마지막 확인 시각)**. 죽은 플랫폼도 지우지 않고 상태만 바꾼다. `skill_status`(none/candidate/recon_done/draft/ready) | platform_key | upsert |
+| `variants` | 옵션(SKU) 구성 — option_id·option_name·color·size (seen_at 제거 — D65-9) | (site, product_id, option_id) | upsert (빈 값은 기존 값 유지) |
+| `variant_observations` | 옵션별 재고 관측 — sold_out·stock_qty·stock_display·`stock_basis` + `run_id` FK | (site, product_id, option_id, observed_at) | **append only** |
+| `runs` | 수집 실행 이력(raw 파일 경로 포함) — **정수 PK `id`**(관측이 FK로 가리킨다), run_id TEXT는 UNIQUE | id | append |
+| `sync_state` | 시트 미러 진행 상태 (proxy_cache 진행점도 여기 — 미러 상태는 미러를 도는 쪽 것) | table_name | 내부용 |
 
-- `context` = `{brand|market|ranking|adhoc}:{target}`. **관측의 출처 화면을 보존한다** —
-  랭킹에만 노출되는 `viewers_now`를 다른 문맥에 섞으면 일관성이 깨진다.
+**`data/proxy.db` (별도 파일 — D65-8).** 판정 캐시는 정본에서 제일 빨리 자라는 표라
+(실측 48.6만 행, 관측의 7배) 파일을 가른다. 경로는 정본과 같은 폴더의 `proxy.db`
+(`INTEL_PROXY_DB`로 덮을 수 있다). 조인이 필요하면 ATTACH 하거나 별도 커넥션으로 읽는다.
+
+| 테이블 | 내용 | 키 |
+|---|---|---|
+| `proxy_defs` | 정의 카드 — question·material·value_space·method·label + **rules**(rule 카드 본문 JSON — lazy 판정 재료) | proxy_name |
+| `proxy_cache` | 판정 캐시 — value·basis. **재료 지문이 현재 재료와 같을 때만 유효**. `proxy_defs`에 **ON DELETE CASCADE** — 정의를 지우면 그 계약의 판정도 함께 사라진다(proxy-audit --fix는 보조 수단) | (proxy_name, site, product_id, fingerprint) |
+
+- rule 프록시는 **lazy 판정**이 기본이다(D65-8): proxy_auto가 정의만 등록하고, 분석
+  (`intel_data.collect`)이 캐시 miss를 만나면 defs.rules로 그 자리에서 판정해 캐시에
+  남긴다. 전량 선행 판정은 `proxy_auto.py --eager`. vision 카드는 배치 경로 그대로다.
+- `context` = `{brand|market|ranking|adhoc}:{target}`. **접두사 4종은 contexts CHECK
+  제약이 강제한다**(D65-1) — 모르는 story는 적재가 `adhoc:`으로 접는다. 관측의 출처
+  화면을 보존한다 — 랭킹에만 노출되는 `viewers_now`를 다른 문맥에 섞으면 일관성이 깨진다.
 - 기존 축적 스냅샷은 `intel_db.py import-snapshots data/snapshots`로 소급 적재한다.
 
 ## 3. 재사용 정책 (SPEC-INTEL §2-2)

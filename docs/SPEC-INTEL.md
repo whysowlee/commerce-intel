@@ -27,6 +27,7 @@ git 이력에 있다. `docs/TEST-CASES.md`는 v11(2026-07-31, 사용자 지시 �
 |---|---|---|
 | v1 | 2026-07-31 | 최초 작성. 인터뷰 3라운드 결정 반영 |
 | v2 | 2026-08-03 | 스펙 동결 해제(구현에 맞춰 갱신). 리포트 모듈화 D25 · 공통 UI 규약 D26 · §4 개정 · §6에 사이즈별 재고 분석 반영 |
+| v24 | 2026-08-05 | **DB 스키마 v3 D65** (사용자 확정 설계 10항) — 컨텍스트 CHECK · 상품/옵션 경량화 · 카테고리 계층화(N:M) · 브랜드 별명/입점 정규화 · obs_attr · runs 정수 PK FK · proxy.db 분리 + lazy 판정 · migrate_v3. 정본 120MB → intel 19MB + proxy 110MB, 회귀 61+222 통과 |
 | v23 | 2026-08-05 | **시트 증분 5,000행 청크 D63**(대량 증분 500 해소) · **정본 v2 교체 D64** — 이관이 sync_state 진행점을 새 rowid 번호로 번역(proxy_cache 구멍 1.5만 행 무소음 누락 차단). 151→120MB, 회귀 61+210 통과 |
 | v22 | 2026-08-04 | **배포가 조용히 실패하던 것 D57**(스킬 7종이 팀원 환경에 안 깔려 있었다 — 프론트매터 YAML) · **정본 부분 배포 D58**(2000아카이브스 + 여성 데님팬츠 브랜드랭킹 상위30만 seed DB로) · **merge가 새 DB에서 죽어 있던 것 D59**(배포본으로 팀원 절차를 밟아서야 보였다) |
 | v21 | 2026-08-04 | **프록시 값 공간 오염 3겹 방어 D53** · **생존 편향 — 이탈 브랜드 D54**(동적 속성이 축이 되게) |
@@ -142,6 +143,8 @@ git 이력에 있다. `docs/TEST-CASES.md`는 v11(2026-07-31, 사용자 지시 �
 | D64 | **액션 플랜은 AI가 쓴다 — 엔진 템플릿은 폴백** *(구 D59 — merge 결정과 ID가 겹쳐 재부여, PR #12 리뷰)* | 2026-08-04 사용자가 원하는 액션 플랜의 실물 예시를 제시("다색 표기 → 옵션 통합 등록으로 전환해 하트·후기가 한 곳에 쌓이게 유도" 등 6건)하며 "내가 말한 게 딱 이런 거였어"로 확정. 이런 문장은 발견의 **기전을 읽고 추론**해야 나온다 — `{hi}/{lo}` 치환 템플릿(D56 4차 시도)이 낼 수 있는 수준이 아니다. 층을 가른다(기존 패턴 — 규칙표가 기본·AI가 예외): **엔진은 검정·판정·조판**(결정적·재현), **AI는 발견을 읽고 액션을 써서** `insight.py --ai-actions` JSON(`{주장 문장: [줄,…]}`)으로 넘긴다. 키가 주장 문장인 이유: 고정 시드라 같은 데이터에 같은 주장이 재현되므로 안정적이다. 형식: 첫 줄 = 평문 부연 · 이후 = `**[청중]**` 배지 + 구체 액션(그 발견의 값·기전 필수, 추측 허용). 절차는 **2회 실행**이 정석 — 1차로 발견을 얻고, 액션을 쓰고, 2차에 `--ai-actions`로 굽는다(intel-insight §③). 템플릿 액션은 오버라이드가 없을 때의 폴백으로만 남는다 | 템플릿 고도화 계속(4차 시도까지 갔지만 "당연한 말들" 평가를 못 벗어났다) / 액션을 insights 테이블에도 저장(PDF 전용이라 검수는 PDF 실물로 — verify-pdf-not-db) |
 | D64 | **v2 이관이 sync_state 진행점을 새 번호로 번역한다 · 정본 v2 교체 완료** | 2026-08-05 정본 교체(사용자 지시) 중 발견. 증분 미러 키는 rowid인데 **삭제로 구멍 난 표(proxy_cache: 행 486,017 · 최대 rowid 500,835)는 이관에서 1..N으로 다시 매겨진다.** 옛 키(500,835)를 그대로 들고 가면 교체 후 새 판정 14,818행(새 번호 486,018~500,835 구간)이 "이미 미러됨"으로 읽혀 **조용히 건너뛰어진다** — D46이 막으려던 것과 같은 종류의 무소음 손실이고, 누적 대조가 잡긴 하지만 그때는 48만 행 재구축이 필요하다. 수정: `_copy_plain`에 `ORDER BY rowid`(순서 보존을 명시), 이관 끝에 **새 키 = 옛 키 이하의 행 수**로 번역(순서 보존 재번호라 성립. 실측 500,835 → 486,017, 완전 동기 상태에선 새 최대 rowid와 일치). **교체 절차 실행 기록**: 새 파일 검산 통과(행 수 6표 + 표본 400행 전 컬럼, 151.29→120.18MB — D45 실측보다 감소율이 낮은 건 proxy_cache 48.6만 행이 사전 압축 효과가 작은 표라서) → `intel-v1.bak.db`로 백업 → 교체 → `--verify-only` 재검산 통과 → 회귀 61+210 전부 통과 → 시트 미러 무결성 확인. 크론(랭킹 스냅샷)은 intel.db에 쓰지 않아 교체 창 충돌 없음 | 옛 키 유지(새 행 1.5만이 조용히 빠진다) / 진행점 0으로 리셋(48만 행 중복 append) / rowid를 명시 복사해 구멍 보존(WITHOUT ROWID 아닌 표에서 가능은 하나, 뷰 `_rowid`가 대리키 기반이라 v2 신규 행과 번호 체계가 갈라진다) |
 | D12-b | 추가 검토 (차용 0건) | **productivity 플러그인**(이중 메모리·TASKS.md — 기존 메모리 체계와 동일 패턴이라 불요)과 **github/awesome-copilot**(Copilot 전용 형식, 접점 항목인 playwright-explore-website는 API 발견 지침이 없고 x-twitter-scraper는 공식 API 전제 — 우리 실측 어댑터보다 얕음)은 **차용 없이 종결**. 재검토 불요 | — |
+| D65 | **DB 스키마 v3 — 관계 정식화 10항** | 2026-08-05 사용자 확정 설계(ERD 검토 후 프롬프트로 전달)를 그대로 구현. ① contexts.name CHECK — 접두사 4종(brand/market/ranking/adhoc) 고정, 별도 테이블 없이 제약만. 모르는 story는 적재가 `adhoc:`으로 접는다(안 접으면 CHECK가 적재를 죽인다) ② 상품 경량화 — attributes(JSON)·attributes_basis·first/last_seen_at·raw_extras 제거. 수집 JSON의 attributes는 적재 때 product_attributes로 직행한다(빼먹으면 reuse-attrs가 영영 빈다 — 구현 중 회귀로 실측) ③ 카테고리 계층화 — categories(name, parent self-FK, depth, UNIQUE(name,parent) + 최상위는 부분 인덱스 — SQLite UNIQUE의 NULL은 서로 달라서다) + product_categories N:M(source='platform'). 상품의 category_id 제거. AI 분류는 attr_base의 `ai_카테고리_*`(basis=llm). 뷰 products.category는 계층을 도로 편 파생 값(5단), 쓰기는 파이썬 assign_category()가 유일 통로(SQL 트리거는 경로 분해 불가) ④ brands.name → representative_name + brand_aliases(notation·site·source·verify_status). 미지 표기는 brand_key(D51) 일치 시 candidate 별명 자동 등록(resolve_brand), 음차 매칭 없음 ⑤ platforms.discovered_for_brand(쉼표 텍스트) → brand_platforms N:M ⑥ obs_attr — 시점별 비정형 지표(계약 필드 items[].obs_attrs), 고정 컬럼은 유지. prune과의 충돌은 ON DELETE CASCADE로 해소 ⑦ runs 정수 PK(id) + obs/variant_obs의 run_id 정식 FK(v2 run_ref는 rowid 참조라 FK 불가였다). 이관은 id=구 rowid로 매겨 run_ref 숫자가 그대로 FK 값이 된다 ⑧ proxy_defs·proxy_cache를 별도 data/proxy.db로(가장 빨리 자라는 표 — 실측 48.6만 행에 110MB) + defs↔cache FK ON DELETE CASCADE + rule 카드 본문을 defs.rules에 저장해 **lazy 판정**(collect가 캐시 miss를 즉석 판정·적재. 전량 선행은 proxy_auto --eager) ⑨ 옵션 first/last_seen_at 제거 ⑩ migrate_v3.py — 새 파일 검산(행 수 + 표본 400행 값 + run_id 연결 + integrity/fk check) 통과 시에만 `.v2-backup` 백업 후 자동 교체. 실측: 120.20MB → intel 19.11MB + proxy 110.17MB, 검산 전 표 OK, 회귀 61+222 통과. v1·v2 파일은 connect가 거부하고 이관 명령을 안내한다 | 항목별 개별 PR(스키마가 서로 얽혀 한 파일 DDL이 정본 — 커밋만 단계 분리) / proxy_cache를 정본에 유지(테이블 하나가 파일의 92%를 먹어 백업·미러·머지 전부를 무겁게 한다) / 카테고리 CHECK식 열거(계층은 제약으로 못 적는다) / 트리거에서 경로 분해(SQLite 트리거엔 루프·CTE가 없다 — 파이썬 단일 통로가 정직하다) |
+
 
 ## §2 저장 계층 — 로컬 DB 정본
 
@@ -156,13 +159,22 @@ DB 파일 경로는 **작업 폴더 기준 `data/intel.db`**이고 `INTEL_DB`로
 수집 JSON(기존 데이터 계약, SPEC v16 §6)은 그대로 유지되고, DB 적재는 그 뒤에 온다 —
 **수집 → raw JSON → 검증 → DB 적재 → 시트 미러** 순서다.
 
+**스키마 v3다 (D65, 2026-08-05).** 옛 이름은 전부 뷰이고(D45) 물리 저장은 정수
+사전·대리키(`schema_v3.py`)다. 상세 계약은 `references/db-contract.md` §2가 정본 —
+여기는 지도만 남긴다.
+
 | 테이블 | 무엇 | 키 | 갱신 방식 |
 |---|---|---|---|
-| `products` | 정적 속성: 이름·URL·이미지·브랜드·카테고리·attributes(핏 등)·basis | `(site, product_id)` | upsert. `static_verified_at`으로 TTL 관리 |
-| `observations` | 시변 값: 가격·할인·후기·평점·하트·판매·조회·실시간 지표·품절·순위 | `(site, product_id, observed_at, context)` | **append only. 갱신·삭제하지 않는다** |
+| `products` | 정적 속성: 이름·URL·이미지·브랜드(대표명)·카테고리(계층 파생) | `(site, product_id)` | upsert. `static_verified_at`으로 TTL 관리 |
+| `product_attributes` | 동적 속성(핏·컬러·시즌·`ai_카테고리_*`) — 축을 행으로 (D35) | `(site, product_id, attr_name)` | upsert |
+| `categories` + `product_categories` | 계층 카테고리(self-FK·depth) + 상품 N:M 매핑(source='platform') (D65-3) | category_id / (pk, category_id, source) | 적재가 자동 |
+| `brands` + `brand_aliases` + `brand_platforms` | 대표명 + 플랫폼별 표기 별명 + 입점 N:M (D65-4·5) | brand_id 계열 | 적재·scout가 자동 |
+| `observations` | 시변 값: 가격·할인·후기·평점·하트·판매·조회·실시간 지표·품절·순위. `context`는 접두사 4종 CHECK(D65-1), `run_id`는 runs(id) 정식 FK(D65-7) | `(site, product_id, observed_at, context)` | **append only. 갱신·삭제하지 않는다** |
+| `obs_attr` | 시점별 비정형 지표(SNS 언급수 등 계약 외 필드) (D65-6) | `(obs_id, attr_name)` | upsert |
 | `platforms` | 입점처 리서치 결과: 플랫폼명·URL·엔진·정찰 JSON·스킬 상태 | `platform_key` | upsert |
-| `runs` | 수집 실행 이력: story·target·건수·source_total·incomplete·notes·raw 파일 경로 | `run_id` | append |
+| `runs` | 수집 실행 이력: story·target·건수·source_total·incomplete·notes·raw 파일 경로. 정수 PK `id`, run_id TEXT UNIQUE | `id` | append |
 | `sync_state` | 시트 미러 진행 상태(테이블별 마지막 동기 지점) | 테이블명 | 내부용 |
+| `proxy_defs` + `proxy_cache` | **별도 `data/proxy.db`** (D65-8) — 정의(rule 본문 포함, lazy 판정)와 판정 캐시(FK CASCADE) | proxy_name 계열 | proxy-load·lazy |
 
 - `observations.context`는 관측이 나온 화면이다(`ranking:바지` · `brand:인사일런스` ·
   `market:데님팬츠(남성)`). **랭킹에서 온 `viewers_now`를 다른 문맥에 섞지 않는다** —

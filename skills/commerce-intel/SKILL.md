@@ -260,6 +260,7 @@ MD가 "참고용·정성적"이라고 못박았다(2026-08-03 인터뷰).
 <작업 폴더>/
 ├── data/
 │   ├── intel.db                                  정본 DB (INTEL_DB로 경로 변경 가능)
+│   ├── proxy.db                                  프록시 정의·판정 캐시 (D65 — 정본 옆에 산다)
 │   ├── raw/<site>-<story>-<대상>-<YYYYMMDD-HHmm>.json
 │   ├── snapshots/<site>-ranking-<카테고리>-<YYYYMMDD-HHmm>.json
 │   ├── images/                                   속성 분류용 임시
