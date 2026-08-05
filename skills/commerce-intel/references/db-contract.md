@@ -102,9 +102,11 @@
 | `proxy_defs` | 정의 카드 — question·material·value_space·method·label + **rules**(rule 카드 본문 JSON — lazy 판정 재료) | proxy_name |
 | `proxy_cache` | 판정 캐시 — value·basis. **재료 지문이 현재 재료와 같을 때만 유효**. `proxy_defs`에 **ON DELETE CASCADE** — 정의를 지우면 그 계약의 판정도 함께 사라진다(proxy-audit --fix는 보조 수단) | (proxy_name, site, product_id, fingerprint) |
 
-- rule 프록시는 **lazy 판정**이 기본이다(D65-8): proxy_auto가 정의만 등록하고, 분석
-  (`intel_data.collect`)이 캐시 miss를 만나면 defs.rules로 그 자리에서 판정해 캐시에
-  남긴다. 전량 선행 판정은 `proxy_auto.py --eager`. vision 카드는 배치 경로 그대로다.
+- **판정은 method 불문 lazy가 기본이다**(D65-8·D66): 정의는 즉시 등록하되(image
+  카드는 실물 샘플 1~2장 접지 — D66) 판정은 미룬다. rule은 분석(`intel_data.collect`)이
+  캐시 miss를 defs.rules로 그 자리에서 판정해 캐시에 남기고(전량 선행은
+  `proxy_auto.py --eager`), vision·llm은 분석이 그 축을 요구할 때 미캐시분만
+  **협의 규칙(비용 보고 → 대규모면 범위 합의)** 을 거쳐 배치(proxy-extractor)로 돈다.
 - `context` = `{brand|market|ranking|adhoc}:{target}`. **접두사 4종은 contexts CHECK
   제약이 강제한다**(D65-1) — 모르는 story는 적재가 `adhoc:`으로 접는다. 관측의 출처
   화면을 보존한다 — 랭킹에만 노출되는 `viewers_now`를 다른 문맥에 섞으면 일관성이 깨진다.

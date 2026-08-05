@@ -311,8 +311,11 @@ def main():
     # ── vision ──────────────────────────────────────────────────────────
     vision_cards = [c for c in cards if c.get("method") in ("vision", "llm")]
     if vision_cards and not a.batch_dir:
-        print("\n[vision] 카드 %d장이 있는데 --batch-dir이 없어 건너뛴다 — "
-              "**빠졌다는 사실을 리포트에 적어라**" % len(vision_cards))
+        # lazy 기본 흐름(D66)에서 정의 등록 단계는 배치를 안 뽑는 게 정상이다.
+        # 판정이 필요해지면(분석의 unjudged) --batch-dir을 주고 다시 부른다.
+        print("\n[vision] 카드 %d장 — 정의만 등록 대상. 판정 배치는 분석이 요구할 때 "
+              "--batch-dir로 뽑는다(D66). **그때까지 이 축은 리포트에 미판정 결측으로 "
+              "보인다**" % len(vision_cards))
     elif vision_cards:
         os.makedirs(a.batch_dir, exist_ok=True)
         print("\n[vision] 서브 에이전트에 던질 배치 — 재료 하나에 질문 여러 개")
