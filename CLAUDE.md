@@ -10,18 +10,18 @@
 | 어디 | 무엇이 있나 |
 |---|---|
 | `docs/SPEC-INTEL.md` (**v2**) | **intel의 유일한 스펙이자 판단 기준.** 결정 기록 D1~D26 |
-| `docs/EVIDENCE.md` | 실측 근거 아카이브 — 구 SPEC.md(v16, 삭제됨)에서 추출. 규범이 아니다 |
+| `docs/EVIDENCE.md` | 실측 근거 아카이브 - 구 SPEC.md(v16, 삭제됨)에서 추출. 규범이 아니다 |
 | `docs/TEST-CASES.md` (**v11**) | intel 기준 트리거링·완주 기준선·엣지 카탈로그 (2026-07-31 전면 개정) |
 | `git log` | 왜 그렇게 했는지가 커밋 메시지에 남아 있다. 구 SPEC.md 전문도 이력에 있다 |
 
 **⚠️ `docs/SPEC-INTEL.md`와 `docs/TEST-CASES.md`는 구현과 함께 갱신한다** (2026-08-03
-사용자 지시로 개정 — 구 규칙 "임의 수정 금지, 어긋나면 보고하고 대기"는 폐기됐다).
+사용자 지시로 개정 - 구 규칙 "임의 수정 금지, 어긋나면 보고하고 대기"는 폐기됐다).
 문서가 구현보다 낡으면 다음 세션이 낡은 쪽을 사실로 읽는 것이 더 큰 해악이다.
 
 - 코드를 바꾼 **같은 작업에서** 스펙·테스트 문서도 바꾼다. 나중에 몰아 쓰지 않는다
-- **왜 바뀌었는지 남긴다** — SPEC-INTEL §1 결정 기록에 날짜·근거(사용자 지시/실측)와
+- **왜 바뀌었는지 남긴다** - SPEC-INTEL §1 결정 기록에 날짜·근거(사용자 지시/실측)와
   기각된 대안까지. 그게 다음 사람이 되돌리지 않게 하는 장치다
-- **실측과 판단을 섞지 않는다** — 잰 값은 잰 값으로, 결정은 결정으로. 미검증 추정을
+- **실측과 판단을 섞지 않는다** - 잰 값은 잰 값으로, 결정은 결정으로. 미검증 추정을
   사실처럼 적는 것은 이 프로젝트의 제1원칙 위반이고 여기에도 예외가 없다
 
 ## 절대 원칙
@@ -32,37 +32,12 @@
 4. **중복 수집 방지.** DB + 팀 시트에 먼저 묻는다.
 5. **HTML 산출물 금지 (D27).** PDF만.
 
-## 도메인: 변수 역할
+## 도메인 규칙 — 정본은 analysis-context.md
 
-이 규칙을 모르면 인사이트의 방향이 통째로 틀린다. 모든 분석에 적용한다.
-
-**Y (결과 — 소비자가 만든 값)**
-- 구매 수 · 구매 구간(ordinal proxy) · 좋아요 수 · 리뷰 수
-- 가격 · 할인율은 Y가 **아니다** — 공급자가 정한 값이다
-
-**X (조작 — 공급자/플랫폼이 정한 값)**
-- 가격 변동 · 할인율 · 플랫폼 노출(랭킹 순위)
-- 판매량 · 좋아요는 X가 **아니다** — 소비자 반응이다
-
-## 인과적 함정 — 인사이트 작성 시 반드시 체크
-
-| 함정 | 체크법 |
-|---|---|
-| 공급량 교란 | SKU 수 · 공급량 통제 or 한계 명시 |
-| 할인↔판매 역인과 | 시간 선후 확인 (이중차분) |
-| 랭킹 내생성 | 랭킹만으로 "좋은 상품" 판단 금지 |
-| 생존편향 | 전수 vs 랭킹 구분, 탈락 건수 명시 |
-| 구간 표기 | `null` + `*_display`, 순위 기반 검정만 |
-| 허영 지표 쌍 | 하트 · 후기 · 누적판매 동반 상승 = 노출 기간의 그림자 |
-| 정의상 연동 쌍 | 할인율 = 1 − 판매가/정가. 상관은 산수이지 발견 아님 |
-
-## 리포트 품질 기준
-
-- **어조**: 관측 진술. "할인하라" ✕ → "20% 구간에서 증분 3배 (n=42)" ○
-- **수치**: 효과 크기 + n + p 함께. 결측 · 제외 건수 · 날짜 범위 명시.
-- **일반론 금지**: "추가 분석 필요" 같은 generic 대신 구체적 값 · 종료 조건.
-- **템플릿 액션 금지**: 엔진 치환 문장은 폴백. 기전 + 청중별 구체 액션 필요 (D64).
-- **청중 분리**: 판매전략 / 디자인 / 마케팅. 한 청중 독점 금지.
+변수 역할(Y/X) · 인과적 함정 7종 · 퍼널 · 리포트 품질 기준은
+**`skills/commerce-intel/references/analysis-context.md`** 와
+**`skills/commerce-intel/references/insight-spec.md`** 에 정의돼 있다.
+분석 작업 전에 반드시 읽는다 — 여기에 요약을 두지 않는다 (D52: 규칙이 여러 곳에 있으면 어긋나는 날 어느 쪽이 사실인지 모른다).
 
 ## 분석 단계는 insight-analyst 서브에이전트로 위임
 
@@ -80,62 +55,62 @@
 - 사용자의 추가 지시 (있으면 원문 그대로)
 
 **반환 결과에서 확인:**
-- sanity check exit code — 2면 리포트를 사용자에게 전달하지 않는다
+- sanity check exit code - 2면 리포트를 사용자에게 전달하지 않는다
 - 강한 주장 수가 0이면 그 사실을 말한다
 - 데이터 한계 · 적용 예외를 사용자에게 전달한다
 
-## 구성 (2026-07-31 재편 — 상세 근거는 SPEC-INTEL §5)
+## 구성 (2026-07-31 재편 - 상세 근거는 SPEC-INTEL §5)
 
 ```
 skills/                   intel 정본. 배포 단위 (package.sh가 이걸 묶는다)
-├── commerce-intel/       오케스트레이터 — 재사용 판정·DB 적재·시트 미러·리포트·검수.
+├── commerce-intel/       오케스트레이터 - 재사용 판정·DB 적재·시트 미러·리포트·검수.
 │   ├── references/       db-contract · story-catalog · insight-spec · sheets-sync · proxy-extraction
 │   └── scripts/          intel_db(정본 DB) · sync_sheets · intel_data(데이터 층)
 │                         · eda → analyze → insight(5관문·PDF 2층) · pdf_doc · chart · stat_playbook
 │                         · validate_data · diff_snapshots · group_variants · plan_sample
 │                         ※ build_report·build_analysis_report·report_ui·lint_analysis_html은
 │                           D27로 폐기(배포 제외). 회귀 82건이 아직 그 출력을 고정해 저장소에만 존치
-├── platform-musinsa/     전용 플랫폼 스킬 3종 — SKILL.md + references/adapter.md(실측)
+├── platform-musinsa/     전용 플랫폼 스킬 3종 - SKILL.md + references/adapter.md(실측)
 ├── platform-29cm/        플랫폼 스킬은 데이터 계약 JSON 생산만 안다. DB·분석은 모른다
-├── platform-ownmall/     자사몰 엔진 무관(D9) — engine-detect/cafe24/shopify(미검증)/unknown
-├── platform-generic/     처음 보는 플랫폼 — recon-checklist(channel-scout와 공유) · common-traps
+├── platform-ownmall/     자사몰 엔진 무관(D9) - engine-detect/cafe24/shopify(미검증)/unknown
+├── platform-generic/     처음 보는 플랫폼 - recon-checklist(channel-scout와 공유) · common-traps
 └── platform-skill-maker/ 정찰 실측 → platform-* 스킬 초안 생성 (템플릿 2종)
 .claude/agents/channel-scout.md   입점처 리서치 서브 에이전트
 data/.tools/              범용 수집기 (git 추적. 수집 데이터는 미추적)
-├── scan_market_any.py    전수조사 — 이름만 대면 시작. --count-only로 규모부터 본다
-├── snap_ranking_any.py   랭킹 스냅샷 — --cron으로 주기 등록까지
+├── scan_market_any.py    전수조사 - 이름만 대면 시작. --count-only로 규모부터 본다
+├── snap_ranking_any.py   랭킹 스냅샷 - --cron으로 주기 등록까지
 ├── classify_fit.py       상품명 → 핏 1단계 분류
 └── ranking_targets.json  두 플랫폼 카테고리 코드 실측 카탈로그 1,546개
 tests/                    run_tests.py 회귀 111건 + test_intel_db.py 41건. 픽스처만 쓴다
 ```
 
-- 정본 DB는 `data/intel.db`(SQLite, **스키마 v3** — D65) + 프록시 판정은 별도
-  `data/proxy.db`, 구글 시트는 단방향 미러다 — 파이프라인은
+- 정본 DB는 `data/intel.db`(SQLite, **스키마 v3** - D65) + 프록시 판정은 별도
+  `data/proxy.db`, 구글 시트는 단방향 미러다 - 파이프라인은
   수집 → raw JSON → 검증 → DB 적재 → 시트 미러 → 리포트 (SPEC-INTEL §2·§3).
-  `INTEL_DB_URL`(libsql://)이 설정돼 있으면 정본은 **Turso 클라우드**다(D67 —
+  `INTEL_DB_URL`(libsql://)이 설정돼 있으면 정본은 **Turso 클라우드**다(D67 -
   `docs/TURSO-SETUP.md`). DB는 반드시 `schema_v3.open_db()` 경유로 연다
-- 수집 원본은 `data/raw/`, 스냅샷은 `data/snapshots/`, 리포트는 `output/` — **전부 git 미추적**이다
+- 수집 원본은 `data/raw/`, 스냅샷은 `data/snapshots/`, 리포트는 `output/` - **전부 git 미추적**이다
 - **원본의 축적 스냅샷 47개+를 그대로 가져왔다**(무신사 바지 35 · 29CM 여성슈즈 9 · 그 외).
   crontab 잡도 이 경로로 재등록됐으니 축적이 이어진다. `intel_db.py import-snapshots`로
   DB에 소급 적재할 수 있다
-- 구 `commerce-research/`는 삭제됐다(D10) — 전문은 git 이력에 있다
+- 구 `commerce-research/`는 삭제됐다(D10) - 전문은 git 이력에 있다
 
 ## 원본 저장소와의 관계
 
 ```
 origin   = https://github.com/whysowlee/commerce-intel.git            (private, 여기로 push)
-upstream = https://github.com/whysowlee/commerce-browser-skill.git   (fetch 전용 — push URL 차단)
+upstream = https://github.com/whysowlee/commerce-browser-skill.git   (fetch 전용 - push URL 차단)
 ```
 
 - 원본 개선 가져오기: `git fetch upstream && git merge upstream/main`
-- **`git push upstream`은 일부러 막아뒀다** — 이 프로젝트 커밋이 원본 공개 레포로 새지 않게 한 것이다.
+- **`git push upstream`은 일부러 막아뒀다** - 이 프로젝트 커밋이 원본 공개 레포로 새지 않게 한 것이다.
   푸시는 항상 `origin`으로 간다(`git push`가 그렇게 추적돼 있다)
 - 이 레포는 **private**이다. 공개하려면 `gh repo edit --visibility public`
 
 ## 이어서 할 일
 
-1. **코튼 팬츠 핏 분류율 48.1%** — 성공 기준 80% 미달. 남은 1,864건은 대표 이미지
+1. **코튼 팬츠 핏 분류율 48.1%** - 성공 기준 80% 미달. 남은 1,864건은 대표 이미지
    판단 1,257회가 필요하다(색상변형 그룹으로 32.6% 절감한 수치). 진행 여부는 사용자 결정 대기.
    ※ 이제 분류 결과가 DB에 적재되므로 TTL 90일 내 재사용된다
-2. **기존 축적 스냅샷의 DB 소급 적재** — `intel_db.py import-snapshots data/snapshots`를
+2. **기존 축적 스냅샷의 DB 소급 적재** - `intel_db.py import-snapshots data/snapshots`를
    실제 축적분에 1회 실행하면 대시보드가 축적 전체를 쓴다 (미실행 상태)
