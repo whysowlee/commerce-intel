@@ -456,7 +456,7 @@ def collect(db_path, contexts):
                o.purchase_count, o.like_count, o.viewers_now, o.sold_out, o.rank,
                -- 구간 표기 원문 (D48) — `add_bands()`가 이걸 읽어 순서형 축을 만든다.
                -- **빠져 있었다**: 컬럼을 안 뽑으니 `purchase_band`가 늘 None이었고,
-               -- 사용자가 1순위 Y로 지목한 누적판매가 축이 될 수 없었다(D57).
+               -- 사용자가 1순위 Y로 지목한 누적판매가 축이 될 수 없었다(D50 화면 수집이 담아 온 표기를 버리고 있던 것).
                o.view_count_display, o.purchase_count_display, o.like_count_display
         FROM products p
         JOIN observations o ON o.site = p.site AND o.product_id = p.product_id

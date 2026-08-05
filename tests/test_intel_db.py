@@ -821,17 +821,31 @@ def axis_hygiene_tests():
 
     # 그룹 비교가 실제로 그 키를 쓰는지 — 정규화가 함수에만 있고 호출부에 없으면
     # 테스트는 통과하는데 리포트는 그대로 갈린다(이 버그가 정확히 그랬다).
+    # **run_group()을 실제로 태운다** (PR #12 2차 리뷰) — 전신은 brand_key()를
+    # 다시 계산해 항상 통과했다. 호출부가 정규화를 빼먹으면 여기서 잡혀야 한다.
     items = ([{"site": "s", "product_id": "a%d" % i, "category": "데님 팬츠",
                "like_count": 10 + i} for i in range(25)]
              + [{"site": "s", "product_id": "b%d" % i, "category": "데님팬츠",
-                 "like_count": 10 + i} for i in range(25)])
-    ctx = {"styles": items, "eda": {"nulls": []}, "hier": {"anc": set(), "parent": {},
-                                                           "umbrella": set()}}
-    keys = set()
-    for it in ctx["styles"]:
-        v = it.get("category")
-        keys.add(d.brand_key(v) if v else None)
-    check("E-MD-36 표기 변형 50건이 한 그룹으로 모인다", len(keys) == 1, keys)
+                 "like_count": 200 + i} for i in range(25)]
+             + [{"site": "s", "product_id": "c%d" % i, "category": "스커트",
+                 "like_count": 50 + i} for i in range(25)])
+    ctx = {"styles": items, "items": items,
+           "eda": {"nulls": [{"field": "like_count", "label": "하트",
+                              "usable": True}]},
+           "cat_axes": [("category", "카테고리")],
+           "num_axes": [("like_count", "하트")],
+           "labels": {"like_count": "하트", "category": "카테고리"},
+           "hierarchy": {"anc": set(), "parent": {}, "umbrella": set()},
+           "contexts": [], "own_brands": []}
+    hyps = an.run_group(ctx)
+    pairs = {(h["group_a"], h["group_b"]) for h in hyps}
+    check("E-MD-36 표기 변형끼리는 서로 비교되지 않는다 (run_group 실호출)",
+          not any({a_, b_} == {"데님 팬츠", "데님팬츠"} for a_, b_ in pairs), pairs)
+    denim = [h for h in hyps if "데님" in (h.get("group_a") or "")
+             or "데님" in (h.get("group_b") or "")]
+    merged_n = {h["n_a"] if "데님" in h["group_a"] else h["n_b"] for h in denim}
+    check("E-MD-36b 변형 50건이 한 그룹(n=50)으로 검정에 들어간다",
+          merged_n == {50}, "비교 %d건, 데님 그룹 n=%s" % (len(hyps), merged_n))
 
     # ── 청중 편중 (강한 주장 10개가 전부 `마케팅`이던 것) ──
     hyps = [{"kind": "group_compare", "cat_field": "ax%d" % i, "metric": "like_count",

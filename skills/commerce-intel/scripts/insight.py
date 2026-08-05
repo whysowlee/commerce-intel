@@ -147,15 +147,28 @@ def _select(hyps, cap):
     # 2차에서 남은 자리를 그대로 쓸어 담았기 때문이다. 지금은 매 칸마다 **그때까지
     # 가장 적게 실린 청중**의 후보를 먼저 본다. 그 청중에 후보가 없으면 다음으로
     # 넘어가므로 빈칸은 여전히 생기지 않는다 — 채우되, 쏠린 채로 채우지 않는다.
-    rest = [h for h in hyps if h not in out and _signature(h) not in seen]
-    while rest and len(out) < cap:
-        pick = min(rest, key=lambda h: (per_aud[h.get("audience")], rest.index(h)))
-        rest.remove(pick)
+    # 청중별 대기열로 나눠 "그때까지 가장 적게 실린 청중"의 첫 후보를 뽑는다.
+    # 전신은 매 칸마다 min(key=rest.index)로 전체를 훑어 O(n²)이었다 — cap을
+    # 200으로 올린 뒤(D56)로는 후보 수백 개 문맥에서 눈에 띈다(PR #12 2차 리뷰).
+    # 대기열은 원래 순서(관련성×효과 정렬)를 보존하므로 뽑히는 결과는 같다.
+    from collections import deque
+    picked_ids = {id(h) for h in out}
+    queues = {}
+    for h in hyps:
+        if id(h) in picked_ids or _signature(h) in seen:
+            continue
+        queues.setdefault(h.get("audience"), deque()).append(h)
+    while queues and len(out) < cap:
+        aud = min(queues, key=lambda a_: (per_aud[a_], str(a_)))
+        q = queues[aud]
+        pick = q.popleft()
+        if not q:
+            del queues[aud]
         sig = _signature(pick)
         if sig in seen:
             continue
         seen.add(sig)
-        per_aud[pick.get("audience")] += 1
+        per_aud[aud] += 1
         out.append(pick)
     return out
 
@@ -393,7 +406,7 @@ def _tagged(pairs):
 
 
 def _action_for(h, res, claim=None):
-    """카드의 액션 — **AI가 쓴 것이 있으면 그것이 우선이다** (D59).
+    """카드의 액션 — **AI가 쓴 것이 있으면 그것이 우선이다** (D64).
 
     2026-08-04 사용자가 원하는 액션 플랜의 실물 예시를 줬다("다색 표기 상품이 높다 →
     옵션 통합 등록으로 전환해 하트·후기가 한 곳에 쌓이게 유도"). 이런 문장은 발견의
@@ -851,7 +864,7 @@ def build_insight_pdf(res, out_path, target, detail_pages):
     for i, h in enumerate(res["strong"], 1):
         page = detail_pages.get(_anchor(h, "s", i))
         d.card(h["claim"], audience=h["audience"],
-               action=_action_for(h, res),     # AI 우선, 없으면 템플릿 (D59)
+               action=_action_for(h, res),     # AI 우선, 없으면 템플릿 (D64)
                evidence="%s %s · %s · p=%s · %s" % (
                    h.get("effect_kind", "효과"), _fmt(h.get("effect")),
                    _n_note(h),
@@ -1088,7 +1101,7 @@ def main():
                     help="우리 브랜드 이름. 브랜드 축에서 **제3자끼리의 비교를 뺀다**(D56). "
                          "여러 번 줄 수 있다. `brand:X` 문맥은 자동으로 포함된다")
     ap.add_argument("--ai-actions", help="AI가 쓴 액션 플랜 JSON — {주장 문장: [줄, …]}. "
-                    "있으면 템플릿 액션 대신 실린다 (D59)")
+                    "있으면 템플릿 액션 대신 실린다 (D64)")
     ap.add_argument("--no-auto-proxy", action="store_true",
                     help="rule 프록시 자동 생성을 건너뛴다 (기본은 만든다 — D51)")
     a = ap.parse_args()
