@@ -69,7 +69,7 @@ def _schema_version(conn):
 # 없으면 구버전 v3라서 SCHEMA_V3를 한 번 돌려 따라잡는다(D68 무이관 업그레이드).
 # SCHEMA_V3에 표를 또 추가하면 이 마커도 그 표로 바꾼다 — 안 바꾸면 기존 DB가
 # 새 표를 영영 못 받는다.
-_SCHEMA_MARKER = "attr_history"
+_SCHEMA_MARKER = "proxy_history"
 
 
 def _needs_schema_upgrade(conn):
@@ -744,7 +744,6 @@ def cmd_import_snapshots(conn, args):
 
 
 def cmd_export(conn, args):
-    # 프록시 표는 별도 DB에 산다 (D65-8) — 같은 명령으로 내보내되 커넥션만 바꾼다
     # D69: proxy_defs/proxy_cache는 이제 본 DB에 있다
     # 옛 이름은 뷰라 rowid가 없다 — 뷰는 물리 키를 `_rowid`로 내준다.
     # WHERE·ORDER는 별칭이 아니라 진짜 참조 가능한 표현식으로 짠다 (PR #9 리뷰)
@@ -1230,8 +1229,7 @@ def main():
     elif args.cmd == "import-snapshots":
         cmd_import_snapshots(conn, args)
     elif args.cmd == "proxy-load":
-        # 프록시는 별도 DB다 (D65-8) — 정본 커넥션이 아니라 proxy.db로 간다
-        cmd_proxy_load(conn, args)  # D69: 본 DB에 통합
+            cmd_proxy_load(conn, args)  # D69: 본 DB에 통합
     elif args.cmd == "proxy-audit":
         # `return`이 아니라 `sys.exit` — 진입점이 `main()` 반환값을 버려서
         # 오염을 찾아도 프로세스는 0으로 끝났다(PR #12 리뷰 Blocker).

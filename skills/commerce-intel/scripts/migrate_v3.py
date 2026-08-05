@@ -32,6 +32,7 @@ import json
 import os
 import shutil
 import sqlite3
+from pathlib import Path
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -299,9 +300,7 @@ def migrate(src_path, dst_path, proxy_path):
                                 "WHERE table_name='proxy_cache'", (str(new_key),))
                     print("  sync_state.proxy_cache: 진행점 %s → %s (rowid 재번호 번역)"
                           % (row[0], new_key))
-    px.commit()
-    px.execute("ANALYZE")
-    px.close()
+    # D69: px=dst — 별도 commit 불필요
 
     dst.executescript(VIEWS_V3)
     dst.commit()
@@ -387,8 +386,7 @@ def verify(src_path, dst_path, proxy_path, sample=400):
                  "OK" if a == b else "!! 불일치"))
         if a != b:
             ok = False
-        px.close()
-    src.close(); dst.close()
+        src.close(); dst.close()
     return ok
 
 

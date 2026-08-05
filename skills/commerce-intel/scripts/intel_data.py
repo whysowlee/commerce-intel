@@ -559,7 +559,7 @@ def collect(db_path, contexts):
         # 없이도 분석 시점에 축이 채워진다. vision 카드는 재료가 이미지라 배치
         # 경로(proxy_auto → proxy-extractor)만 가능하다 — 여기선 건드리지 않는다.
         card = None
-        if pconn is not None:
+        if True:  # D69: psrc=conn, 항상 유효
             try:
                 body = json.loads(d["rules"]) if d["rules"] else None
             except (TypeError, ValueError, KeyError, IndexError):
@@ -595,15 +595,15 @@ def collect(db_path, contexts):
                 fp = str(fp_now if fp_now is not None else (it.get("name") or ""))
                 # 전이 이력 (D68) — 재료 변경으로 무효화된 판정의 대기 행을
                 # 완성하거나, 값이 실제로 바뀌었으면 old→new를 남긴다
-                record_proxy_transition(pconn, pn, it["site"],
+                record_proxy_transition(psrc, pn, it["site"],
                                         it["product_id"], fp, val, now)
-                pconn.execute(
+                psrc.execute(
                     "INSERT OR IGNORE INTO proxy_cache VALUES (?,?,?,?,?,?,?)",
                     (pn, it["site"], str(it["product_id"]), fp, val, basis, now))
                 cache[k] = (fp, val)
                 wrote += 1
             if wrote:
-                pconn.commit()
+                psrc.commit()
             if judge_errors:
                 print("경고: 프록시 %s lazy 판정 실패 %d건 — 카드 규칙이 깨졌을 수 "
                       "있다(예: %s). 해당 상품은 미판정으로 남긴다"
@@ -649,8 +649,6 @@ def collect(db_path, contexts):
                         "judged": judged, "unjudged": len(items) - judged,
                         # 리포트가 "왜 이 축이 없나"에 답할 수 있어야 한다
                         "off_space": off})
-    if pconn is not None:
-        pconn.close()
 
     # 시계열 — 축적 관측이 있는 상품의 시점별 지표. 시점이 2개 이상인 상품만.
     ts_rows = conn.execute(f"""

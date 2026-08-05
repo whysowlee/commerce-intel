@@ -69,6 +69,13 @@ def migrate(db_path: str, dry_run: bool = False) -> bool:
     conn = open_db(str(db_path_resolved))
     conn.execute("PRAGMA foreign_keys = ON")
 
+    # proxy 테이블이 없으면 생성 (D69 이전 스키마의 DB 지원)
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='proxy_defs'").fetchone() is None:
+        from schema_v3 import SCHEMA_V3
+        conn.executescript(SCHEMA_V3)
+        print("  본 DB에 proxy 테이블 생성 완료")
+
     # 프록시 DB 열기
     if source_type == "turso":
         pconn = open_db(str(proxy_source),
