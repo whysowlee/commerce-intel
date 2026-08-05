@@ -4,9 +4,7 @@
     # 정본
     python3 tools/upload_to_turso.py --src data/intel.db \
         --url libsql://commerce-intel-xxx.turso.io --token $INTEL_DB_TOKEN
-    # 프록시 (별도 Turso DB)
-    python3 tools/upload_to_turso.py --src data/proxy.db --proxy \
-        --url libsql://commerce-intel-proxy-xxx.turso.io --token $PROXY_DB_TOKEN
+    # D69: 프록시는 본 DB에 통합 — --proxy 옵션 삭제됨
     # 검산만
     python3 tools/upload_to_turso.py --src data/intel.db --url ... --token ... --verify-only
 
@@ -24,7 +22,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "skills" / "commerce-intel" / "scripts"))
-from schema_v3 import PROXY_SCHEMA, SCHEMA_V3, VIEWS_V3, open_db  # noqa: E402
+from schema_v3 import SCHEMA_V3, VIEWS_V3, open_db  # noqa: E402
 
 BATCH = 5000
 
@@ -40,22 +38,22 @@ INTEL_ORDER = [
     ("variant_base", "vk"), ("variant_obs_base", "id"),
     ("attr_base", "rowid"), ("insights", "rowid"), ("sync_state", "rowid"),
     ("product_history", "id"), ("attr_history", "id"),
+    ("proxy_defs", "rowid"), ("proxy_cache", "rowid"),
+    ("proxy_history", "id"),
 ]
-PROXY_ORDER = [("proxy_defs", "rowid"), ("proxy_cache", "rowid"),
-               ("proxy_history", "id")]
+# D69: PROXY_ORDER 삭제 — 프록시가 본 DB에 통합됨
 
 
-def upload(src_path, url, token, proxy=False, force=False):
+def upload(src_path, url, token, force=False):
     src = sqlite3.connect(f"file:{src_path}?mode=ro", uri=True)
     src.row_factory = sqlite3.Row
     dst = open_db(url, token=token)
-    order = PROXY_ORDER if proxy else INTEL_ORDER
+    order = INTEL_ORDER
 
     # 스키마 — 정본 DDL로 짓는다(로컬에서 추출하지 않는다: schema_v3.py가 정본이고,
     # 로컬 파일과 어긋났다면 그건 로컬이 낡은 것이다)
-    dst.executescript(PROXY_SCHEMA if proxy else SCHEMA_V3)
-    if not proxy:
-        dst.executescript(VIEWS_V3)
+    dst.executescript(SCHEMA_V3)
+    dst.executescript(VIEWS_V3)
     dst.execute("PRAGMA foreign_keys = ON")
 
     # 비어 있지 않은 원격 방어 — 이중 업로드는 검산 불능 상태를 만든다
@@ -94,9 +92,9 @@ def upload(src_path, url, token, proxy=False, force=False):
     return dst, report
 
 
-def verify(src_path, dst, proxy=False):
+def verify(src_path, dst):
     src = sqlite3.connect(f"file:{src_path}?mode=ro", uri=True)
-    order = PROXY_ORDER if proxy else INTEL_ORDER
+    order = INTEL_ORDER
     ok = True
     for table, _ in order:
         if not _exists(src, table):
@@ -123,8 +121,6 @@ def main():
                     help="libsql:// URL (기본 $INTEL_DB_URL)")
     ap.add_argument("--token", default=os.environ.get("INTEL_DB_TOKEN"),
                     help="쓰기 토큰 (기본 $INTEL_DB_TOKEN)")
-    ap.add_argument("--proxy", action="store_true",
-                    help="proxy.db 이관 모드 (proxy_defs·proxy_cache만)")
     ap.add_argument("--force", action="store_true",
                     help="원격이 비어 있지 않아도 이어서 INSERT (권장하지 않음)")
     ap.add_argument("--verify-only", action="store_true")
@@ -136,9 +132,9 @@ def main():
         dst = open_db(a.url, token=a.token)
     else:
         print("── 업로드 ──")
-        dst, _ = upload(a.src, a.url, a.token, proxy=a.proxy, force=a.force)
+        dst, _ = upload(a.src, a.url, a.token, force=a.force)
     print("── 검산 ──")
-    ok = verify(a.src, dst, proxy=a.proxy)
+    ok = verify(a.src, dst)
     print("검산 %s" % ("통과" if ok else "실패 — 원격을 믿지 마라"))
     return 0 if ok else 1
 

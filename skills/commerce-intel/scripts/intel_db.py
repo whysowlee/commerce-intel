@@ -32,8 +32,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from schema_v3 import (SCHEMA_V3, TRIGGERS_V3, VIEWS_V3,   # noqa: E402
                        assign_category, default_db_target, is_libsql_url,
-                       open_db, proxy_connect, proxy_db_exists, proxy_db_path,
-                       record_proxy_transition, rowid_parts)
+                       open_db,                        record_proxy_transition, rowid_parts)
 
 # 작업 폴더 기준이다(스킬 §파일 규약). Turso 이전(D67) 후에는 INTEL_DB_URL이
 # 이기고, 없으면 기존 INTEL_DB(로컬 경로) → data/intel.db 순이다.
@@ -70,7 +69,7 @@ def _schema_version(conn):
 # 없으면 구버전 v3라서 SCHEMA_V3를 한 번 돌려 따라잡는다(D68 무이관 업그레이드).
 # SCHEMA_V3에 표를 또 추가하면 이 마커도 그 표로 바꾼다 — 안 바꾸면 기존 DB가
 # 새 표를 영영 못 받는다.
-_SCHEMA_MARKER = "attr_history"
+_SCHEMA_MARKER = "proxy_history"
 
 
 def _needs_schema_upgrade(conn):
@@ -262,7 +261,7 @@ def load_file(conn, path, quiet=False, db_path=None):
     new_obs = dup_obs = n_var = n_oattr = 0
     # cache에 이번 적재의 컨텍스트를 싣는다 — _upsert_product가 변경 감지(D68)에
     # 쓴다. 프록시 커넥션은 첫 재료 변경 때 지연 생성한다(변경이 없으면 안 연다).
-    cache = {"_db_path": db_path or DEFAULT_DB}
+    cache = {"_db_path": db_path or DEFAULT_DB, "_conn": conn}
     for it in items:
         pid = str(it.get("product_id", "")).strip()
         if not pid:
@@ -288,10 +287,7 @@ def load_file(conn, path, quiet=False, db_path=None):
         except sqlite3.IntegrityError:
             dup_obs += 1
     conn.commit()
-    pconn = cache.get("_pconn")
-    if pconn:
-        pconn.commit()
-        pconn.close()
+    # D69: 프록시가 본 DB에 통합 — 별도 커넥션 닫기 불필요 (conn.commit()이 위에서 처리)
     if not quiet:
         var_msg = f", 옵션 관측 {n_var}건" if n_var else ""
         var_msg += f", 시점 속성 {n_oattr}건" if n_oattr else ""
@@ -353,12 +349,8 @@ def _load_variants(conn, site, pid, variants, collected_at, run_id):
 
 
 def _history_pconn(cache):
-    """프록시 무효화용 커넥션 — 첫 필요 시점에 연다. 없으면 None(이력만 남는다)."""
-    if "_pconn" in cache:
-        return cache["_pconn"]
-    ppath = proxy_db_path(cache.get("_db_path") or DEFAULT_DB)
-    cache["_pconn"] = proxy_connect(ppath) if proxy_db_exists(ppath) else None
-    return cache["_pconn"]
+    """프록시 무효화용 커넥션 — D69: 본 DB에 통합됐으므로 conn을 그대로 쓴다."""
+    return cache.get("_conn")
 
 
 def _upsert_product(conn, site, pid, it, seen_at, cache=None, run_pk=None):
@@ -752,9 +744,7 @@ def cmd_import_snapshots(conn, args):
 
 
 def cmd_export(conn, args):
-    # 프록시 표는 별도 DB에 산다 (D65-8) — 같은 명령으로 내보내되 커넥션만 바꾼다
-    if args.table in ("proxy_defs", "proxy_cache"):
-        conn = proxy_connect(proxy_db_path(args.db))
+    # D69: proxy_defs/proxy_cache는 이제 본 DB에 있다
     # 옛 이름은 뷰라 rowid가 없다 — 뷰는 물리 키를 `_rowid`로 내준다.
     # WHERE·ORDER는 별칭이 아니라 진짜 참조 가능한 표현식으로 짠다 (PR #9 리뷰)
     sel, key = rowid_parts(conn, args.table)
@@ -934,14 +924,13 @@ def cmd_stats(conn, args):
               "platforms", "runs", "brand_aliases", "brand_platforms", "obs_attr"):
         n = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
         print(f"{t:20} {n:>8}")
-    # 프록시는 별도 DB다 (D65-8) — 파일이 있을 때만 센다
-    ppath = proxy_db_path(args.db)
-    if proxy_db_exists(ppath):
-        pconn = proxy_connect(ppath)
-        for t in ("proxy_defs", "proxy_cache"):
-            n = pconn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-            print(f"{t:20} {n:>8}  (proxy.db)")
-        pconn.close()
+    # D69: 프록시는 본 DB에 통합됐다 — 별도 카운트 불필요
+    for t in ("proxy_defs", "proxy_cache"):
+        try:
+            n = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+            print(f"{t:20} {n:>8}")
+        except Exception:
+            pass
     ctxs = conn.execute(
         "SELECT context, COUNT(*) n, MIN(observed_at) a, MAX(observed_at) b "
         "FROM observations GROUP BY context ORDER BY n DESC LIMIT 20").fetchall()
@@ -1132,7 +1121,7 @@ def _merge_proxy(conn, src, args, stats):
         return
     if not defs:
         return
-    pconn = proxy_connect(proxy_db_path(args.db))
+    pconn = conn  # D69: 본 DB에 통합
     before_d = pconn.execute("SELECT COUNT(*) FROM proxy_defs").fetchone()[0]
     for r in defs:
         cols = [c for c in r.keys() if c in
@@ -1168,8 +1157,7 @@ def _merge_proxy(conn, src, args, stats):
         if len(ok) != len(rows):
             print("  ※ 정의 없는 판정 %d건은 건너뛰었다 (proxy_defs에 카드가 없다)"
                   % (len(rows) - len(ok)))
-    pconn.commit()
-    pconn.close()
+    # D69: pconn = conn이므로 별도 commit/close 불필요 (호출부의 conn이 처리)
 
 
 def main():
@@ -1241,13 +1229,12 @@ def main():
     elif args.cmd == "import-snapshots":
         cmd_import_snapshots(conn, args)
     elif args.cmd == "proxy-load":
-        # 프록시는 별도 DB다 (D65-8) — 정본 커넥션이 아니라 proxy.db로 간다
-        cmd_proxy_load(proxy_connect(proxy_db_path(args.db)), args)
+            cmd_proxy_load(conn, args)  # D69: 본 DB에 통합
     elif args.cmd == "proxy-audit":
         # `return`이 아니라 `sys.exit` — 진입점이 `main()` 반환값을 버려서
         # 오염을 찾아도 프로세스는 0으로 끝났다(PR #12 리뷰 Blocker).
         # E-PXS-2가 명시한 exit 2 계약은 check 커맨드와 같은 패턴으로만 지켜진다.
-        sys.exit(cmd_proxy_audit(proxy_connect(proxy_db_path(args.db)), args))
+        sys.exit(cmd_proxy_audit(conn, args))  # D69: 본 DB에 통합
     elif args.cmd == "export":
         cmd_export(conn, args)
     elif args.cmd == "stats":

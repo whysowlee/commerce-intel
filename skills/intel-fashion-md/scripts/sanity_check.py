@@ -64,8 +64,7 @@ def fail(msg):
 def open_ro(path):
     """정본을 연다 — 로컬 파일은 읽기 전용(mode=ro), libsql:// URL은 Turso(D67).
 
-    Turso는 ATTACH를 지원하지 않으므로 프록시(px 필터)는 여기서 붙이지 않고
-    open_proxy()의 **별도 커넥션**으로 읽는다 — 로컬도 같은 경로로 통일한다.
+    D69: 프록시가 본 DB에 통합됐으므로 같은 커넥션으로 읽는다.
     """
     if str(path).startswith("libsql://"):
         from schema_v3 import open_db
@@ -74,10 +73,8 @@ def open_ro(path):
 
 
 def open_proxy(path):
-    """프록시 DB 커넥션(px 필터용). 없으면 None — px 필터가 없으면 안 쓴다."""
-    from schema_v3 import proxy_connect, proxy_db_exists, proxy_db_path
-    px = proxy_db_path(str(path))
-    return proxy_connect(px) if proxy_db_exists(px) else None
+    """프록시 DB 커넥션(px 필터용). D69: 본 DB에 통합 — 같은 커넥션을 쓴다."""
+    return open_ro(path)
 
 
 def table_columns(con, table):
@@ -181,7 +178,7 @@ def build_rows(con, claim, pxcon=None):
                 "SELECT site, product_id, name, image_url FROM products"):
             pcols[(site, pid)] = {"name": nm, "image": img}
         if pxcon is None:
-            raise ValueError("px 필터가 있는데 proxy DB가 없다 (proxy.db 또는 PROXY_DB_URL)")
+            raise ValueError("px 필터가 있는데 proxy DB가 없다 (본 DB에 proxy_defs 테이블이 필요하다)")
         for px_name, want in sorted(px_filters.items()):
             d = pxcon.execute("SELECT material FROM proxy_defs WHERE proxy_name=?",
                             (px_name,)).fetchone()

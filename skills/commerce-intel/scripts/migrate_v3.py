@@ -32,11 +32,12 @@ import json
 import os
 import shutil
 import sqlite3
+from pathlib import Path
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from schema_v3 import (PROXY_SCHEMA, SCHEMA_V3, VIEWS_V3,  # noqa: E402
-                       ensure_category_path, proxy_db_path, split_category)
+from schema_v3 import (SCHEMA_V3, VIEWS_V3,  # noqa: E402
+                       ensure_category_path, split_category)
 
 OBS_METRICS = ("price_original", "price_sale", "discount_rate", "review_count",
                "rating", "view_count", "view_count_display", "purchase_count",
@@ -257,10 +258,8 @@ def migrate(src_path, dst_path, proxy_path):
                          src.execute("SELECT COUNT(*) FROM variant_obs_base").fetchone()[0],
                          report.get("variant_observations", 0))
 
-    # ⑨ 프록시 → proxy.db (D65-8). rowid 순서 보존 — 증분 미러 진행점 번역의 전제
-    px = sqlite3.connect(proxy_path)
-    px.executescript(PROXY_SCHEMA)
-    px.execute("PRAGMA foreign_keys = ON")
+    # ⑨ 프록시 → 본 DB에 직접 (D69: proxy.db 분리 폐기)
+    px = dst  # D69: 프록시가 본 DB에 통합 — 별도 파일 불필요
     if _table_exists(src, "proxy_defs"):
         dcols = [d[1] for d in src.execute("PRAGMA table_info(proxy_defs)")]
         rows = src.execute("SELECT %s FROM proxy_defs" % ",".join(dcols)).fetchall()
@@ -301,9 +300,7 @@ def migrate(src_path, dst_path, proxy_path):
                                 "WHERE table_name='proxy_cache'", (str(new_key),))
                     print("  sync_state.proxy_cache: 진행점 %s → %s (rowid 재번호 번역)"
                           % (row[0], new_key))
-    px.commit()
-    px.execute("ANALYZE")
-    px.close()
+    # D69: px=dst — 별도 commit 불필요
 
     dst.executescript(VIEWS_V3)
     dst.commit()
@@ -389,8 +386,7 @@ def verify(src_path, dst_path, proxy_path, sample=400):
                  "OK" if a == b else "!! 불일치"))
         if a != b:
             ok = False
-        px.close()
-    src.close(); dst.close()
+        src.close(); dst.close()
     return ok
 
 
@@ -406,7 +402,8 @@ def main():
     dst = a.dst or os.path.join(os.path.dirname(a.src) or ".", "intel-v3.db")
     # 프록시도 메인과 같은 패턴이다 (3R Blocker 1): **스테이징에 짓고** 검산
     # 통과 시에만 교체한다. 라이브 proxy.db에 직접 쓰면 중간 실패가 원본을 지운다.
-    proxy_final = a.proxy or proxy_db_path(a.src)
+    # D69: proxy.db 분리 폐기 — 기존 proxy.db가 있으면 migrate_proxy_merge.py로 이관
+    proxy_final = a.proxy or str(Path(a.src).parent / "proxy.db")
     proxy_staging = proxy_final + ".staging"
 
     if not a.verify_only:

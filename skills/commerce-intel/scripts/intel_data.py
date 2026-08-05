@@ -26,8 +26,8 @@ from collections import Counter
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from schema_v3 import (category_path_map, open_db, proxy_connect,  # noqa: E402
-                       proxy_db_exists, proxy_db_path, record_proxy_transition)
+from schema_v3 import (category_path_map, open_db,  # noqa: E402
+                       record_proxy_transition)
 
 # ── 동일 상품 매칭 ──────────────────────────────────────────────────────────
 # 규칙은 하나뿐이다: **정규화 상품명 완전일치.** 유사도·가격 보조 매칭은 금지다 —
@@ -536,11 +536,7 @@ def collect(db_path, contexts):
     # v3: 정의·캐시는 별도 proxy.db다(D65-8). 파일이 없으면 정본 안의 옛 표를
     # 본다(v2 스냅샷·리허설 DB 하위호환) — 어느 쪽도 없으면 프록시 없음.
     proxies = []
-    pconn = None
-    ppath = proxy_db_path(db_path)
-    if proxy_db_exists(ppath):
-        pconn = proxy_connect(ppath)
-    psrc = pconn or conn
+    psrc = conn  # D69: 프록시가 본 DB에 통합됐다
     try:
         defs = psrc.execute("SELECT * FROM proxy_defs").fetchall()
     except sqlite3.OperationalError:
@@ -563,7 +559,7 @@ def collect(db_path, contexts):
         # 없이도 분석 시점에 축이 채워진다. vision 카드는 재료가 이미지라 배치
         # 경로(proxy_auto → proxy-extractor)만 가능하다 — 여기선 건드리지 않는다.
         card = None
-        if pconn is not None:
+        if True:  # D69: psrc=conn, 항상 유효
             try:
                 body = json.loads(d["rules"]) if d["rules"] else None
             except (TypeError, ValueError, KeyError, IndexError):
@@ -599,15 +595,15 @@ def collect(db_path, contexts):
                 fp = str(fp_now if fp_now is not None else (it.get("name") or ""))
                 # 전이 이력 (D68) — 재료 변경으로 무효화된 판정의 대기 행을
                 # 완성하거나, 값이 실제로 바뀌었으면 old→new를 남긴다
-                record_proxy_transition(pconn, pn, it["site"],
+                record_proxy_transition(psrc, pn, it["site"],
                                         it["product_id"], fp, val, now)
-                pconn.execute(
+                psrc.execute(
                     "INSERT OR IGNORE INTO proxy_cache VALUES (?,?,?,?,?,?,?)",
                     (pn, it["site"], str(it["product_id"]), fp, val, basis, now))
                 cache[k] = (fp, val)
                 wrote += 1
             if wrote:
-                pconn.commit()
+                psrc.commit()
             if judge_errors:
                 print("경고: 프록시 %s lazy 판정 실패 %d건 — 카드 규칙이 깨졌을 수 "
                       "있다(예: %s). 해당 상품은 미판정으로 남긴다"
@@ -653,8 +649,6 @@ def collect(db_path, contexts):
                         "judged": judged, "unjudged": len(items) - judged,
                         # 리포트가 "왜 이 축이 없나"에 답할 수 있어야 한다
                         "off_space": off})
-    if pconn is not None:
-        pconn.close()
 
     # 시계열 — 축적 관측이 있는 상품의 시점별 지표. 시점이 2개 이상인 상품만.
     ts_rows = conn.execute(f"""

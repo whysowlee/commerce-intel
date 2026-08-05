@@ -226,13 +226,10 @@ CREATE TABLE IF NOT EXISTS sync_state (
     table_name TEXT PRIMARY KEY,
     last_synced_key TEXT,
     updated_at TEXT);
-"""
 
-# ── 프록시 DB (별도 파일 — D65-8) ──────────────────────────────────────────
-# 판정 캐시는 정본에서 제일 빨리 자라는 표다(실측 48.6만 행 — 관측의 7배).
-# 분석·미러가 조인할 때는 ATTACH 하거나 별도 커넥션으로 읽는다.
-PROXY_SCHEMA = """
-PRAGMA foreign_keys = ON;
+-- ── 프록시 (본 DB 통합 — D69, 구 D65-8 별도 파일 폐기) ────────────────────
+-- lazy 판정으로 전환한 뒤 캐시가 천천히 쌓이므로 분리의 이점이 약해졌고,
+-- FK/트리거/자동동기화를 못 하는 대가가 더 커졌다 (D69).
 CREATE TABLE IF NOT EXISTS proxy_defs (
     proxy_name TEXT PRIMARY KEY,
     question TEXT, material TEXT,  -- name/image/badge/detail
@@ -242,16 +239,11 @@ CREATE TABLE IF NOT EXISTS proxy_defs (
     label TEXT,                    -- 사람이 읽는 축 이름 (D56)
     rules TEXT);                   -- rule/numeric 카드 본문(JSON) — lazy 판정 재료 (D65-8)
 CREATE TABLE IF NOT EXISTS proxy_cache (
-    -- CASCADE: 정의를 지우면 그 계약으로 만든 판정도 함께 사라진다.
-    -- proxy-audit --fix(수동 정리)는 남지만 주 정리 메커니즘은 이 제약이다.
     proxy_name TEXT NOT NULL REFERENCES proxy_defs(proxy_name) ON DELETE CASCADE,
     site TEXT NOT NULL, product_id TEXT NOT NULL,
-    fingerprint TEXT NOT NULL,     -- 판정 재료 식별자(image_url·name 등)
+    fingerprint TEXT NOT NULL,
     value TEXT, basis TEXT, judged_at TEXT,
     PRIMARY KEY (proxy_name, site, product_id, fingerprint));
--- 판정 전이 이력 (D68) — "원래 영문이었다가 한국어로 바뀐 상품"을 뽑을 수 있게.
--- new_value가 NULL인 행은 **재판정 대기**다(재료가 바뀌어 옛 판정을 무효화했고,
--- 다음 판정이 그 행을 완성한다 — record_proxy_transition 참조).
 CREATE TABLE IF NOT EXISTS proxy_history (
     id INTEGER PRIMARY KEY,
     proxy_name TEXT NOT NULL,
@@ -262,6 +254,8 @@ CREATE TABLE IF NOT EXISTS proxy_history (
 );
 CREATE INDEX IF NOT EXISTS idx_proxy_history ON proxy_history (proxy_name, site, product_id);
 """
+
+
 
 
 # ── Turso(libSQL) 연결 추상화 (D67) ────────────────────────────────────────
@@ -439,54 +433,6 @@ def default_db_target():
     return (os.environ.get("INTEL_DB_URL")
             or os.environ.get("INTEL_DB")
             or "data/intel.db")
-
-
-def proxy_db_path(db_path):
-    """정본 DB 경로 → 프록시 DB 경로(또는 URL).
-
-    우선순위: PROXY_DB_URL(Turso 별도 DB — D67) > INTEL_PROXY_DB(로컬 격리 경로)
-    > 정본 옆 `proxy.db`. 정본과 나란히 두는 이유: 팀원마다 DB 폴더가 다르고(D31),
-    프록시가 정본을 따라다니지 않으면 merge·분석이 캐시를 못 찾는다.
-    """
-    env = os.environ.get("PROXY_DB_URL") or os.environ.get("INTEL_PROXY_DB")
-    if env:
-        return env
-    if is_libsql_url(str(db_path)):
-        # 정본이 Turso인데 프록시 URL이 없다 — 프록시는 미사용으로 본다.
-        # 로컬 경로를 지어내면 팀원마다 다른 캐시가 조용히 생긴다.
-        return ""
-    parent = Path(db_path).parent
-    return str(parent / "proxy.db") if str(parent) not in ("", ".") else "proxy.db"
-
-
-def proxy_db_exists(target):
-    """프록시 DB가 '있다'고 볼 수 있나 — 로컬은 파일 존재, URL은 참(원격은
-    미리 알 수 없다 — 연결 실패는 호출부의 OperationalError 처리가 받는다)."""
-    if not target:
-        return False
-    return True if is_libsql_url(target) else os.path.exists(target)
-
-
-def proxy_connect(path):
-    """프록시 DB를 연다(없으면 만든다). **FK는 커넥션마다 다시 켜야 한다** —
-    PRAGMA foreign_keys는 파일이 아니라 커넥션 설정이라, 빼먹은 커넥션에서는
-    CASCADE가 조용히 안 돈다.
-    """
-    if is_libsql_url(path):
-        conn = open_db(path, token=os.environ.get("PROXY_DB_TOKEN"))
-    else:
-        parent = Path(path).parent
-        if str(parent) not in ("", "."):
-            parent.mkdir(parents=True, exist_ok=True)
-        conn = open_db(path)
-    # 가장 최근에 추가된 표(proxy_history — D68)가 없을 때만 DDL을 보낸다 —
-    # 매번 보내면 Turso 왕복 낭비다(PR #14 리뷰와 같은 이유). 표를 또 추가하면
-    # 이 마커도 그 표로 바꾼다.
-    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
-                    "AND name='proxy_history'").fetchone() is None:
-        conn.executescript(PROXY_SCHEMA)
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
 
 
 # ── 뷰 — 구 이름·구 컬럼 그대로 (제거된 컬럼만 빠졌다) ─────────────────────
