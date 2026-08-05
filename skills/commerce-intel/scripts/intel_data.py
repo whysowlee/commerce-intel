@@ -573,14 +573,24 @@ def collect(db_path, contexts):
         if card:
             import proxy_auto                       # 판정 규칙은 한 벌이다 (D43)
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            wrote = 0
+            wrote, judge_errors, last_err = 0, 0, None
             for it in items:
                 k = (it["site"], it["product_id"])
                 fp_now = it.get(fp_field) if fp_field else None
                 hit = cache.get(k)
                 if hit and (fp_field is None or hit[0] == fp_now):
                     continue
-                res = proxy_auto.judge_row(card, it)
+                # 카드는 AI가 쓴 검수 안 된 입력이다 — 깨진 정규식(re.error 등)이
+                # 리포트 파이프라인 전체를 죽이면 안 된다 (PR #13 3R Blocker 5).
+                # proxy_auto CLI에서만 돌던 시절엔 그 프로세스만 죽었지만, lazy
+                # 판정(D65-8)이 collect() 안으로 들어오며 블라스트 반경이 커졌다.
+                # 해당 상품만 건너뛰고 집계해서 아래에서 한 번만 경고한다.
+                try:
+                    res = proxy_auto.judge_row(card, it)
+                except Exception as e:
+                    judge_errors += 1
+                    last_err = e
+                    continue
                 if res is None:
                     continue                        # 판정 불가 — 저장하지 않는다
                 val, basis = res
@@ -594,6 +604,10 @@ def collect(db_path, contexts):
                 wrote += 1
             if wrote:
                 pconn.commit()
+            if judge_errors:
+                print("경고: 프록시 %s lazy 판정 실패 %d건 — 카드 규칙이 깨졌을 수 "
+                      "있다(예: %s). 해당 상품은 미판정으로 남긴다"
+                      % (pn, judge_errors, last_err), file=sys.stderr)
         judged = 0
         for it in items:
             hit = cache.get((it["site"], it["product_id"]))

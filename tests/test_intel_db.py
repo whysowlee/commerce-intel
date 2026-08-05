@@ -420,12 +420,16 @@ def proxy_auto_tests():
     ok, bad = proxy_auto.validate_cards([
         {"proxy_name": "broken", "rules": [{"any": ["[unclosed"], "value": "x"}]},
         {"proxy_name": "nopat", "numeric": {"kind": "count"}},
+        {"proxy_name": "badnum", "numeric": {"kind": "count", "pattern": "[bad"}},
         {"proxy_name": "fine", "rules": [{"any": ["[가-힣]"], "value": "한글"}]},
     ])
     names = [c["proxy_name"] for c in ok]
     check("E-PA-8 컴파일 안 되는 정규식은 그 카드만 버린다", names == ["fine"], names)
     check("E-PA-9 count인데 pattern 없으면 카드를 버린다",
           any(n == "nopat" for n, _ in bad))
+    # 3R Blocker 5 — numeric.pattern도 rules와 같은 컴파일 검증을 받는다
+    check("E-PA-12 numeric.pattern이 깨진 카드도 버린다 (lazy 판정이 리포트 안에서 돈다)",
+          any(n == "badnum" for n, _ in bad), bad)
     check("E-PA-9b judge_row도 죽지 않는다 (직접 호출 경로)",
           proxy_auto.judge_row({"material": "name", "numeric": {"kind": "count"}},
                                Row(name="아무거나")) is None)
@@ -864,6 +868,107 @@ def context_tests():
           co({"story": "brand-linesheet", "target": "market:X"}) == "brand:market:X")
     check("E-CX-5 target이 비어도 죽지 않는다",
           co({"story": "ranking-snapshot"}) == "ranking:")
+
+
+def blocker3r_tests():
+    """PR #13 3라운드 Blocker 회귀 — 이관 가드·프록시 가드·lazy 판정 격리."""
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    intel_db = importlib.import_module("intel_db")
+    migrate_v3 = importlib.import_module("migrate_v3")
+    schema_v3 = importlib.import_module("schema_v3")
+    schema_v2 = importlib.import_module("schema_v2")
+    work = Path(tempfile.mkdtemp(prefix="b3r-"))
+
+    # ── B2: 이미 v3인 DB에 재실행하면 가드가 막는다 (obs_base는 v2·v3 공통이라
+    #    구 가드는 통과했다 — product_categories가 v3 표식이다)
+    v3db = str(work / "v3.db")
+    intel_db.connect(v3db).close()
+    guarded = False
+    try:
+        migrate_v3.migrate(v3db, str(work / "out.db"), str(work / "px.staging"))
+    except SystemExit as e:
+        guarded = "이미 v3" in str(e)
+    check("E-MG-1 v3 정본 재실행은 가드가 막는다 (Blocker 2)", guarded)
+
+    # ── B1: 이관은 스테이징에만 쓴다 — 라이브 proxy.db는 건드리지 않는다
+    v2db = str(work / "v2.db")
+    src = sqlite3.connect(v2db)
+    src.executescript(schema_v2.SCHEMA_V2)
+    src.execute("CREATE TABLE runs (run_id TEXT PRIMARY KEY, site TEXT, story TEXT,"
+                " target TEXT, collected_at TEXT, item_count INTEGER,"
+                " source_total INTEGER, incomplete INTEGER, notes TEXT,"
+                " raw_file TEXT, loaded_at TEXT)")
+    src.execute("CREATE TABLE sync_state (table_name TEXT PRIMARY KEY,"
+                " last_synced_key TEXT, updated_at TEXT)")
+    src.execute("INSERT INTO sync_state VALUES ('observations', '0', 'x')")
+    src.commit(); src.close()
+    live_proxy = work / "proxy.db"
+    live_proxy.write_text("살아있는 프록시 — 이관이 건드리면 안 된다")
+    staging = str(work / "proxy.db.staging")
+    migrate_v3.migrate(v2db, str(work / "v2-out.db"), staging)
+    check("E-MG-2 라이브 proxy.db가 이관 중 보존된다 (Blocker 1 — 스테이징에만 쓴다)",
+          live_proxy.read_text() == "살아있는 프록시 — 이관이 건드리면 안 된다")
+    check("E-MG-2b 프록시 스테이징 파일이 별도로 만들어진다", os.path.exists(staging))
+
+    # ── B3: 이관에서 행이 떨어지면 그 표의 미러 진행점을 리셋한다
+    g = sqlite3.connect(str(work / "g.db"))
+    g.execute("CREATE TABLE sync_state (table_name TEXT PRIMARY KEY,"
+              " last_synced_key TEXT, updated_at TEXT)")
+    g.execute("INSERT INTO sync_state VALUES ('observations', '500', 'x')")
+    migrate_v3._guard_sync_progress(g, "observations", 10, 10)
+    check("E-MG-3 행 보존이면 진행점 유지",
+          g.execute("SELECT last_synced_key FROM sync_state").fetchone()[0] == "500")
+    migrate_v3._guard_sync_progress(g, "observations", 10, 9)
+    check("E-MG-3b 드롭이 있으면 진행점 리셋 — 다음 미러가 전량 재동기화 (Blocker 3)",
+          g.execute("SELECT last_synced_key FROM sync_state").fetchone()[0] is None)
+
+    # ── B4: 정본이 Turso인데 프록시 URL이 없으면 proxy_auto가 명시적으로 죽는다
+    cards_f = work / "cards.json"
+    cards_f.write_text(json.dumps([{"proxy_name": "t", "material": "name",
+                                    "method": "rule", "value_space": ["a"],
+                                    "rules": [{"any": ["."], "value": "a"}]}]),
+                       encoding="utf-8")
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("PROXY_DB_URL", "INTEL_PROXY_DB")}
+    r = subprocess.run([sys.executable, str(SCRIPTS / "proxy_auto.py"),
+                        "--db", "libsql://fake.turso.io", "--cards", str(cards_f),
+                        "--out", str(work / "o.json")],
+                       capture_output=True, text=True, env=env)
+    check("E-PA-13 Turso 정본 + 프록시 URL 미설정이면 임시 DB로 새지 않고 죽는다 (Blocker 4)",
+          r.returncode != 0 and "PROXY_DB_URL" in (r.stdout + r.stderr),
+          "exit=%d %s" % (r.returncode, (r.stdout + r.stderr)[:80]))
+
+    # ── B5: 깨진 카드 규칙이 collect()를 죽이지 않는다 (lazy 판정 격리)
+    lzdb = str(work / "lz.db")
+    conn = intel_db.connect(lzdb)
+    conn.execute("INSERT INTO products (site, product_id, name) VALUES ('s','1','상품')")
+    conn.execute("INSERT INTO observations (site, product_id, observed_at, context,"
+                 " price_sale) VALUES ('s','1','2026-08-05 10:00:00','brand:t',100)")
+    conn.commit(); conn.close()
+    pcon = schema_v3.proxy_connect(str(work / "proxy2.db"))
+    pcon.execute("INSERT INTO proxy_defs (proxy_name, material, value_space, method,"
+                 " rules) VALUES ('bad_rule','name','[\"a\"]','rule',?)",
+                 (json.dumps({"rules": [{"any": ["[unclosed"], "value": "a"}]}),))
+    pcon.commit(); pcon.close()
+    import importlib as _il
+    intel_data = _il.import_module("intel_data")
+    old_env = os.environ.get("INTEL_PROXY_DB")
+    os.environ["INTEL_PROXY_DB"] = str(work / "proxy2.db")
+    try:
+        data = intel_data.collect(lzdb, None)
+        ok_lz = all(it.get("px_bad_rule") is None for it in data["items"])
+        check("E-LZ-1 깨진 정규식 카드가 리포트 파이프라인을 죽이지 않는다 (Blocker 5)",
+              ok_lz, [it.get("px_bad_rule") for it in data["items"]])
+    except Exception as e:
+        check("E-LZ-1 깨진 정규식 카드가 리포트 파이프라인을 죽이지 않는다 (Blocker 5)",
+              False, "%s: %s" % (type(e).__name__, e))
+    finally:
+        if old_env is None:
+            os.environ.pop("INTEL_PROXY_DB", None)
+        else:
+            os.environ["INTEL_PROXY_DB"] = old_env
+    shutil.rmtree(work, ignore_errors=True)
 
 
 def check_run_tests():
@@ -1423,6 +1528,9 @@ def main():
 
     print("[21c] 팀 중복 수집 방지 — 시간대 회귀 (D67 · E-DR)")
     check_run_tests()
+
+    print("[21d] 3라운드 Blocker 회귀 — 이관·프록시 가드·lazy 격리 (E-MG·E-PA-13·E-LZ)")
+    blocker3r_tests()
 
     print("[21b] 프록시 값 공간 위생 (D53 · E-PXS)")
     proxy_space_tests()

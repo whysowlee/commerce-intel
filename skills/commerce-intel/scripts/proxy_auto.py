@@ -100,6 +100,13 @@ def validate_cards(cards):
         if not problem and num.get("kind") == "count" and not num.get("pattern"):
             # kind=count인데 pattern이 없으면 판정 시점에 죽는다 — 여기서 잡는다
             problem = "numeric.kind=count 인데 pattern이 없다"
+        if not problem and num.get("pattern"):
+            # numeric.pattern도 rules와 같은 검증을 받는다 (PR #13 3R Blocker 5) —
+            # lazy 판정(D65-8) 이후 이 정규식은 리포트 파이프라인 안에서 돈다
+            try:
+                re.compile(num["pattern"])
+            except re.error as e:
+                problem = "numeric.pattern 정규식 오류 `%s` — %s" % (num["pattern"], e)
         (bad.append((c.get("proxy_name", "?"), problem)) if problem else ok.append(c))
     return ok, bad
 
@@ -258,9 +265,20 @@ def main():
     for name, why in bad_cards:
         print("  카드 버림 %-16s %s" % (name, why))
     from schema_v3 import open_db, proxy_connect, proxy_db_path
+    # 프록시 경로를 **정본을 열기 전에** 확인한다 (PR #13 3R Blocker 4).
+    # 정본이 Turso인데 PROXY_DB_URL이 없으면 경로가 빈 문자열이고, 그대로
+    # 연결하면 임시 DB가 생겨 판정 캐시가 매번 증발한다 — 비전 판정 비용이
+    # 조용히 반복된다. 다른 호출부(intel_data·sync_sheets)는 스킵하면 되지만
+    # 이 도구의 일 자체가 프록시라 명시적으로 죽는 것이 맞다.
+    # (로컬 경로가 아직 없는 것은 정상이다 — 첫 등록이 이 도구의 일이고,
+    #  proxy_connect가 파일을 만든다.)
+    ppath = proxy_db_path(a.db)
+    if not ppath:
+        sys.exit("프록시 DB 경로가 없다 — 정본이 Turso면 PROXY_DB_URL·"
+                 "PROXY_DB_TOKEN을 설정하라 (docs/TURSO-SETUP.md)")
     conn = open_db(a.db)             # 로컬 경로·libsql:// URL 둘 다 (D67)
     # 캐시는 별도 proxy.db에 있다 (D65-8) — 비전 배치 계획이 이걸 본다
-    pconn = proxy_connect(proxy_db_path(a.db))
+    pconn = proxy_connect(ppath)
     rows = _load_rows(conn, a.context)
     print("상품 %s건 · 카드 %d장" % ("{:,}".format(len(rows)), len(cards)))
 

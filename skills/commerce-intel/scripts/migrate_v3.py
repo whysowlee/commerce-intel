@@ -49,14 +49,42 @@ def _table_exists(conn, name):
                              "AND name=?", (name,)).fetchone())
 
 
+def _guard_sync_progress(dst, table, src_n, new_n):
+    """이관 중 행이 떨어졌으면 그 표의 미러 진행점을 리셋한다 (PR #13 3R Blocker 3).
+
+    관측 계열은 id를 보존해 복사하므로 정상 경로에서는 src_n == new_n이고
+    진행점이 그대로 유효하다. 그러나 어떤 이유로든 행이 떨어졌다면(미래의 필터
+    추가·소스 손상) 보존된 진행점은 **떨어진 행 수만큼 앞서 나간 거짓말**이 된다
+    — D64가 잡은 무소음 미러 누락과 같은 종류다. 그때는 last_synced_key를 NULL로
+    리셋해 다음 미러가 전량 재동기화하게 한다(느리지만 정직하다).
+    """
+    if src_n == new_n:
+        return
+    if not _table_exists(dst, "sync_state"):
+        return
+    dst.execute("UPDATE sync_state SET last_synced_key=NULL WHERE table_name=?",
+                (table,))
+    print("  경고: %s %d행이 이관에서 떨어졌다(%d→%d) — sync_state를 리셋했다. "
+          "다음 시트 미러가 전량 재동기화한다" % (table, src_n - new_n, src_n, new_n))
+
+
 def migrate(src_path, dst_path, proxy_path):
+    """v2 → v3 이관. **dst_path·proxy_path는 둘 다 스테이징 경로다** — 라이브
+    파일에 직접 짓지 않는다(PR #13 3R Blocker 1). 교체는 main()이 검산 통과
+    후에만 한다.
+    """
     src = sqlite3.connect(src_path)
     src.row_factory = sqlite3.Row
     if not _table_exists(src, "obs_base"):
         raise SystemExit(f"{src_path}: v2 스키마가 아니다 — v1이면 migrate_v2.py를 먼저 돌려라")
+    # obs_base는 v2·v3 양쪽에 있다 — v3 표식은 product_categories다(PR #13 3R
+    # Blocker 2). 이 가드가 없으면 이미 v3인 정본에 재실행해도 통과해서
+    # 스테이징을 다시 짓고, 교체 단계가 멀쩡한 파일들을 갈아엎는다.
+    if _table_exists(src, "product_categories"):
+        raise SystemExit(f"{src_path}: 이미 v3다 — 이관할 것이 없다")
     for p in (dst_path, proxy_path):
         if os.path.exists(p):
-            os.remove(p)
+            os.remove(p)          # 스테이징 잔여물만 지운다 — 라이브 경로가 아니다
     dst = sqlite3.connect(dst_path)
     dst.executescript(SCHEMA_V3)
     dst.execute("PRAGMA foreign_keys = ON")
@@ -220,6 +248,15 @@ def migrate(src_path, dst_path, proxy_path):
                         [tuple(r[c] for c in cols) for r in rows])
         report[t] = len(rows)
 
+    # 관측 계열 진행점 가드 (3R Blocker 3) — sync_state 복사 **뒤**에 돌아야
+    # 리셋이 남는다. 정상 경로(행 보존)에서는 아무것도 안 한다.
+    _guard_sync_progress(dst, "observations",
+                         src.execute("SELECT COUNT(*) FROM obs_base").fetchone()[0],
+                         report.get("observations", 0))
+    _guard_sync_progress(dst, "variant_observations",
+                         src.execute("SELECT COUNT(*) FROM variant_obs_base").fetchone()[0],
+                         report.get("variant_observations", 0))
+
     # ⑨ 프록시 → proxy.db (D65-8). rowid 순서 보존 — 증분 미러 진행점 번역의 전제
     px = sqlite3.connect(proxy_path)
     px.executescript(PROXY_SCHEMA)
@@ -367,10 +404,13 @@ def main():
     ap.add_argument("--verify-only", action="store_true")
     a = ap.parse_args()
     dst = a.dst or os.path.join(os.path.dirname(a.src) or ".", "intel-v3.db")
-    proxy = a.proxy or proxy_db_path(a.src)
+    # 프록시도 메인과 같은 패턴이다 (3R Blocker 1): **스테이징에 짓고** 검산
+    # 통과 시에만 교체한다. 라이브 proxy.db에 직접 쓰면 중간 실패가 원본을 지운다.
+    proxy_final = a.proxy or proxy_db_path(a.src)
+    proxy_staging = proxy_final + ".staging"
 
     if not a.verify_only:
-        rep = migrate(a.src, dst, proxy)
+        rep = migrate(a.src, dst, proxy_staging)
         print("── 이관 ──")
         for k, v in rep.items():
             print("  %-22s %s" % (k, "{:,}".format(v)))
@@ -378,20 +418,26 @@ def main():
             print("  ※ 정의 없는 판정 %d건은 옮기지 않았다 (proxy_defs에 카드가 없다)"
                   % rep["proxy_cache_orphan"])
     print("── 검산 ──")
-    ok = verify(a.src, dst, proxy)
-    for p, label in ((a.src, "v2"), (dst, "v3"), (proxy, "px")):
+    # --verify-only는 교체 후 재검산 용도다 — 스테이징이 남아 있으면 그걸,
+    # 없으면(이미 교체됨) 최종 경로를 본다
+    proxy_check = proxy_staging if os.path.exists(proxy_staging) else proxy_final
+    ok = verify(a.src, dst, proxy_check)
+    for p, label in ((a.src, "v2"), (dst, "v3"), (proxy_check, "px")):
         if os.path.exists(p):
             print("  %s %8.2f MB" % (label, os.path.getsize(p) / 1048576))
     if not ok:
-        print("검산 실패 — 교체하지 않는다")
+        print("검산 실패 — 교체하지 않는다 (스테이징: %s, %s)" % (dst, proxy_staging))
         return 1
     if a.verify_only or a.no_swap:
-        print("검산 통과 (교체 안 함 — 새 파일: %s)" % dst)
+        print("검산 통과 (교체 안 함 — 스테이징: %s, %s)" % (dst, proxy_staging))
         return 0
     backup = a.src + ".v2-backup"
     shutil.copy2(a.src, backup)                     # 자동 백업 (D65-10)
     os.replace(dst, a.src)
-    print("검산 통과 — 백업 %s, 교체 완료: %s (+ %s)" % (backup, a.src, proxy))
+    if os.path.exists(proxy_final):                 # 재실행 등으로 이미 있으면 보존
+        shutil.copy2(proxy_final, proxy_final + ".pre-v3-backup")
+    os.replace(proxy_staging, proxy_final)
+    print("검산 통과 — 백업 %s, 교체 완료: %s (+ %s)" % (backup, a.src, proxy_final))
     return 0
 
 
