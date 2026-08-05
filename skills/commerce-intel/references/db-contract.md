@@ -100,6 +100,8 @@
 | `variant_observations` | 옵션별 재고 관측 — sold_out·stock_qty·stock_display·`stock_basis` + `run_id` FK | (site, product_id, option_id, observed_at) | **append only** |
 | `runs` | 수집 실행 이력(raw 파일 경로 포함) — **정수 PK `id`**(관측이 FK로 가리킨다), run_id TEXT는 UNIQUE | id | append |
 | `sync_state` | 시트 미러 진행 상태 (proxy_cache 진행점도 여기 — 미러 상태는 미러를 도는 쪽 것) | table_name | 내부용 |
+| `product_history` | **정적 속성 변경 이력** (D68) — pk·field(name/brand/category/url/image_url)·old_value·new_value·changed_at·run_id. 적재(`_upsert_product`)가 기존 값과 다른 실질값이 오면 덮기 전에 남긴다. 값→NULL은 안 생긴다(빈 값은 덮지 않으므로). 조회는 `product_changes` 뷰((site, product_id)·현재명·run_id 포함) | id | **append only — 삭제·수정 금지** |
+| `attr_history` | **AI 속성 변경 이력** (D68) — attr_name·old/new_value·old/new_basis. `product_attributes` 뷰 트리거가 캡처하므로 어떤 쓰기 경로든 잡힌다. 조회는 `attr_changes` 뷰 | id | **append only** (트리거 자동) |
 
 **`data/proxy.db` (별도 파일 — D65-8).** 판정 캐시는 정본에서 제일 빨리 자라는 표라
 (실측 48.6만 행, 관측의 7배) 파일을 가른다. 경로는 정본과 같은 폴더의 `proxy.db`
@@ -109,6 +111,7 @@
 |---|---|---|
 | `proxy_defs` | 정의 카드 — question·material·value_space·method·label + **rules**(rule 카드 본문 JSON — lazy 판정 재료) | proxy_name |
 | `proxy_cache` | 판정 캐시 — value·basis. **재료 지문이 현재 재료와 같을 때만 유효**. `proxy_defs`에 **ON DELETE CASCADE** — 정의를 지우면 그 계약의 판정도 함께 사라진다(proxy-audit --fix는 보조 수단) | (proxy_name, site, product_id, fingerprint) |
+| `proxy_history` | **판정 전이 이력** (D68) — old/new_value·old/new_fingerprint. **new_value NULL = 재판정 대기**: 재료(이름·이미지) 변경 감지가 옛 판정을 여기로 옮기고 캐시에서 지운다 → 다음 lazy/proxy-load 판정이 그 행을 완성한다(`record_proxy_transition`). 강제 즉시 재판정은 없다 — lazy 원칙대로 분석이 요구할 때 판정된다 | id |
 
 - **판정은 method 불문 lazy가 기본이다**(D65-8·D66): 정의는 즉시 등록하되(image
   카드는 실물 샘플 1~2장 접지 — D66) 판정은 미룬다. rule은 분석(`intel_data.collect`)이

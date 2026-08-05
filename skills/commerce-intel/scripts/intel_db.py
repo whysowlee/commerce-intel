@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from schema_v3 import (SCHEMA_V3, TRIGGERS_V3, VIEWS_V3,   # noqa: E402
                        assign_category, default_db_target, is_libsql_url,
                        open_db, proxy_connect, proxy_db_exists, proxy_db_path,
-                       rowid_parts)
+                       record_proxy_transition, rowid_parts)
 
 # 작업 폴더 기준이다(스킬 §파일 규약). Turso 이전(D67) 후에는 INTEL_DB_URL이
 # 이기고, 없으면 기존 INTEL_DB(로컬 경로) → data/intel.db 순이다.
@@ -66,6 +66,20 @@ def _schema_version(conn):
     return 1
 
 
+# 스키마 추가분 마커 — **가장 최근에 SCHEMA_V3에 추가된 표**를 가리킨다. 이 표가
+# 없으면 구버전 v3라서 SCHEMA_V3를 한 번 돌려 따라잡는다(D68 무이관 업그레이드).
+# SCHEMA_V3에 표를 또 추가하면 이 마커도 그 표로 바꾼다 — 안 바꾸면 기존 DB가
+# 새 표를 영영 못 받는다.
+_SCHEMA_MARKER = "attr_history"
+
+
+def _needs_schema_upgrade(conn):
+    """기존 v3 DB에 나중에 추가된 표가 빠져 있는가 — True면 SCHEMA_V3를 1회 실행."""
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (_SCHEMA_MARKER,)).fetchone() is None
+
+
 def _is_view(conn, name):
     """그 이름이 뷰인가. **뷰에는 업서트를 못 쓴다**(옛 이름이 뷰가 됐다 — D45)."""
     row = conn.execute(
@@ -89,7 +103,12 @@ def connect(db_path):
             parent.mkdir(parents=True, exist_ok=True)
     conn = open_db(db_path)
     ver = _schema_version(conn)
-    if ver is None:
+    if ver is None or (ver == 3 and _needs_schema_upgrade(conn)):
+        # 새 DB이거나, 기존 v3에 나중에 추가된 표가 빠져 있을 때 **한 번만** 돈다
+        # (PR #14 리뷰 — 매 connect마다 돌리면 가벼운 조회까지 DDL 27줄을 Turso로
+        # 왕복시킨다). SCHEMA_V3는 전부 IF NOT EXISTS·DROP 없음이라 재실행 자체는
+        # 안전하지만, 필요할 때만 보낸다. 별도 마이그레이션이 필요한 변경
+        # (컬럼 제거·개명)은 여기가 아니라 migrate가 맡는다.
         conn.executescript(SCHEMA_V3)
     elif ver != 3:
         raise SystemExit(
@@ -214,8 +233,12 @@ def resolve_brand(conn, notation, site=None, cache=None):
     return notation
 
 
-def load_file(conn, path, quiet=False):
-    """데이터 계약 JSON 1개를 적재한다. 반환: (신규 관측 수, 스킵된 중복 관측 수)."""
+def load_file(conn, path, quiet=False, db_path=None):
+    """데이터 계약 JSON 1개를 적재한다. 반환: (신규 관측 수, 스킵된 중복 관측 수).
+
+    db_path는 프록시 무효화(D68)용 — 정본 경로에서 proxy.db 위치를 푼다.
+    안 넘기면 DEFAULT_DB 기준(환경변수 규약과 같다).
+    """
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     meta, items = data.get("meta", {}), data.get("items", [])
     site = meta.get("site")
@@ -235,13 +258,16 @@ def load_file(conn, path, quiet=False):
          json.dumps(meta.get("notes", []), ensure_ascii=False), str(path), now_str()),
     )
 
+    run_pk = conn.execute("SELECT id FROM runs WHERE run_id=?", (run_id,)).fetchone()[0]
     new_obs = dup_obs = n_var = n_oattr = 0
-    cache = {}
+    # cache에 이번 적재의 컨텍스트를 싣는다 — _upsert_product가 변경 감지(D68)에
+    # 쓴다. 프록시 커넥션은 첫 재료 변경 때 지연 생성한다(변경이 없으면 안 연다).
+    cache = {"_db_path": db_path or DEFAULT_DB}
     for it in items:
         pid = str(it.get("product_id", "")).strip()
         if not pid:
             continue
-        _upsert_product(conn, site, pid, it, collected_at, cache)
+        _upsert_product(conn, site, pid, it, collected_at, cache, run_pk=run_pk)
         if isinstance(it.get("variants"), list):
             n_var += _load_variants(conn, site, pid, it["variants"], collected_at, run_id)
         cols = [it.get(f) for f in OBS_FIELDS]
@@ -262,6 +288,10 @@ def load_file(conn, path, quiet=False):
         except sqlite3.IntegrityError:
             dup_obs += 1
     conn.commit()
+    pconn = cache.get("_pconn")
+    if pconn:
+        pconn.commit()
+        pconn.close()
     if not quiet:
         var_msg = f", 옵션 관측 {n_var}건" if n_var else ""
         var_msg += f", 시점 속성 {n_oattr}건" if n_oattr else ""
@@ -322,7 +352,16 @@ def _load_variants(conn, site, pid, variants, collected_at, run_id):
     return n
 
 
-def _upsert_product(conn, site, pid, it, seen_at, cache=None):
+def _history_pconn(cache):
+    """프록시 무효화용 커넥션 — 첫 필요 시점에 연다. 없으면 None(이력만 남는다)."""
+    if "_pconn" in cache:
+        return cache["_pconn"]
+    ppath = proxy_db_path(cache.get("_db_path") or DEFAULT_DB)
+    cache["_pconn"] = proxy_connect(ppath) if proxy_db_exists(ppath) else None
+    return cache["_pconn"]
+
+
+def _upsert_product(conn, site, pid, it, seen_at, cache=None, run_pk=None):
     """상품 정적 속성 upsert. v3에서 달라진 것(D65-2·3·4):
 
     - attributes(JSON) **컬럼**이 사라졌다 — 수집이 들고 온 속성(핏 등 비싼 판단)은
@@ -331,12 +370,19 @@ def _upsert_product(conn, site, pid, it, seen_at, cache=None):
     - raw_extras·first/last_seen_at은 저장하지 않는다 — 원문 부가 정보는 raw JSON에 있다
     - 브랜드는 resolve_brand()로 대표명으로 바꿔 넣는다(표기 변형은 별명으로)
     - 카테고리는 뷰 트리거가 못 다루므로 assign_category()를 여기서 부른다
+
+    **변경 감지 (D68)**: 기존 값과 달라지는 필드는 product_history에 이전 값을
+    남긴 뒤 덮는다. 이력은 **저장소에 실제로 일어나는 전이**만 담는다 — 이 upsert는
+    빈 값으로 기존 값을 지우지 않으므로(D45 COALESCE 규칙) 값→NULL 이력은 생기지
+    않는다. 상품명·이미지가 바뀌면 그 재료를 쓰는 프록시 판정을 무효화한다
+    (재판정 대기 이력으로 옮기고 캐시에서 지운다 — 다음 lazy 판정이 완성한다).
     """
+    from schema_v3 import invalidate_material_proxies, split_category
     cache = cache if cache is not None else {}
     rep_brand = resolve_brand(conn, it.get("brand"), site, cache)
     row = conn.execute(
-        "SELECT site FROM products WHERE site=? AND product_id=?", (site, pid)
-    ).fetchone()
+        "SELECT _rowid, name, brand, category, url, image_url FROM products "
+        "WHERE site=? AND product_id=?", (site, pid)).fetchone()
     if row is None:
         conn.execute(
             "INSERT INTO products (site, product_id, name, url, image_url, brand, "
@@ -345,6 +391,27 @@ def _upsert_product(conn, site, pid, it, seen_at, cache=None):
              rep_brand, seen_at),
         )
     else:
+        pk = row["_rowid"]
+        changes = []            # (field, old, new)
+        for f in ("name", "url", "image_url"):
+            v = it.get(f)
+            if v not in (None, "") and v != row[f]:
+                changes.append((f, row[f], v))
+        if rep_brand and rep_brand != row["brand"]:
+            changes.append(("brand", row["brand"], rep_brand))
+        for field, old, new in changes:
+            conn.execute(
+                "INSERT INTO product_history (pk, changed_at, field, old_value, "
+                "new_value, run_id) VALUES (?,?,?,?,?,?)",
+                (pk, seen_at, field, old, new, run_pk))
+        # 재료가 바뀌면 그 재료의 프록시 판정은 옛 계약이다 — 무효화 (D68)
+        for field, material in (("name", "name"), ("image_url", "image")):
+            hit = next((c for c in changes if c[0] == field), None)
+            if hit:
+                pconn = _history_pconn(cache)
+                if pconn is not None:
+                    invalidate_material_proxies(pconn, site, pid, material,
+                                                hit[2], seen_at)
         # 정적 필드는 새 값이 비어 있지 않을 때만 덮는다.
         updates, params = [], []
         for f in ("name", "url", "image_url"):
@@ -361,6 +428,26 @@ def _upsert_product(conn, site, pid, it, seen_at, cache=None):
             f"UPDATE products SET {', '.join(updates)} WHERE site=? AND product_id=?",
             params)
     if it.get("category"):
+        # 카테고리 재분류 이력 (D68) — 매핑은 N:M append라 뷰 값이 안 바뀔 수
+        # 있다(뷰는 최소 id 매핑을 편다). "이 상품에 처음 보는 플랫폼 카테고리가
+        # 왔다"를 사건으로 기록한다 — 같은 카테고리 재수집은 기록하지 않는다.
+        parts = split_category(it["category"])
+        if parts and row is not None:
+            from schema_v3 import ensure_category_path
+            leaf = ensure_category_path(conn, it["category"], cache)
+            pk = row["_rowid"]
+            had_this = conn.execute(
+                "SELECT 1 FROM product_categories WHERE pk=? AND category_id=? "
+                "AND source='platform'", (pk, leaf)).fetchone()
+            had_any = conn.execute(
+                "SELECT 1 FROM product_categories WHERE pk=? AND source='platform'",
+                (pk,)).fetchone()
+            if not had_this and had_any:
+                conn.execute(
+                    "INSERT INTO product_history (pk, changed_at, field, old_value, "
+                    "new_value, run_id) VALUES (?,?,?,?,?,?)",
+                    (pk, seen_at, "category", row["category"],
+                     " > ".join(parts), run_pk))
         assign_category(conn, site, pid, it["category"], cache)
     # 수집이 들고 온 속성 → attr_base. 실질값만 — unknown으로 기존 판단을 덮지 않는다
     attrs = it.get("attributes") or {}
@@ -656,7 +743,7 @@ def cmd_import_snapshots(conn, args):
     total_new = total_dup = 0
     for f in files:
         try:
-            n, d = load_file(conn, f, quiet=True)
+            n, d = load_file(conn, f, quiet=True, db_path=args.db)
             total_new += n
             total_dup += d
         except (json.JSONDecodeError, SystemExit) as e:
@@ -775,6 +862,11 @@ def _proxy_load_one(conn, data):
                 bad += 1
                 continue
         try:
+            # 전이 이력 (D68) — 재료 변경 무효화가 남긴 대기 행을 완성하거나,
+            # 같은 상품의 옛 판정과 값·지문이 달라졌으면 old→new를 남긴다
+            record_proxy_transition(conn, d["proxy_name"], j.get("site"),
+                                    j.get("product_id"), j.get("fingerprint"),
+                                    val, now_str())
             conn.execute(
                 "INSERT INTO proxy_cache VALUES (?,?,?,?,?,?,?)",
                 (d["proxy_name"], j.get("site"), str(j.get("product_id")),
@@ -1135,7 +1227,7 @@ def main():
         print(f"초기화 완료: {args.db}")
     elif args.cmd == "load":
         for f in args.raw:
-            load_file(conn, f)
+            load_file(conn, f, db_path=args.db)
     elif args.cmd == "check":
         sys.exit(cmd_check(conn, args))
     elif args.cmd == "check-run":

@@ -185,6 +185,31 @@ CREATE TABLE IF NOT EXISTS attr_base (
     PRIMARY KEY (pk, attr_name));
 CREATE INDEX IF NOT EXISTS idx_attr_name2 ON attr_base (attr_name, value);
 
+-- 상품 정적 속성 변경 이력 (D68) — 상품명·브랜드·카테고리·URL·이미지가 수집마다
+-- 덮이면서 "바뀌었다"는 사실 자체가 소실됐다. append only — 지우지도 고치지도 않는다.
+CREATE TABLE IF NOT EXISTS product_history (
+    id INTEGER PRIMARY KEY,
+    pk INTEGER NOT NULL REFERENCES product_base(pk),
+    changed_at TEXT NOT NULL,        -- 변경 감지 시각 (그 수집의 collected_at)
+    field TEXT NOT NULL,             -- name / brand / category / url / image_url
+    old_value TEXT,
+    new_value TEXT,
+    run_id INTEGER REFERENCES runs(id)   -- 어떤 수집에서 감지됐는지
+);
+CREATE INDEX IF NOT EXISTS idx_product_history_pk ON product_history (pk, changed_at);
+
+-- 동적 속성 변경 이력 (D68) — 핏·AI 카테고리 재판정의 이전 값 보존.
+-- 쓰기는 product_attributes 뷰 트리거가 잡는다(모든 쓰기 경로가 뷰를 지난다).
+CREATE TABLE IF NOT EXISTS attr_history (
+    id INTEGER PRIMARY KEY,
+    pk INTEGER NOT NULL REFERENCES product_base(pk),
+    attr_name TEXT NOT NULL,
+    old_value TEXT, new_value TEXT,
+    old_basis TEXT, new_basis TEXT,
+    changed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_attr_history_pk ON attr_history (pk, changed_at);
+
 CREATE TABLE IF NOT EXISTS insights (       -- 인사이트 엔진 산출 (D28)
     run_stamp TEXT NOT NULL,
     target TEXT NOT NULL,
@@ -224,6 +249,18 @@ CREATE TABLE IF NOT EXISTS proxy_cache (
     fingerprint TEXT NOT NULL,     -- 판정 재료 식별자(image_url·name 등)
     value TEXT, basis TEXT, judged_at TEXT,
     PRIMARY KEY (proxy_name, site, product_id, fingerprint));
+-- 판정 전이 이력 (D68) — "원래 영문이었다가 한국어로 바뀐 상품"을 뽑을 수 있게.
+-- new_value가 NULL인 행은 **재판정 대기**다(재료가 바뀌어 옛 판정을 무효화했고,
+-- 다음 판정이 그 행을 완성한다 — record_proxy_transition 참조).
+CREATE TABLE IF NOT EXISTS proxy_history (
+    id INTEGER PRIMARY KEY,
+    proxy_name TEXT NOT NULL,
+    site TEXT NOT NULL, product_id TEXT NOT NULL,
+    old_value TEXT, new_value TEXT,
+    old_fingerprint TEXT, new_fingerprint TEXT,
+    changed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_proxy_history ON proxy_history (proxy_name, site, product_id);
 """
 
 
@@ -442,7 +479,12 @@ def proxy_connect(path):
         if str(parent) not in ("", "."):
             parent.mkdir(parents=True, exist_ok=True)
         conn = open_db(path)
-    conn.executescript(PROXY_SCHEMA)
+    # 가장 최근에 추가된 표(proxy_history — D68)가 없을 때만 DDL을 보낸다 —
+    # 매번 보내면 Turso 왕복 낭비다(PR #14 리뷰와 같은 이유). 표를 또 추가하면
+    # 이 마커도 그 표로 바꾼다.
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='proxy_history'").fetchone() is None:
+        conn.executescript(PROXY_SCHEMA)
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
@@ -534,6 +576,27 @@ SELECT s.name AS site, p.product_id, a.attr_name, a.value, a.basis,
        a.rowid AS _rowid
 FROM attr_base a
 JOIN product_base p ON p.pk = a.pk
+JOIN sites s ON s.site_id = p.site_id;
+
+-- 변경 이력 조회 뷰 (D68) — 물리 pk 대신 (site, product_id)로 묻게 한다
+DROP VIEW IF EXISTS product_changes;
+CREATE VIEW product_changes AS
+SELECT s.name AS site, p.product_id, p.name AS 현재명,
+       h.field, h.old_value, h.new_value, h.changed_at,
+       r.run_id AS run_id,
+       h.id AS _rowid
+FROM product_history h
+JOIN product_base p ON p.pk = h.pk
+JOIN sites s ON s.site_id = p.site_id
+LEFT JOIN runs r ON r.id = h.run_id;
+
+DROP VIEW IF EXISTS attr_changes;
+CREATE VIEW attr_changes AS
+SELECT s.name AS site, p.product_id, h.attr_name,
+       h.old_value, h.new_value, h.old_basis, h.new_basis, h.changed_at,
+       h.id AS _rowid
+FROM attr_history h
+JOIN product_base p ON p.pk = h.pk
 JOIN sites s ON s.site_id = p.site_id;
 """
 
@@ -656,6 +719,18 @@ END;
 
 DROP TRIGGER IF EXISTS trg_attr_ins;
 CREATE TRIGGER trg_attr_ins INSTEAD OF INSERT ON product_attributes BEGIN
+  -- 값이 실제로 바뀌는 업서트면 이전 값을 이력에 남긴다 (D68). 트리거에서
+  -- 하는 이유: 속성 쓰기(set-attrs·tag-lifecycle·적재·merge)가 전부 이 뷰를
+  -- 지나므로 어느 경로도 이력을 빠뜨리지 못한다.
+  INSERT INTO attr_history (pk, attr_name, old_value, new_value,
+                            old_basis, new_basis, changed_at)
+  SELECT a.pk, a.attr_name, a.value, NEW.value, a.basis, NEW.basis,
+         COALESCE(NEW.decided_at, datetime('now'))
+  FROM attr_base a
+  WHERE a.attr_name = NEW.attr_name
+    AND a.pk = (SELECT p.pk FROM product_base p JOIN sites s ON s.site_id=p.site_id
+                WHERE s.name=NEW.site AND p.product_id=NEW.product_id)
+    AND a.value IS NOT NEW.value;
   INSERT INTO attr_base (pk, attr_name, value, basis, decided_at, ttl_days)
   VALUES (
     (SELECT p.pk FROM product_base p JOIN sites s ON s.site_id=p.site_id
@@ -671,6 +746,15 @@ END;
 
 DROP TRIGGER IF EXISTS trg_attr_upd;
 CREATE TRIGGER trg_attr_upd INSTEAD OF UPDATE ON product_attributes BEGIN
+  INSERT INTO attr_history (pk, attr_name, old_value, new_value,
+                            old_basis, new_basis, changed_at)
+  SELECT a.pk, a.attr_name, a.value, NEW.value, a.basis, NEW.basis,
+         COALESCE(NEW.decided_at, datetime('now'))
+  FROM attr_base a
+  WHERE a.attr_name = OLD.attr_name
+    AND a.pk = (SELECT p.pk FROM product_base p JOIN sites s ON s.site_id=p.site_id
+                WHERE s.name=OLD.site AND p.product_id=OLD.product_id)
+    AND a.value IS NOT NEW.value;
   UPDATE attr_base SET value=NEW.value, basis=NEW.basis,
     decided_at=CAST(strftime('%%s',NEW.decided_at) AS INTEGER), ttl_days=NEW.ttl_days
   WHERE attr_name=OLD.attr_name AND pk=(
@@ -828,6 +912,73 @@ def split_url(conn, url, cache):
     if j < 0:                       # `https://cdn.x.com` — 경로가 없다. 전체가 호스트
         return _dim(conn, "hosts", "host_id", "prefix", s, cache), ""
     return _dim(conn, "hosts", "host_id", "prefix", s[:j], cache), s[j:]
+
+
+# ── 프록시 전이 이력·무효화 (D68) ──────────────────────────────────────────
+def invalidate_material_proxies(pconn, site, product_id, material, new_fp, now):
+    """재료(상품명·이미지)가 바뀐 상품의 옛 판정을 무효화한다.
+
+    지문 불일치만으로도 재판정은 일어나지만(lazy가 miss로 본다), 옛 행이 캐시에
+    남으면 "언제 어떤 값에서 바뀌었나"를 물을 수 없다. 옛 판정을 **재판정 대기
+    이력**(new_value NULL)으로 옮기고 캐시에서 지운다 — 다음 판정이
+    record_proxy_transition()으로 그 행을 완성한다.
+    """
+    rows = pconn.execute(
+        "SELECT c.proxy_name, c.fingerprint, c.value FROM proxy_cache c "
+        "JOIN proxy_defs d ON d.proxy_name = c.proxy_name "
+        "WHERE d.material=? AND c.site=? AND c.product_id=? AND c.fingerprint != ?",
+        (material, site, str(product_id), str(new_fp))).fetchall()
+    for r in rows:
+        pconn.execute(
+            "INSERT INTO proxy_history (proxy_name, site, product_id, old_value, "
+            "new_value, old_fingerprint, new_fingerprint, changed_at) "
+            "VALUES (?,?,?,?,NULL,?,?,?)",
+            (r["proxy_name"], site, str(product_id), r["value"],
+             r["fingerprint"], str(new_fp), now))
+        pconn.execute(
+            "DELETE FROM proxy_cache WHERE proxy_name=? AND site=? AND product_id=? "
+            "AND fingerprint=?",
+            (r["proxy_name"], site, str(product_id), r["fingerprint"]))
+    return len(rows)
+
+
+def record_proxy_transition(pconn, proxy_name, site, product_id, new_fp, new_val, now):
+    """새 판정을 캐시에 쓰기 **직전에** 이전 판정과의 전이를 이력으로 남긴다.
+
+    ① 무효화가 남긴 재판정 대기 행(new_value NULL, 같은 새 지문)이 있으면 완성한다
+    ② 아니면 캐시의 최신 판정과 비교해 값·지문이 달라졌으면 이력을 쓰고,
+       옛 지문 행을 정리한다(다지문 누적 방지 — 최신 판정만 캐시에 남는다)
+    같은 값·같은 지문이면 아무것도 안 한다 — 이력은 전이만 담는다.
+    """
+    pending = pconn.execute(
+        "SELECT id FROM proxy_history WHERE proxy_name=? AND site=? AND product_id=? "
+        "AND new_value IS NULL AND new_fingerprint=? ORDER BY id DESC LIMIT 1",
+        (proxy_name, site, str(product_id), str(new_fp))).fetchone()
+    if pending:
+        pconn.execute("UPDATE proxy_history SET new_value=?, changed_at=? WHERE id=?",
+                      (new_val, now, pending[0]))
+        return
+    old = pconn.execute(
+        "SELECT fingerprint, value FROM proxy_cache WHERE proxy_name=? AND site=? "
+        "AND product_id=? ORDER BY judged_at DESC, rowid DESC LIMIT 1",
+        (proxy_name, site, str(product_id))).fetchone()
+    if old is None:
+        return                       # 첫 판정 — 전이가 아니다
+    if old["fingerprint"] == str(new_fp) and old["value"] == new_val:
+        return
+    pconn.execute(
+        "INSERT INTO proxy_history (proxy_name, site, product_id, old_value, "
+        "new_value, old_fingerprint, new_fingerprint, changed_at) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (proxy_name, site, str(product_id), old["value"], new_val,
+         old["fingerprint"], str(new_fp), now))
+    # 이 키의 캐시를 **전부** 비운다 — 호출부가 바로 새 판정을 넣는다. 지문이
+    # 같고 값만 정정된 경우(rule 수정 후 재판정)에 옛 지문만 지우면 옛 값 행이
+    # PK 충돌로 살아남아, 이력은 "바뀌었다"는데 캐시는 옛 값을 서빙한다
+    # (PR #14 리뷰 Blocker).
+    pconn.execute(
+        "DELETE FROM proxy_cache WHERE proxy_name=? AND site=? AND product_id=?",
+        (proxy_name, site, str(product_id)))
 
 
 # ── 증분 키 (`_rowid`) — v2와 같은 규약 ────────────────────────────────────

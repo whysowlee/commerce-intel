@@ -998,6 +998,152 @@ def check_run_tests():
     shutil.rmtree(work, ignore_errors=True)
 
 
+def history_tests():
+    """상품 정적 속성 이력 + 프록시 재판정 체인 (D68 · E-DB-37·38).
+
+    핵심 시나리오: 같은 상품을 다른 이름으로 두 번 적재 → product_history에
+    전이가 남고, name 재료 프록시 캐시가 재판정 대기 이력으로 옮겨지며, 다음
+    판정이 그 대기 행을 완성한다.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    intel_db = importlib.import_module("intel_db")
+    schema_v3 = importlib.import_module("schema_v3")
+    work = Path(tempfile.mkdtemp(prefix="hist-"))
+    db = str(work / "h.db")
+    conn = intel_db.connect(db)
+
+    # name 재료 프록시: 정의 + 첫 이름 기준 판정 1건
+    pp = schema_v3.proxy_db_path(db)
+    pconn = schema_v3.proxy_connect(pp)
+    pconn.execute(
+        "INSERT INTO proxy_defs (proxy_name, question, material, value_space, "
+        "method, created_at) VALUES ('name_lang','언어?','name',"
+        "'[\"한국어\",\"영문\"]','rule','2026-08-05')")
+    pconn.execute("INSERT INTO proxy_cache VALUES "
+                  "('name_lang','musinsa','P1','OLD NAME','영문','rule',"
+                  "'2026-08-05 09:00:00')")
+    pconn.commit()
+    pconn.close()
+
+    def load(name, cat, ts):
+        raw = {"meta": {"schema_version": "1.0", "site": "musinsa",
+                        "story": "brand-linesheet", "target": "T",
+                        "collected_at": ts, "item_count": 1},
+               "items": [{"product_id": "P1", "name": name, "brand": "브랜드",
+                          "category": cat, "url": "https://a.test/1",
+                          "image_url": "https://img.a.test/1.jpg",
+                          "price_sale": 10000}]}
+        f = work / f"{ts[-8:].replace(':', '')}.json"
+        f.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+        intel_db.load_file(conn, f, quiet=True, db_path=db)
+
+    load("OLD NAME", "상의 > 티셔츠", "2026-08-05 10:00:00")
+    load("OLD NAME", "상의 > 티셔츠", "2026-08-05 10:30:00")   # 같은 값 재수집
+    check("E-DB-37 같은 값 재적재는 이력을 만들지 않는다",
+          conn.execute("SELECT COUNT(*) FROM product_history").fetchone()[0] == 0)
+
+    load("NEW NAME", "상의 > 티셔츠", "2026-08-05 11:00:00")   # 이름 변경
+    rows = conn.execute("SELECT field, old_value, new_value, run_id "
+                        "FROM product_history").fetchall()
+    check("E-DB-37b 다른 이름 재적재 → name 전이 1행 (run_id 연결)",
+          len(rows) == 1 and rows[0]["field"] == "name"
+          and rows[0]["old_value"] == "OLD NAME"
+          and rows[0]["new_value"] == "NEW NAME"
+          and isinstance(rows[0]["run_id"], int),
+          [dict(r) for r in rows])
+    v = conn.execute("SELECT field, old_value, new_value FROM product_changes "
+                     "WHERE site='musinsa' AND product_id='P1'").fetchone()
+    check("E-DB-37c product_changes 뷰가 (site, product_id)로 편다",
+          v and v["field"] == "name" and v["old_value"] == "OLD NAME", tuple(v or ()))
+
+    # 프록시 무효화: 캐시가 비고 대기 이력(new_value NULL)이 남았다
+    pconn = schema_v3.proxy_connect(pp)
+    left = pconn.execute("SELECT COUNT(*) FROM proxy_cache").fetchone()[0]
+    ph = pconn.execute("SELECT old_value, new_value, old_fingerprint, "
+                       "new_fingerprint FROM proxy_history").fetchall()
+    check("E-DB-38 이름 변경이 name 재료 프록시 캐시를 무효화한다 (캐시 0행)",
+          left == 0, left)
+    check("E-DB-38b 옛 판정은 재판정 대기 이력으로 남는다 (new_value NULL)",
+          len(ph) == 1 and ph[0]["old_value"] == "영문"
+          and ph[0]["new_value"] is None
+          and ph[0]["new_fingerprint"] == "NEW NAME", [dict(r) for r in ph])
+
+    # 재판정(다음 판정)이 대기 행을 완성한다
+    schema_v3.record_proxy_transition(pconn, "name_lang", "musinsa", "P1",
+                                      "NEW NAME", "영문", "2026-08-05 12:00:00")
+    pconn.execute("INSERT OR IGNORE INTO proxy_cache VALUES "
+                  "('name_lang','musinsa','P1','NEW NAME','영문','rule',"
+                  "'2026-08-05 12:00:00')")
+    pconn.commit()
+    ph = pconn.execute("SELECT new_value FROM proxy_history").fetchall()
+    check("E-DB-38c 재판정이 대기 행을 완성한다 (행 추가 없이 new_value 채움)",
+          len(ph) == 1 and ph[0][0] == "영문", [tuple(r) for r in ph])
+    # 같은 값·같은 지문 재판정은 이력을 만들지 않는다
+    schema_v3.record_proxy_transition(pconn, "name_lang", "musinsa", "P1",
+                                      "NEW NAME", "영문", "2026-08-05 13:00:00")
+    check("E-DB-38d 같은 값·지문 재판정은 이력 무변화",
+          pconn.execute("SELECT COUNT(*) FROM proxy_history").fetchone()[0] == 1)
+    # 같은 지문·다른 값(정정 재판정) — 이력이 남고 캐시도 새 값을 서빙해야 한다.
+    # 옛 지문만 지우면 옛 값 행이 PK 충돌로 살아남아 캐시가 옛 값에 고정된다
+    # (PR #14 리뷰 Blocker — 호출부 둘 다 INSERT OR IGNORE/IntegrityError 무시).
+    schema_v3.record_proxy_transition(pconn, "name_lang", "musinsa", "P1",
+                                      "NEW NAME", "한국어", "2026-08-05 14:00:00")
+    pconn.execute("INSERT OR IGNORE INTO proxy_cache VALUES "
+                  "('name_lang','musinsa','P1','NEW NAME','한국어','rule',"
+                  "'2026-08-05 14:00:00')")
+    pconn.commit()
+    cur = pconn.execute("SELECT value FROM proxy_cache WHERE proxy_name='name_lang' "
+                        "AND site='musinsa' AND product_id='P1'").fetchall()
+    ph2 = pconn.execute("SELECT old_value, new_value FROM proxy_history "
+                        "ORDER BY id DESC LIMIT 1").fetchone()
+    check("E-DB-38e 같은 지문·다른 값 정정 — 캐시가 새 값 하나만 서빙한다",
+          len(cur) == 1 and cur[0][0] == "한국어", [tuple(r) for r in cur])
+    check("E-DB-38f 정정 전이가 이력에 남는다 (영문→한국어)",
+          ph2 and tuple(ph2) == ("영문", "한국어"), tuple(ph2 or ()))
+    pconn.close()
+
+    # 카테고리 재분류 — 기존 platform 매핑이 있는 상품에 처음 보는 리프
+    load("NEW NAME", "상의 > 셔츠", "2026-08-05 14:00:00")
+    cat = conn.execute("SELECT old_value, new_value FROM product_history "
+                       "WHERE field='category'").fetchone()
+    check("E-DB-37d 카테고리 재분류가 이력으로 남는다 (경로 문자열)",
+          cat and cat["old_value"] == "상의 > 티셔츠"
+          and cat["new_value"] == "상의 > 셔츠", tuple(cat or ()))
+
+    # attr 이력 — 뷰 트리거 캡처라 어느 쓰기 경로든 잡힌다
+    conn.execute("INSERT INTO product_attributes (site, product_id, attr_name, "
+                 "value, basis, decided_at) VALUES ('musinsa','P1','핏','와이드',"
+                 "'image','2026-08-05 10:00:00')")
+    conn.execute("INSERT INTO product_attributes (site, product_id, attr_name, "
+                 "value, basis, decided_at) VALUES ('musinsa','P1','핏','스트레이트',"
+                 "'image','2026-08-05 15:00:00')")
+    conn.commit()
+    ah = conn.execute("SELECT attr_name, old_value, new_value FROM attr_changes "
+                      "WHERE site='musinsa' AND product_id='P1'").fetchall()
+    check("E-DB-37e attr 변경이 attr_history에 남는다 (뷰 트리거 캡처)",
+          len(ah) == 1 and ah[0]["old_value"] == "와이드"
+          and ah[0]["new_value"] == "스트레이트", [dict(r) for r in ah])
+
+    # 멱등 업그레이드 — 이력 표를 지우고 다시 connect하면 되살아난다 (라이브 v3 경로)
+    conn.executescript("DROP VIEW product_changes; DROP VIEW attr_changes;"
+                       "DROP TABLE product_history; DROP TABLE attr_history;")
+    conn.commit()
+    conn.close()
+    conn = intel_db.connect(db)
+    tabs = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE name IN "
+        "('product_history','attr_history','product_changes','attr_changes')")}
+    check("E-DB-37f 기존 v3 DB도 connect()가 이력 표·뷰를 멱등 생성한다",
+          len(tabs) == 4, sorted(tabs))
+    # 업그레이드는 1회다 — 표가 갖춰진 뒤에는 connect가 SCHEMA_V3를 다시 보내지
+    # 않는다 (PR #14 리뷰: 매 connect마다 DDL 27줄을 Turso로 왕복시키면 안 된다)
+    check("E-DB-37g 표가 갖춰지면 스키마 업그레이드가 더는 필요 없다",
+          intel_db._needs_schema_upgrade(conn) is False)
+    conn.close()
+    shutil.rmtree(work, ignore_errors=True)
+
+
 def modeling_role_tests():
     """그룹 비교의 Y 선정 (D51) — 공급자가 정한 값은 Y로 안 쓴다."""
     sys.path.insert(0, str(SCRIPTS))
@@ -1531,6 +1677,9 @@ def main():
 
     print("[21d] 3라운드 Blocker 회귀 — 이관·프록시 가드·lazy 격리 (E-MG·E-PA-13·E-LZ)")
     blocker3r_tests()
+
+    print("[21e] 상품 이력 + 프록시 재판정 체인 (D68 · E-DB-37·38)")
+    history_tests()
 
     print("[21b] 프록시 값 공간 위생 (D53 · E-PXS)")
     proxy_space_tests()

@@ -27,7 +27,7 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from schema_v3 import (category_path_map, open_db, proxy_connect,  # noqa: E402
-                       proxy_db_exists, proxy_db_path)
+                       proxy_db_exists, proxy_db_path, record_proxy_transition)
 
 # ── 동일 상품 매칭 ──────────────────────────────────────────────────────────
 # 규칙은 하나뿐이다: **정규화 상품명 완전일치.** 유사도·가격 보조 매칭은 금지다 —
@@ -597,6 +597,10 @@ def collect(db_path, contexts):
                 if isinstance(space, list) and val not in space:
                     continue                        # 값 공간 밖 — 정의가 계약이다
                 fp = str(fp_now if fp_now is not None else (it.get("name") or ""))
+                # 전이 이력 (D68) — 재료 변경으로 무효화된 판정의 대기 행을
+                # 완성하거나, 값이 실제로 바뀌었으면 old→new를 남긴다
+                record_proxy_transition(pconn, pn, it["site"],
+                                        it["product_id"], fp, val, now)
                 pconn.execute(
                     "INSERT OR IGNORE INTO proxy_cache VALUES (?,?,?,?,?,?,?)",
                     (pn, it["site"], str(it["product_id"]), fp, val, basis, now))

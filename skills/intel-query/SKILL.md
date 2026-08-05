@@ -37,8 +37,8 @@ REPL에서 Turso HTTP API로 직접 쿼리한다. HTTP 엔드포인트는 `libsq
 
 ```js
 async function queryDB(sql) {
-  const TURSO_URL = "여기에_TURSO_URL";        // 설치 시 실제 URL로 교체 (https://... 형태)
-  const TURSO_TOKEN = "여기에_읽기전용_토큰";   // 설치 시 실제 토큰으로 교체
+  const TURSO_URL = "https://commerce-intel-whysowlee.aws-ap-northeast-1.turso.io";
+  const TURSO_TOKEN = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicm8iLCJpYXQiOjE3ODU5MTQ4NDcsImlkIjoiMDE5ZmQwZDEtNTMwMS03NWM1LWE5OTUtNzZiNDk1NjI1ZWQ5Iiwia2lkIjoiXzZ1TjlGNnZkdW1XVVg1SkRUTXZQMV9qZVRpNDJrWTRxWHhNVFRFMm1hUSIsInJpZCI6Ijk4MjRhZDY1LTZhNDctNDQwZC04MmZmLTcxNmYyNzQ0NTg2MiJ9.ASxX32Y4MYVRt_aSTMulxAYENqOQFdvuzZUZ8asF1ZgnAvQr-uj4U53H9CjUXi0Jypw1lk4QiUTiYLiPUS1lCQ";
 
   const base = TURSO_URL.replace(/^libsql:\/\//, "https://");
   const res = await fetch(`${base}/v2/pipeline`, {
@@ -99,6 +99,8 @@ async function queryDB(sql) {
 - 수집이력(runs): id, run_id, site, story, target, collected_at, item_count
 - 관측속성(obs_attr): obs_id, attr_name, value, basis
 - 인사이트(insights): run_stamp, target, verdict(strong/weak/rejected), claim — 분석 리포트의 주장
+- 상품변경이력(product_changes 뷰, D68): site, product_id, 현재명, field(name/brand/category/url/image_url), old_value, new_value, changed_at, run_id — 정적 속성이 바뀔 때마다 append
+- 속성변경이력(attr_changes 뷰, D68): site, product_id, attr_name, old_value, new_value, old_basis, new_basis, changed_at
 
 ### 주요 관계
 - observations.site + product_id → products (같은 site, product_id로 조인)
@@ -116,6 +118,9 @@ async function queryDB(sql) {
 - 품절 현황: `WHERE sold_out = 1`
 - 카테고리별: product_categories JOIN categories (플랫폼 원본) 또는 product_attributes `WHERE attr_name LIKE 'ai_카테고리_%'` (AI 분류)
 - NULL은 "사이트가 안 보여준 값"이다 — 0과 다르다. 집계 시 `IS NOT NULL`로 거른다
+- 상품명이 바뀐 상품: `SELECT * FROM product_changes WHERE field='name' ORDER BY changed_at DESC LIMIT 50`
+- 카테고리 재분류: `SELECT * FROM product_changes WHERE field='category'` — 값은 '대 > 중 > 소' 경로 문자열
+- 이미지 교체 후 순위 변화: product_changes에서 `field='image_url'`인 상품·changed_at을 잡고, 같은 (site, product_id)의 observations를 changed_at 전/후로 나눠 rank를 비교한다
 
 ## 안전 규칙 (필수 준수)
 
