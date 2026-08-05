@@ -436,7 +436,9 @@ def action_hint(h):
         # ("아직 정하지 마라" + "지금 값으로 기획을 바꾸면 뒤집힐 수 있다")
         # 20~30개 카드에 똑같은 문장이 반복됐다 — 사용자 지적. 재확인 방법은
         # 관문마다 다르므로 그것만 남기고, 공통 경고는 섹션 머리말이 한 번 말한다.
-        return ["**아직 정하지 마라** — %s" % recheck_hint(h)]
+        # "아직 정하지 마라 — 다음 관측으로 재확인" 한 줄은 읽는 사람이 할 수 있는
+        # 일이 없다(D62). 왜 보류인지·뭘 하면 판정이 나는지를 카드 값으로 쓴다.
+        return recheck_lines(h)
 
     out = []
     kind = h.get("kind")
@@ -564,25 +566,81 @@ def _null_action(h):
     return ["이 조건은 %s에 영향이 없었다 — 다른 기준으로 자유롭게 정한다" % metric]
 
 
-def recheck_hint(h):
-    """약한 단서마다 "어떻게 재확인하나"를 한 줄로. 없으면 단서가 아니라 잡음이다.
+def recheck_lines(h):
+    """약한 단서마다 **왜 보류인지 + 뭘 하면 알 수 있는지**를 카드의 값으로 쓴다 (D62).
+
+    전신은 관문별 고정 한 줄이었다 — "다음 관측으로 재확인" 같은 문구는 읽는 사람이
+    할 수 있는 일이 없다(2026-08-05 사용자: "성의없게 쓰지 말고 재확인 할 수 있는
+    방안을 좀 더 쉽고 읽는 사람이 알 수 있게"). 세 가지를 지킨다:
+
+      1. **그 카드의 값이 들어간다** — 그룹 이름·효과 크기·n·기준. 일반론 금지
+      2. **읽는 사람이 할 일과 시스템이 할 일을 가른다** — "다음 수집 뒤 리포트를
+         다시 뽑으면 자동 재판정된다"는 시스템 몫이고, "이 질문이 궁금하면 지목해
+         달라"는 사람 몫이다. 섞어 쓰면 둘 다 안 한다
+      3. **끝맺음이 있다** — "그때도 이 수준이면 차이 없음으로 접는다"까지. 보류가
+         영원히 보류로 남지 않게 종료 조건을 적는다
 
     **관문은 코드로 가른다**(`fail_codes`) — 한글 문구 매칭은 gate()의 문구를 다듬는
-    날 이 함수만 조용히 오분류된다(PR #9 리뷰). `null_findings`는 이미 코드로 갔는데
-    여기만 남아 있었다. 코드가 없는 옛 항목은 문구로 폴백한다.
+    날 조용히 오분류된다(PR #9 리뷰). 코드가 없는 옛 항목은 문구로 폴백한다.
     """
     codes = h.get("fail_codes") or []
     fails = h.get("fails") or []
     has = lambda code, word: (code in codes) if codes else any(word in f for f in fails)
+    is_corr = h.get("kind") in ("correlation", "dose_response")
+    # 카드의 값들 — 문장에 그대로 박는다
+    a, b = h.get("group_a") or h.get("x_label") or "한쪽",            h.get("group_b") or h.get("y_label") or "다른 쪽"
+    metric = h.get("metric_label") or h.get("y_label") or "지표"
+    eff = abs(h.get("effect") or 0)
+    thr = 0.25 if is_corr else 0.30
+    n = h.get("n") or 0
+    out = []
+
+    if has("effect_small", "효과 크기가 작다"):
+        out.append("「%s」와 「%s」의 %s 차이가 실제로 있긴 한데 **크기가 작다**"
+                   "(%.2f — 판정 기준 %.2f). 이 정도로는 기획을 바꿀 근거가 안 된다. "
+                   "다음 수집 뒤 리포트를 다시 뽑아 차이가 커졌는지 보고, **그때도 이 "
+                   "수준이면 '차이 없음'으로 접는다**" % (a, b, metric, eff, thr))
     if has("sample", "표본이 작다"):
-        return "표본이 쌓이면 다시 본다 — 다음 수집 후 재확인"
+        na, nb = h.get("n_a"), h.get("n_b")
+        who = ("「%s」 %s개 대 「%s」 %s개" % (a, "{:,}".format(na or 0),
+                                          b, "{:,}".format(nb or 0))
+               if na is not None else "%s건" % "{:,}".format(n))
+        out.append("표본이 %s뿐이라 **우연과 못 가른다**(기준 20건 이상). 상품이 더 "
+                   "모이면 자동 재판정된다 — 다음 수집에서 이 카테고리를 한 번 더 "
+                   "훑으면 충분하다. 급하면 **적은 쪽 그룹만 겨냥해 수집을 요청**해라"
+                   % who)
     if has("holdout", "홀드아웃"):
-        return "다음 관측 주기에 같은 방향이 나오는지 확인"
-    if has("segment", "세그먼트"):
-        return "해당 세그먼트만 따로 수집해 표본을 키운 뒤 재검정"
+        out.append("확인차 데이터를 반으로 나눠 다시 쟀더니 **방향이 흔들렸다** — "
+                   "절반의 우연이 만든 패턴일 수 있다. 다음 수집분이 들어와 리포트를 "
+                   "다시 뽑으면 새 데이터로 자동 재확인된다. **새 데이터에서도 같은 "
+                   "방향이면 그때 믿는다**")
     if has("fdr", "다중비교"):
-        return "이 가설만 단독으로 검정하면 유의할 수 있다 — 목적을 정하고 재검정"
-    return "다음 관측으로 재확인"
+        out.append("이번 리포트는 가설 수백 개를 한꺼번에 검정했다 — 많이 뽑으면 "
+                   "우연히 통과하는 게 반드시 나와서 보정을 거는데, 이 발견이 거기 "
+                   "걸렸다. **이 질문이 진짜 궁금하면 지목해 달라** — 이것만 단독으로 "
+                   "재검정하면 우연 기준이 느슨해져 판정이 난다")
+    if has("segment", "세그먼트"):
+        # gate()가 남긴 세그먼트 이름을 문장에서 건진다 — "카테고리=미니에서 …"
+        segs = [f.split("에서")[0] for f in fails if "사라지거나 뒤집힌다" in f][:2]
+        seg_txt = "·".join(segs) if segs else "일부 그룹"
+        out.append("전체로는 관계가 보이는데 **%s에서는 사라지거나 뒤집힌다** — 전체 "
+                   "평균을 믿지 말고 그룹을 나눠 따로 읽어라. 어느 쪽이 진짜인지는 "
+                   "그 그룹 표본이 더 쌓여야 갈린다" % seg_txt)
+    if has("vanity", "누적 지표"):
+        out.append("%s와 %s는 둘 다 **오래 판 상품일수록 같이 커지는 누적값**이다 — "
+                   "관계가 아니라 나이 효과일 수 있다. 관측이 두 시점 이상 쌓이면 "
+                   "그 사이 **증가분끼리** 다시 비교한다" % (a, b))
+    if has("no_p", "p값을 계산하지"):
+        out.append("이 유형은 우연 여부를 재는 검정이 없다 — 방향 참고까지만 쓴다")
+    if not out:
+        out.append("다음 수집 뒤 리포트를 다시 뽑으면 자동 재검정된다 — "
+                   "그때도 보류면 잊어도 된다")
+    return out[:3]      # 관문 셋 이상 걸린 카드는 어차피 상세로 간다 — 지면 보호
+
+
+def recheck_hint(h):
+    """recheck_lines의 문자열판 — DB `recheck` 컬럼·옛 호출부 호환용."""
+    return " · ".join(recheck_lines(h))
 
 
 # ── 실행 ────────────────────────────────────────────────────────────────────
@@ -946,7 +1004,9 @@ def _detail_body(d, h):
         d.h3("통과하지 못한 관문")
         for f in h["fails"]:
             d.para("· " + f, style="small")
-        d.para("**재확인 방법**: " + recheck_hint(h), style="small")
+        d.h3("재확인 방법")
+        for line in recheck_lines(h):
+            d.para("· " + line, style="small")
 
     if h["kind"] == "correlation" and h.get("trend"):
         d.h3("구간별 추이")

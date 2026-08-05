@@ -657,10 +657,13 @@ def modeling_tests():
     # E-MD-9 액션은 약한 단서에 확정적으로 붙지 않는다
     weak = {"verdict": "weak", "kind": "group_compare", "cat_field": "brand",
             "fails": ["표본이 작다"]}
-    # D51에서 action_hint가 문자열 → 여러 줄(list)로 바뀌었다 — 첫 줄을 본다
-    check("E-MD-9 약한 단서의 액션은 '아직 정하지 마라'로 시작한다",
-          ins.action_hint(weak)[0].lstrip("*").startswith("아직 정하지 마라"),
-          ins.action_hint(weak))
+    # D62 개정 — "아직 정하지 마라" 상투구 대신 **왜 보류인지 + 재확인 방법**을
+    # 카드 값으로 쓴다. 계약은 "확정적으로 굴지 않는다"이지 특정 문구가 아니다:
+    # 판정을 미루는 이유가 있고, 실행 지시("높여라" 류)가 없으면 된다
+    got9 = ins.action_hint(weak)
+    check("E-MD-9 약한 단서의 액션은 판정을 미룬다 (확정 지시 없음)",
+          any(("못 가른다" in l or "우연" in l or "보류" in l) for l in got9)
+          and not any("높여라" in l or "낮춰라" in l for l in got9), got9)
     resp = {"verdict": "strong", "kind": "correlation", "direction": "response_pair",
             "x_label": "하트", "y_label": "후기 수"}
     check("E-MD-10 반응끼리의 상관은 액션에서 선후를 단정하지 않는다",
@@ -691,13 +694,29 @@ def modeling_tests():
           any("데이터가 답하지 않는다" in l for l in got)
           and not any("폭을 정할 때 참고" in l for l in got), got)
 
-    # E-MD-16 recheck_hint도 코드로 가른다 (문구가 바뀌어도 안 흔들린다)
-    r_coded = {"fails": ["문구를 바꿨다"], "fail_codes": ["sample"]}
-    check("E-MD-16 recheck_hint가 fail_codes를 본다",
-          "표본이 쌓이면" in ins.recheck_hint(r_coded), ins.recheck_hint(r_coded))
-    r_old = {"fails": ["표본이 작다 (n=3 < 20)"]}     # 코드 없는 옛 항목은 폴백
+    # E-MD-16 recheck는 코드로 가른다 (문구가 바뀌어도 안 흔들린다) — D62로
+    # 문구가 카드 값 포함 여러 줄이 됐으므로, 특정 문구가 아니라 **관문에 맞는
+    # 종류의 안내인지**를 본다
+    r_coded = {"fails": ["문구를 바꿨다"], "fail_codes": ["sample"], "n": 3}
+    check("E-MD-16 recheck가 fail_codes를 본다",
+          "우연과 못 가른다" in ins.recheck_hint(r_coded), ins.recheck_hint(r_coded))
+    r_old = {"fails": ["표본이 작다 (n=3 < 20)"], "n": 3}   # 코드 없는 옛 항목은 폴백
     check("E-MD-17 코드가 없으면 문구로 폴백한다",
-          "표본이 쌓이면" in ins.recheck_hint(r_old), ins.recheck_hint(r_old))
+          "우연과 못 가른다" in ins.recheck_hint(r_old), ins.recheck_hint(r_old))
+
+    # E-MD-18 재확인 안내에 **그 카드의 값**이 들어간다 (D62) — "다음 관측으로
+    # 재확인" 같은 일반론은 읽는 사람이 할 수 있는 일이 없다
+    r_val = {"verdict": "weak", "kind": "group_compare",
+             "fail_codes": ["effect_small"], "group_a": "진청", "group_b": "중청",
+             "metric_label": "후기 수", "effect": 0.22, "n": 180}
+    lines = ins.recheck_lines(r_val)
+    check("E-MD-18 재확인 안내에 카드 값이 들어간다",
+          any("진청" in l and "후기 수" in l and "0.22" in l for l in lines), lines)
+    check("E-MD-18b 종료 조건이 있다 — 보류가 영원히 보류로 안 남게",
+          any("접는다" in l or "그때 믿는다" in l or "판정이 난다" in l
+              for l in lines), lines)
+    check("E-MD-18c 일반론 상투구가 아니다",
+          not any(l.strip() == "다음 관측으로 재확인" for l in lines))
 
 
 def incremental_key_tests():
