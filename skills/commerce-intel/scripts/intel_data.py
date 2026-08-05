@@ -397,7 +397,7 @@ def num_axes(data):
 # 동적 속성의 **사람이 읽는 이름** (D56 3차 피드백). `attr_brand_survival`이
 # "brand_survival에서 survivor는 dropped보다…"로 그대로 찍혔다 — 읽는 사람이
 # 알 수 없다. 수집 도구가 영문 코드로 쓰는 속성만 여기 옮긴다. 값 라벨의 정의는
-# `생존 편향 제거.md` 사용자 정의(생존=주간 상위30 · 이탈=월간엔 있었으나 주간엔 없음).
+# `docs/survival-bias-removal.md` 사용자 정의(생존=주간 상위30 · 이탈=월간엔 있었으나 주간엔 없음).
 ATTR_LABELS = {"brand_survival": "브랜드 랭킹 생존"}
 ATTR_VALUE_LABELS = {
     "attr_brand_survival": {"survivor": "생존(주간 상위30 잔류)",

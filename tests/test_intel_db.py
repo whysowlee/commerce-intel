@@ -913,6 +913,80 @@ def readability_tests():
     check("E-RD-19 전환 축은 비율로 표기", "비율(%)" in note2, note2)
 
 
+def proxy_space_tests():
+    """값 공간 위생 3겹 (D53) — 적재 가드 · proxy-audit exit 계약 · 읽기 안전망.
+
+    셋 다 [자동] 표기인데 자동 테스트가 없었다(PR #12 리뷰 3). exit 코드는
+    subprocess로 본다 — cmd_proxy_audit의 **반환값**이 아니라 **프로세스 종료
+    코드**가 계약이고, 정확히 그 배선이 끊겨 있었다(리뷰 1 — main()이 반환값을
+    버려 오염을 찾아도 exit 0이었다).
+    """
+    import tempfile
+    work = Path(tempfile.mkdtemp())
+    db = str(work / "px.db")
+    run([SCRIPTS / "intel_db.py", "--db", db, "init"], work, db)
+    con = sqlite3.connect(db)
+    con.execute("INSERT INTO products (site, product_id, name) VALUES ('musinsa','1','상품 A')")
+    con.execute("INSERT INTO proxy_defs (proxy_name, question, material, value_space, method, created_at) "
+                "VALUES ('name_lang','q','name','[\"영문\",\"한국어\"]','rule','2026-08-05')")
+    con.execute("INSERT INTO proxy_cache VALUES ('name_lang','musinsa','1','상품 A','화성어','b','2026-08-05')")
+    con.commit(); con.close()
+
+    # E-PXS-2 — 오염이면 exit 2, --fix 후 0. 반환값이 아니라 프로세스 코드다
+    r = run([SCRIPTS / "intel_db.py", "--db", db, "proxy-audit"], work, db)
+    check("E-PXS-2 오염 DB에서 proxy-audit exit 2", r.returncode == 2,
+          "exit=%d stdout=%s" % (r.returncode, r.stdout.strip()[:60]))
+    r = run([SCRIPTS / "intel_db.py", "--db", db, "proxy-audit", "--fix"], work, db)
+    check("E-PXS-2b --fix는 지우고 exit 0", r.returncode == 0, r.returncode)
+    r = run([SCRIPTS / "intel_db.py", "--db", db, "proxy-audit"], work, db)
+    check("E-PXS-2c 청소 후 exit 0", r.returncode == 0, r.returncode)
+
+    # E-PXS-1 — 순서만 바뀐 재적재는 캐시를 안 지우고, 실질 변경은 지운다
+    con = sqlite3.connect(db)
+    con.execute("INSERT INTO proxy_cache VALUES ('name_lang','musinsa','1','상품 A','영문','b','2026-08-05')")
+    con.commit(); con.close()
+    reorder = work / "reorder.json"
+    reorder.write_text(json.dumps({
+        "proxy": {"proxy_name": "name_lang", "question": "q", "material": "name",
+                  "value_space": ["한국어", "영문"], "method": "rule"},
+        "judgments": []}, ensure_ascii=False), encoding="utf-8")
+    run([SCRIPTS / "intel_db.py", "--db", db, "proxy-load", reorder], work, db)
+    con = sqlite3.connect(db)
+    n = con.execute("SELECT COUNT(*) FROM proxy_cache").fetchone()[0]
+    con.close()
+    check("E-PXS-1 원소 순서만 바뀐 값 공간은 캐시를 지우지 않는다", n == 1, n)
+    real = work / "real.json"
+    real.write_text(json.dumps({
+        "proxy": {"proxy_name": "name_lang", "question": "q", "material": "name",
+                  "value_space": ["한국어", "영문", "혼합"], "method": "rule"},
+        "judgments": []}, ensure_ascii=False), encoding="utf-8")
+    r = run([SCRIPTS / "intel_db.py", "--db", db, "proxy-load", real], work, db)
+    con = sqlite3.connect(db)
+    n = con.execute("SELECT COUNT(*) FROM proxy_cache").fetchone()[0]
+    con.close()
+    check("E-PXS-1b 실질 변경은 옛 캐시를 버리고 그 사실을 찍는다",
+          n == 0 and "버린다" in r.stdout, "n=%d stdout=%s" % (n, r.stdout.strip()[:60]))
+
+    # E-PXS-3 — 오염이 남은 채 분석에 들어가면 그 축을 통째로 뺀다 (읽기 안전망)
+    con = sqlite3.connect(db)
+    con.execute("INSERT INTO proxy_cache VALUES "
+                "('name_lang','musinsa','1','상품 A','금성어','b','2026-08-05')")
+    con.execute("INSERT INTO observations (site, product_id, observed_at, context, price_sale) "
+                "VALUES ('musinsa','1','2026-08-05 10:00:00','brand:테스트',1000)")
+    con.commit(); con.close()
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    intel_data = importlib.import_module("intel_data")
+    data = intel_data.collect(db, None)
+    meta = next(p for p in data["meta"]["proxies"] if p["name"] == "name_lang")
+    check("E-PXS-3 값 공간 밖 값이 남은 축은 전 상품 미판정 처리",
+          all(it.get("px_name_lang") is None for it in data["items"]),
+          [it.get("px_name_lang") for it in data["items"]])
+    check("E-PXS-3b 왜 빠졌는지 off_space로 남긴다", "금성어" in (meta.get("off_space") or []),
+          meta.get("off_space"))
+    shutil.rmtree(work, ignore_errors=True)
+
+
 def survival_tests():
     """생존 편향 (D54) — 이탈 판정과 동적 속성 축."""
     sys.path.insert(0, str(SCRIPTS))
@@ -1204,6 +1278,9 @@ def main():
     print("[21] 문맥 문자열·역할 규칙 (D51)")
     context_tests()
     modeling_role_tests()
+
+    print("[21b] 프록시 값 공간 위생 (D53 · E-PXS)")
+    proxy_space_tests()
 
     print("[22] 축 위생 — 표기 변형·청중 편중 (D55)")
     axis_hygiene_tests()

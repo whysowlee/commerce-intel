@@ -819,8 +819,23 @@ def _proxy_load_one(conn, data):
     new_space = json.dumps(space, ensure_ascii=False)
     prev = conn.execute(
         "SELECT value_space FROM proxy_defs WHERE proxy_name=?", (name,)).fetchone()
+
+    def _space_changed(prev_json, cur):
+        """실질 변경만 본다 (PR #12 리뷰 7). JSON 문자열 비교는 리스트 원소
+        **순서**만 바뀌어도 변경으로 오판해 캐시를 지운다 — 과잉 드롭 방향이라
+        틀리진 않지만, 값 공간을 다듬을 때마다 판정이 통째로 날아간다.
+        리스트끼리는 집합으로 비교한다(값 공간에서 순서는 계약이 아니다 —
+        판정 검사도 `val not in space` 소속만 본다)."""
+        try:
+            old = json.loads(prev_json or "null")
+        except ValueError:
+            return True          # 못 읽는 옛 정의 — 바뀐 것으로 취급(안전한 방향)
+        if isinstance(old, list) and isinstance(cur, list):
+            return set(old) != set(cur)
+        return old != cur
+
     dropped = 0
-    if prev and prev[0] != new_space:
+    if prev and _space_changed(prev[0], space):
         # 정의가 바뀌었다 — 옛 판정은 다른 계약으로 만들어진 값이라 못 쓴다.
         # **조용히 섞느니 지운다.** 지웠다는 사실과 건수를 찍는다.
         dropped = conn.execute(
@@ -1080,7 +1095,10 @@ def main():
     elif args.cmd == "proxy-load":
         cmd_proxy_load(conn, args)
     elif args.cmd == "proxy-audit":
-        return cmd_proxy_audit(conn, args)
+        # `return`이 아니라 `sys.exit` — 진입점이 `main()` 반환값을 버려서
+        # 오염을 찾아도 프로세스는 0으로 끝났다(PR #12 리뷰 Blocker).
+        # E-PXS-2가 명시한 exit 2 계약은 check 커맨드와 같은 패턴으로만 지켜진다.
+        sys.exit(cmd_proxy_audit(conn, args))
     elif args.cmd == "export":
         cmd_export(conn, args)
     elif args.cmd == "stats":

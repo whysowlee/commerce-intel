@@ -24,7 +24,7 @@
 
 ## 한계 — 이것만으로 다 못 본다
 
-이 도구가 잡는 것은 **이탈**뿐이다. 문서(생존 편향 제거.md)가 나눈 4단계 중:
+이 도구가 잡는 것은 **이탈**뿐이다. 문서(docs/survival-bias-removal.md)가 나눈 4단계 중:
 
     이탈    랭킹에 있다가 빠짐          ← 이 도구
     미진입  자사 상품 중 랭킹에 못 든 것  ← 브랜드 라인시트 + 랭킹 대조
@@ -36,6 +36,7 @@
 "최근 1주에 약해졌다"이지 "한 달 내내 나빴다"가 아니다.
 """
 import argparse
+import collections
 import json
 import os
 import re
@@ -44,6 +45,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
+
+# 브랜드 표기 정규화는 intel_data.brand_key가 정본이다(D51) — 여기 복사하면
+# 규칙이 두 벌이 되고, 어긋나는 날 매칭이 조용히 갈린다.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "..", "skills", "commerce-intel", "scripts"))
+from intel_data import brand_key  # noqa: E402
 
 UA = "Claude-User/1.0 (+https://anthropic.com/claude-user)"
 RANK = "https://client.musinsa.com/api/home/web/v5/pans/ranking/sections/1054"
@@ -87,6 +94,8 @@ def brand_top(category, gf, period, n=TOP_N):
                               ((t.get("onClick") or {}).get("url") or ""))
                 if m and rank and rank not in seen:
                     seen[rank] = {"rank": rank, "slug": m.group(1),
+                                  # 오타가 아니다 — 실제 응답이 title 안에 title이
+                                  # 또 있다(섹션 title 객체 안에 텍스트 title 객체)
                                   "name": (t.get("title") or {}).get("text")}
             for v in o.values():
                 walk(v)
@@ -107,13 +116,17 @@ def to_attrs(items, products_json, attr_name="brand_survival"):
     브랜드로 뽑은 목록)에는 없다. 전수가 없으면 이탈 쪽 표본이 통째로 비어
     "생존자만 보는" 문제가 그대로 남는다.
     """
+    # **양쪽 다 brand_key로 정규화한다** (PR #12 리뷰 6). 랭킹의 브랜드명과 상품
+    # 목록의 브랜드명은 출처가 달라 표기가 갈릴 수 있고(D51 실측: 2000아카이브스/
+    # 2000Archives/2000 Archives), 원문 대조는 그 브랜드 상품을 **조용히 전부
+    # 떨어뜨린다** — D54가 막으려는 생존 편향과 같은 방식의 매칭 편향이다.
     state = {}
     for b in items:
         if b.get("name"):
-            state[b["name"]] = b["survival"]
+            state[brand_key(b["name"])] = b["survival"]
     out = []
     for x in products_json:
-        st = state.get(x.get("brand"))
+        st = state.get(brand_key(x.get("brand")))
         if not st:
             continue
         out.append({"site": "musinsa", "product_id": str(x["product_id"]),
@@ -194,12 +207,12 @@ def main():
     print("저장: %s" % a.out)
 
     if a.attrs_from and a.attrs_out:
-        src = json.load(open(a.attrs_from, encoding="utf-8"))
+        with open(a.attrs_from, encoding="utf-8") as fh:
+            src = json.load(fh)
         rows = to_attrs(items, src.get("items") or [])
         os.makedirs(os.path.dirname(a.attrs_out) or ".", exist_ok=True)
         with open(a.attrs_out, "w", encoding="utf-8") as fh:
             json.dump(rows, fh, ensure_ascii=False, indent=1)
-        import collections
         c = collections.Counter(r["value"] for r in rows)
         print("속성 %s건 — %s" % ("{:,}".format(len(rows)), dict(c)))
         print("  → intel_db.py set-attrs %s" % a.attrs_out)
