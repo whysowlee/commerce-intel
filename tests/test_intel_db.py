@@ -1119,6 +1119,10 @@ def history_tests():
         "('product_history','attr_history','product_changes','attr_changes')")}
     check("E-DB-37f 기존 v3 DB도 connect()가 이력 표·뷰를 멱등 생성한다",
           len(tabs) == 4, sorted(tabs))
+    # 업그레이드는 1회다 — 표가 갖춰진 뒤에는 connect가 SCHEMA_V3를 다시 보내지
+    # 않는다 (PR #14 리뷰: 매 connect마다 DDL 27줄을 Turso로 왕복시키면 안 된다)
+    check("E-DB-37g 표가 갖춰지면 스키마 업그레이드가 더는 필요 없다",
+          intel_db._needs_schema_upgrade(conn) is False)
     conn.close()
     shutil.rmtree(work, ignore_errors=True)
 

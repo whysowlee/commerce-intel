@@ -479,7 +479,12 @@ def proxy_connect(path):
         if str(parent) not in ("", "."):
             parent.mkdir(parents=True, exist_ok=True)
         conn = open_db(path)
-    conn.executescript(PROXY_SCHEMA)
+    # 가장 최근에 추가된 표(proxy_history — D68)가 없을 때만 DDL을 보낸다 —
+    # 매번 보내면 Turso 왕복 낭비다(PR #14 리뷰와 같은 이유). 표를 또 추가하면
+    # 이 마커도 그 표로 바꾼다.
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='proxy_history'").fetchone() is None:
+        conn.executescript(PROXY_SCHEMA)
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 

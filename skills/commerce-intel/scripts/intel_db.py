@@ -66,6 +66,20 @@ def _schema_version(conn):
     return 1
 
 
+# 스키마 추가분 마커 — **가장 최근에 SCHEMA_V3에 추가된 표**를 가리킨다. 이 표가
+# 없으면 구버전 v3라서 SCHEMA_V3를 한 번 돌려 따라잡는다(D68 무이관 업그레이드).
+# SCHEMA_V3에 표를 또 추가하면 이 마커도 그 표로 바꾼다 — 안 바꾸면 기존 DB가
+# 새 표를 영영 못 받는다.
+_SCHEMA_MARKER = "attr_history"
+
+
+def _needs_schema_upgrade(conn):
+    """기존 v3 DB에 나중에 추가된 표가 빠져 있는가 — True면 SCHEMA_V3를 1회 실행."""
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (_SCHEMA_MARKER,)).fetchone() is None
+
+
 def _is_view(conn, name):
     """그 이름이 뷰인가. **뷰에는 업서트를 못 쓴다**(옛 이름이 뷰가 됐다 — D45)."""
     row = conn.execute(
@@ -89,10 +103,12 @@ def connect(db_path):
             parent.mkdir(parents=True, exist_ok=True)
     conn = open_db(db_path)
     ver = _schema_version(conn)
-    if ver is None or ver == 3:
-        # 전부 IF NOT EXISTS라 멱등이다 — 기존 v3 DB(라이브·Turso)에 나중에 추가된
-        # 표(product_history 등 — D68)가 코드 갱신만으로 생기게 한다. 별도
-        # 마이그레이션이 필요한 변경(컬럼 제거·개명)은 여기가 아니라 migrate가 맡는다.
+    if ver is None or (ver == 3 and _needs_schema_upgrade(conn)):
+        # 새 DB이거나, 기존 v3에 나중에 추가된 표가 빠져 있을 때 **한 번만** 돈다
+        # (PR #14 리뷰 — 매 connect마다 돌리면 가벼운 조회까지 DDL 27줄을 Turso로
+        # 왕복시킨다). SCHEMA_V3는 전부 IF NOT EXISTS·DROP 없음이라 재실행 자체는
+        # 안전하지만, 필요할 때만 보낸다. 별도 마이그레이션이 필요한 변경
+        # (컬럼 제거·개명)은 여기가 아니라 migrate가 맡는다.
         conn.executescript(SCHEMA_V3)
     elif ver != 3:
         raise SystemExit(
