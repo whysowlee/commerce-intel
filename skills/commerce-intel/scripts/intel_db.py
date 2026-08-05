@@ -261,7 +261,7 @@ def load_file(conn, path, quiet=False, db_path=None):
     new_obs = dup_obs = n_var = n_oattr = 0
     # cache에 이번 적재의 컨텍스트를 싣는다 — _upsert_product가 변경 감지(D68)에
     # 쓴다. 프록시 커넥션은 첫 재료 변경 때 지연 생성한다(변경이 없으면 안 연다).
-    cache = {"_db_path": db_path or DEFAULT_DB}
+    cache = {"_db_path": db_path or DEFAULT_DB, "_conn": conn}
     for it in items:
         pid = str(it.get("product_id", "")).strip()
         if not pid:
@@ -287,10 +287,7 @@ def load_file(conn, path, quiet=False, db_path=None):
         except sqlite3.IntegrityError:
             dup_obs += 1
     conn.commit()
-    pconn = cache.get("_pconn")
-    if pconn:
-        pconn.commit()
-        pconn.close()
+    # D69: 프록시가 본 DB에 통합 — 별도 커넥션 닫기 불필요 (conn.commit()이 위에서 처리)
     if not quiet:
         var_msg = f", 옵션 관측 {n_var}건" if n_var else ""
         var_msg += f", 시점 속성 {n_oattr}건" if n_oattr else ""
@@ -1161,8 +1158,7 @@ def _merge_proxy(conn, src, args, stats):
         if len(ok) != len(rows):
             print("  ※ 정의 없는 판정 %d건은 건너뛰었다 (proxy_defs에 카드가 없다)"
                   % (len(rows) - len(ok)))
-    pconn.commit()
-    pconn.close()
+    # D69: pconn = conn이므로 별도 commit/close 불필요 (호출부의 conn이 처리)
 
 
 def main():
