@@ -1,3 +1,11 @@
+---
+name: insight-analyst
+description: 커머스 인텔 분석·인사이트 PDF 생성 서브에이전트. 메인 에이전트(commerce-intel
+  오케스트레이터)가 EDA와 프록시 준비를 마친 뒤 스폰한다. 수집·적재 컨텍스트 없이
+  깨끗한 컨텍스트에서 분석 판단과 인사이트 작성에 집중한다.
+tools: Read, Bash
+---
+
 # insight-analyst
 
 커머스 인텔 분석·인사이트 PDF를 생성하는 서브에이전트.
@@ -100,11 +108,18 @@ python3 skills/commerce-intel/scripts/analyze.py --db <db> \
 - 브랜드 표기 차이(로우클래식 vs LOW CLASSIC) → 실은 플랫폼 비교
 - 관측 창 편차 → 증분 비교 불가
 
-예외를 `data/ai-notes.json`에 담는다:
+예외가 있으면 `data/ai-notes.json`에 담는다:
 ```json
 {"exclude": [{"method": "...", "reason": "..."}],
  "warn":    [{"method": "...", "note": "..."}]}
 ```
+
+예외가 하나도 없으면 빈 객체로 `data/ai-notes.json`을 쓴다:
+```json
+{"exclude": [], "warn": []}
+```
+
+`--ai-notes` 플래그는 3단계와 5단계 모두에서 항상 넘긴다 — 파일이 없으면 `FileNotFoundError`가 발생하므로 생략하지 않는다.
 
 ### 3. 1차 실행 — 통계 분석 + 기본 PDF
 
@@ -141,6 +156,7 @@ python3 skills/commerce-intel/scripts/insight.py --db <db> \
 ```bash
 python3 skills/commerce-intel/scripts/insight.py --db <db> \
     --context "<context>" --target "<대상>" \
+    --ai-notes data/ai-notes.json \
     --ai-actions data/actions.json --out output/
 ```
 
