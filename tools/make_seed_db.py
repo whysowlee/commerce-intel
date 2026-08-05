@@ -30,8 +30,7 @@ SCRIPTS = ROOT / "skills" / "commerce-intel" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from intel_data import brand_key            # noqa: E402  (표기 정규화 — D51)
-from schema_v3 import (PROXY_SCHEMA, assign_category,  # noqa: E402  (v3 — D65)
-                       proxy_db_path)
+from schema_v3 import assign_category  # noqa: E402  (v3 — D65)
 
 SRC_DEFAULT = ROOT / "data" / "intel.db"
 OUT_DEFAULT = ROOT / "skills" / "commerce-intel" / "assets" / "seed-intel.db"
@@ -170,36 +169,8 @@ def copy_categories(src: sqlite3.Connection, dst_path: Path) -> int:
     return n
 
 
-def copy_proxy(src_db: Path, dst_path: Path) -> dict[str, int]:
-    """proxy.db(D65-8)에서 정의 전량 + 범위 상품의 판정만 seed 파일 안에 담는다.
 
-    seed는 한 파일로 나가는 게 계약이다 — 팀원의 `intel_db.py merge`가 이 표를
-    자기 proxy.db로 돌려 넣는다(_merge_proxy). 정본이 아직 v2(한 파일)면
-    copy_rows의 PRODUCT_SCOPED·WHOLE 경로가 이미 담았으므로 여기 올 일이 없다.
-    """
-    ppath = Path(proxy_db_path(str(src_db)))
-    if not ppath.exists():
-        return {}
-    dst = sqlite3.connect(dst_path)
-    if not dst.execute("SELECT 1 FROM sqlite_master WHERE name='proxy_defs'").fetchone():
-        dst.executescript(PROXY_SCHEMA)
-    dst.execute("ATTACH DATABASE ? AS px", (str(ppath),))
-    # 컬럼을 명시한다 — `SELECT *`는 두 DB의 컬럼 순서 일치를 암묵 가정한다
-    # (스키마가 한쪽만 늘면 조용히 어긋난다 — 이 파일의 다른 insert와 같은 규칙)
-    dcols = "proxy_name, question, material, value_space, method, created_at, label, rules"
-    ccols = "proxy_name, site, product_id, fingerprint, value, basis, judged_at"
-    n_def = dst.execute(
-        f"INSERT OR IGNORE INTO main.proxy_defs ({dcols}) "
-        f"SELECT {dcols} FROM px.proxy_defs").rowcount
-    n_cache = dst.execute(
-        f"INSERT OR IGNORE INTO main.proxy_cache ({ccols}) "
-        f"SELECT {ccols} FROM px.proxy_cache c "
-        "WHERE (c.site, c.product_id) IN (SELECT site, product_id FROM main.products)"
-    ).rowcount
-    dst.commit()
-    dst.execute("DETACH DATABASE px")
-    dst.close()
-    return {"proxy_defs": n_def, "proxy_cache": n_cache}
+# D69: copy_proxy 삭제 — 프록시가 본 DB에 통합됨 (copy_rows가 담당)
 
 
 def verify(dst_path: Path, src_path: Path) -> list[str]:
@@ -270,7 +241,7 @@ def main() -> int:
         n_brand, n_run = build_scope(src)
         counts = copy_rows(src, out_path)
         counts["product_categories"] = copy_categories(src, out_path)   # v3 (D65-3)
-        counts.update(copy_proxy(src_path, out_path))                   # v3 (D65-8)
+    # D69: copy_proxy 삭제 — 프록시가 본 DB copy_rows에 포함
         src.close()
         print(f"  범위 상품 — 브랜드(2000아카이브스) {n_brand} · 런(브랜드랭킹 상위30) {n_run}")
         for t, n in sorted(counts.items()):
