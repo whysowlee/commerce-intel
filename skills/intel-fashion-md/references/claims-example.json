@@ -5,7 +5,10 @@
       "id": "C1",
       "desc": "무신사 데님 팬츠(시장 스캔) 표본 수 — 최신 관측 기준",
       "table": "observations",
-      "filters": { "site": "musinsa.com", "context_prefix": "market:데님 팬츠" },
+      "filters": {
+        "site": "musinsa.com",
+        "context_prefix": "market:데님 팬츠"
+      },
       "latest_only": true,
       "observed_to": "2026-08-04T23:59:59",
       "metric": "count_rows",
@@ -15,7 +18,10 @@
       "id": "C2",
       "desc": "같은 표본의 price_sale 중앙값 (null 제외)",
       "table": "observations",
-      "filters": { "site": "musinsa.com", "context_prefix": "market:데님 팬츠" },
+      "filters": {
+        "site": "musinsa.com",
+        "context_prefix": "market:데님 팬츠"
+      },
       "latest_only": true,
       "observed_to": "2026-08-04T23:59:59",
       "metric": "median",
@@ -26,7 +32,10 @@
       "id": "C3",
       "desc": "funnel 비율: 조회 대비 하트 (sum(like)/sum(view), 둘 다 non-null 행만)",
       "table": "observations",
-      "filters": { "site": "musinsa.com", "context_prefix": "market:데님 팬츠" },
+      "filters": {
+        "site": "musinsa.com",
+        "context_prefix": "market:데님 팬츠"
+      },
       "latest_only": true,
       "observed_to": "2026-08-04T23:59:59",
       "metric": "ratio",
@@ -39,7 +48,11 @@
       "id": "C4",
       "desc": "핏별 price_sale 중앙값 (product_attributes '핏'=와이드 필터 예시)",
       "table": "observations",
-      "filters": { "site": "musinsa.com", "context_prefix": "market:데님 팬츠", "attr:핏": "와이드" },
+      "filters": {
+        "site": "musinsa.com",
+        "context_prefix": "market:데님 팬츠",
+        "attr:핏": "와이드"
+      },
       "latest_only": true,
       "observed_to": "2026-08-04T23:59:59",
       "metric": "median",
@@ -51,11 +64,35 @@
       "id": "C5",
       "desc": "할인 중 상품 비율 (discount_rate > 0 인 행의 share)",
       "table": "observations",
-      "filters": { "site": "musinsa.com", "context_prefix": "market:데님 팬츠", "discount_rate": { "op": ">", "value": 0 } },
+      "filters": {
+        "site": "musinsa.com",
+        "context_prefix": "market:데님 팬츠",
+        "discount_rate": {
+          "op": ">",
+          "value": 0
+        }
+      },
       "latest_only": true,
       "observed_to": "2026-08-04T23:59:59",
       "metric": "count_rows",
       "expected": 412
+    },
+    {
+      "id": "C6",
+      "desc": "스타일 단위 · 프록시 축 검증 (2026-08-04 확장) — 리포트의 그룹 비교는 스타일 단위다. style_fold 없이 재계산하면 정의가 달라 영원히 불일치한다",
+      "table": "observations",
+      "filters": {
+        "context_prefix": "market:데님팬츠(여성·브랜드랭킹 상위30)",
+        "px:denim_wash": "진청"
+      },
+      "latest_only": true,
+      "style_fold": true,
+      "observed_to": "2026-08-04T23:59:59",
+      "metric": "median",
+      "field": "purchase_band",
+      "expected": 300,
+      "min_n": 30,
+      "_비고": "px:<프록시명> 필터는 재료 지문이 현재 값과 맞는 판정만 쓴다. 그룹 판정은 접은 뒤 스타일 최빈값(리포트와 같은 정의). *_band 필드는 구간 하한이라 중앙값 비교까지만 유효하다"
     }
   ]
 }

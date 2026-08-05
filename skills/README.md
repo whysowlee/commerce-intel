@@ -78,6 +78,40 @@ Claude가 웹 요청을 보낼 수 있어야 하고, 브라우저 제어 도구(
 | `intel-insight` | 검증된 가설을 PDF로 만들어요 |
 | `platform-*` | 사이트별 수집 방법 (무신사·29CM·자사몰·W컨셉·그 외) |
 
+### 설치가 됐는지 꼭 한 번 확인해 주세요
+
+**스킬이 몇 개 빠져도 아무 에러가 안 납니다.** 그대로 쓰시면 "무신사에서 모아줘"가
+그냥 안 되거나 엉뚱하게 동작해요 (2026-08-04에 실제로 7개가 조용히 빠진 적이 있어요).
+
+아래를 그대로 붙여 넣어 주세요. **"빠짐:"이 하나도 안 나와야** 정상이에요.
+
+```bash
+for s in commerce-intel intel-collect intel-explore intel-fashion-md intel-insight \
+         intel-store platform-29cm platform-eql platform-generic platform-musinsa \
+         platform-musinsa-global platform-ownmall platform-skill-maker platform-ssf \
+         platform-wconcept; do
+  [ -f ~/.claude/skills/$s/SKILL.md ] || echo "빠짐: $s"
+done; echo "확인 끝"
+```
+
+빠진 게 있으면 압축 파일을 다시 풀어서 덮어써 주시고, 그래도 안 되면 알려 주세요.
+(프로젝트 폴더에만 설치하셨으면 위 경로의 `~/.claude`를 `<프로젝트>/.claude`로 바꿔서요.)
+
+### 함께 오는 데이터 (한 번만 합치시면 됩니다)
+
+빈 DB로 시작하지 않게 **일부 데이터를 같이 넣어 뒀어요.** 작업폴더에서 한 번 돌려 주세요.
+
+```bash
+python3 ~/.claude/skills/commerce-intel/scripts/intel_db.py merge \
+    ~/.claude/skills/commerce-intel/assets/seed-intel.db
+```
+
+- **2000아카이브스 전 제품**(무신사·29CM·자사몰)과 **여성 데님팬츠 브랜드랭킹 상위30
+  전수조사**가 들어 있어요. 상품 2,722개 · 관측 4,670건
+- 핏·소재 같은 **AI 판정 결과도 같이** 와요 — 같은 판단을 다시 하지 않아도 됩니다
+- 두 번 돌리셔도 안전해요(중복으로 쌓이지 않습니다). 이미 뭔가 모아 두셨어도 안전해요
+- 그 밖의 데이터는 각자 모으시는 게 맞습니다 — **필요한 것만 골라 담았어요**
+
 ### 승인 창을 없애려면 (선택)
 
 스킬이 스크립트를 돌릴 때마다 **"실행할까요?"** 창이 떠요. 매번 누르기 번거로우시면

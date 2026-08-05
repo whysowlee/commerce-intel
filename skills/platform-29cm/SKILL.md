@@ -1,6 +1,7 @@
 ---
 name: platform-29cm
-description: 29CM(29cm.co.kr)에서 상품·랭킹 데이터를 수집해 commerce-intel 데이터 계약
+description: >-
+  29CM(29cm.co.kr)에서 상품·랭킹 데이터를 수집해 commerce-intel 데이터 계약
   JSON을 만든다. 요청에 29cm/29CM/이십구센티미터가 명시되고 수집·정리·모니터링 태스크가
   함께 있을 때 쓴다. 예: "29cm에서 이 브랜드 상품 정리해줘", "29cm 여성 데님 전수조사",
   "29cm 여성슈즈 랭킹 추적". 다른 플랫폼 요청이나 상품 구매 대행에는 쓰지 않는다.

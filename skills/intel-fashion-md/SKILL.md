@@ -38,28 +38,17 @@ metadata:
 
 ---
 
-## Funnel 사고와 Y 선정 규칙 (피드백 §5)
+## 방법론은 여기 없다 — `analysis-context.md`가 정본이다
 
-funnel 상하 구조로 사고한다:
+Y 선정 규칙·퍼널 구조·비율의 함정·내생성은 **플랫폼과 무관한 방법론**이라
+`../commerce-intel/references/analysis-context.md` 한 곳에 있다. 여기 옮겨 적으면
+두 문서가 어긋나는 날 다음 세션이 어느 쪽을 사실로 읽을지 알 수 없다.
 
-```
-노출 → 조회(view_count) → 하트(like_count) → [장바구니: 미수집] → 결제(purchase_count)
-```
+한 줄로 줄이면 이렇다 — **공급자가 정한 값(가격·할인)은 Y가 아니다.** 코드로는
+D47·D51이 구현했고(`intel_data.role_of`), 그룹 비교·상관 양쪽에 걸려 있다.
 
-- **Y(종속변수) 후보**: funnel 하위 지표와 그 비율.
-  - `like_count / view_count` (조회 대비 하트)
-  - `purchase_count / view_count` (조회 대비 결제)
-  - `purchase_count / like_count` (하트 대비 결제)
-  - `review_count 증가분`, 사이즈 소진 속도(variant_observations)
-- **Y 금지**: 공급자(사람)가 설정하는 값 — `discount_rate`, `price_sale`,
-  `price_original`. 이들은 X(predictor)로만 쓴다.
-- **비율 계산 규칙**: 분자·분모가 둘 다 non-null인 행만 쓴다. 어느 한쪽이
-  null(미노출)이면 그 행은 제외하고 제외 건수를 병기한다. null을 0으로
-  바꾸지 않는다.
-- **상관 ≠ 인과**: 비율 차이는 관측이지 인과 주장이 아니다. DID·dose-response
-  등 방법 선택은 intel-insight 규칙표를 따른다.
-- **스케일링**: 지표 간 크기 비교가 필요하면 순위 기반(비모수) 방법을 우선한다
-  (stat_playbook의 Cliff δ, Spearman ρ — 이미 스케일에 강건).
+이 스킬이 갖는 것은 **패션 MD 도메인 지식**이다: 아래 비즈니스 질문과 프록시
+후보 풀, 그리고 수치 확정 검증.
 
 ---
 

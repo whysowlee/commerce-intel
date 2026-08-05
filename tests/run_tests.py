@@ -283,6 +283,125 @@ def main():
           and ds == sorted(set(ds)), "len=%d" % len(ds))
     check("D7b 48개 이하면 전부 그린다", idat.downsample_indices(48) == list(range(48)))
 
+    print("\n[E] 배포 가능성 — 스킬 프론트매터 (D57)")
+
+    # 프론트매터가 깨지면 팀원 환경에 **에러 없이 설치되지 않는다**. 2026-08-04에 7종이
+    # 그렇게 빠졌다. 배포 전에 여기서 잡는다.
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import validate_skills
+
+    broken = {d.name: errs for d in sorted((validate_skills.ROOT / "skills").iterdir())
+              if d.is_dir() and (errs := validate_skills.check(d))}
+    check("E1 모든 SKILL.md 프론트매터가 파싱된다", not broken, repr(broken)[:400])
+
+    fm_bad = 'name: x\ndescription: 어쩌고 예: "저쩌고"\n'
+    fm_ok = 'name: x\ndescription: >-\n  어쩌고 예: "저쩌고"\nmetadata:\n  cycle: "랭킹: 30분"\n'
+    check("E2 인용 없는 `: `를 잡는다", validate_skills.lint_plain_scalars(fm_bad))
+    check("E3 블록 스칼라·인용 값은 오탐하지 않는다",
+          not validate_skills.lint_plain_scalars(fm_ok),
+          repr(validate_skills.lint_plain_scalars(fm_ok)))
+
+    print("\n[F] 정본 부분 배포 — seed 범위 (D58)")
+
+    # 정본에서 **허용 범위만** 떼는 도구다. 새면 남의 데이터가 팀원에게 나간다 —
+    # 픽스처 DB(범위 안 2건 · 범위 밖 2건)로 범위 판정과 검산을 둘 다 확인한다.
+    import sqlite3
+    sys.path.insert(0, SCRIPTS)
+    import intel_db
+
+    src_p, out_p = out("seed-src.db"), out("seed-out.db")
+    c = intel_db.connect(src_p)          # 정본과 같은 경로로 스키마를 짓는다
+    c.execute("INSERT INTO runs (run_id, site, story, target, collected_at) "
+              "VALUES ('r-in','musinsa','market-scan','데님팬츠(여성·브랜드랭킹 상위30)','2026-08-04 00:00:00')")
+    c.execute("INSERT INTO runs (run_id, site, story, target, collected_at) "
+              "VALUES ('r-out','musinsa','market-scan','데님팬츠(남성)','2026-08-04 00:00:00')")
+    for pid, brand in (("p1", "2000 Archives"),      # 브랜드 범위 (표기 변형)
+                       ("p2", "남의브랜드"),           # 런 범위로만 들어와야 한다
+                       ("p3", "또다른브랜드"),         # 범위 밖 — 나가면 안 된다
+                       ("p4", "2000아카이브스")):
+        c.execute("INSERT INTO products (site, product_id, name, brand, category) "
+                  "VALUES ('musinsa',?,?,?,'데님팬츠')", (pid, "n-" + pid, brand))
+    c.execute("INSERT INTO observations (site, product_id, observed_at, context, run_id) "
+              "VALUES ('musinsa','p2','2026-08-04 00:00:00','market','r-in')")
+    c.execute("INSERT INTO observations (site, product_id, observed_at, context, run_id) "
+              "VALUES ('musinsa','p3','2026-08-04 00:00:00','market','r-out')")
+    c.execute("INSERT INTO insights (run_stamp, target, context, verdict, idx, claim) "
+              "VALUES ('s','자사','brand:2000아카이브스','strong',1,'주장')")
+    c.execute("INSERT INTO insights (run_stamp, target, context, verdict, idx, claim) "
+              "VALUES ('s','모자','ranking:모자','strong',1,'남의 주장')")
+    c.commit()
+    c.close()
+
+    rc = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "make_seed_db.py"),
+                         "--src", src_p, "--out", out_p], capture_output=True, text=True)
+    check("F1 seed 생성이 성공하고 검산을 통과한다",
+          rc.returncode == 0 and "검산 통과" in rc.stdout, rc.stdout + rc.stderr)
+
+    got = sqlite3.connect(out_p)
+    pids = {r[0] for r in got.execute("SELECT product_id FROM products")}
+    check("F2 브랜드 범위는 표기 변형까지 들어온다", {"p1", "p4"} <= pids, str(pids))
+    check("F3 허용 런에서 관측된 상품은 브랜드가 달라도 들어온다", "p2" in pids, str(pids))
+    check("F4 범위 밖 상품은 나가지 않는다", "p3" not in pids, str(pids))
+    obs_pids = {r[0] for r in got.execute("SELECT DISTINCT product_id FROM observations")}
+    check("F5 범위 밖 관측도 따라오지 않는다", "p3" not in obs_pids, str(obs_pids))
+    ctxs = {r[0] for r in got.execute("SELECT DISTINCT context FROM insights")}
+    check("F6 인사이트는 배포 범위 문맥만 간다", ctxs == {"brand:2000아카이브스"}, str(ctxs))
+    check("F7 시트 미러 상태(sync_state)는 배포하지 않는다",
+          got.execute("SELECT COUNT(*) FROM sync_state").fetchone()[0] == 0)
+    got.close()
+
+    # 검산이 실제로 잡는지 — seed에 범위 밖 상품을 손으로 넣고 --check를 돌린다
+    tainted = sqlite3.connect(out_p)
+    tainted.execute("INSERT INTO products (site, product_id, name, brand) "
+                    "VALUES ('musinsa','p9','n-p9','몰래끼운브랜드')")
+    tainted.commit()
+    tainted.close()
+    rc2 = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "make_seed_db.py"),
+                          "--src", src_p, "--out", out_p, "--check"],
+                         capture_output=True, text=True)
+    check("F8 범위 밖 행이 섞이면 검산이 실패한다(exit 1)",
+          rc2.returncode == 1 and "범위 밖 상품" in (rc2.stdout + rc2.stderr),
+          rc2.stdout + rc2.stderr)
+
+    print("\n[M] merge — 새로 만든 DB(v2)에 합쳐지는가 (D59)")
+
+    # 새 DB는 항상 v2로 지어지고, v2에서 옛 이름은 뷰다(D45). 그래서
+    # ① 뷰에는 업서트를 못 쓰고 ② 관측은 상품·런보다 **나중에** 들어가야 하며
+    # ③ 속성 판정은 애초에 merge 대상에서 빠져 있었다. 팀원이 seed를 합치는
+    # 바로 그 첫 명령이 여기에 전부 걸렸다 — 실측으로 잡은 것을 고정한다.
+    msrc, mdst = out("merge-src.db"), out("merge-dst.db")
+    s = intel_db.connect(msrc)
+    s.execute("INSERT INTO runs (run_id, site, story, target, collected_at) "
+              "VALUES ('r1','musinsa','market-scan','데님팬츠(여성)','2026-08-04 00:00:00')")
+    s.execute("INSERT INTO products (site, product_id, name, brand, category) "
+              "VALUES ('musinsa','x1','이름','브랜드','데님팬츠')")
+    s.execute("INSERT INTO observations (site, product_id, observed_at, context, "
+              "price_sale, run_id) VALUES ('musinsa','x1','2026-08-04 00:00:00','market',10000,'r1')")
+    s.execute("INSERT INTO product_attributes (site, product_id, attr_name, value, basis, "
+              "decided_at) VALUES ('musinsa','x1','핏','와이드','image','2026-08-04 00:00:00')")
+    s.commit()
+    s.close()
+
+    def merge_counts():
+        rc = subprocess.run([sys.executable, os.path.join(SCRIPTS, "intel_db.py"),
+                             "--db", mdst, "merge", msrc], capture_output=True, text=True)
+        d = intel_db.connect(mdst)
+        got = {t: d.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+               for t in ("products", "observations", "product_attributes", "runs")}
+        d.close()
+        return rc, got
+
+    rc, got = merge_counts()
+    check("M1 merge가 예외 없이 끝난다 (뷰에 업서트를 던지지 않는다)",
+          rc.returncode == 0 and "cannot UPSERT" not in (rc.stdout + rc.stderr),
+          rc.stdout + rc.stderr)
+    check("M2 관측이 실제로 들어간다 — 상품·런보다 나중에 넣는다",
+          got["observations"] == 1, str(got))
+    check("M3 속성 판정도 함께 온다 (전에는 merge 대상이 아니었다)",
+          got["product_attributes"] == 1, str(got))
+    rc2, got2 = merge_counts()
+    check("M4 두 번 합쳐도 부풀지 않는다", got2 == got, "%s → %s" % (got, got2))
+
     print("\n%s" % ("-" * 56))
     print("통과 %d · 실패 %d" % (len(PASSED), len(FAILED)))
     if FAILED:

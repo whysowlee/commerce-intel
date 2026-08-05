@@ -1,6 +1,7 @@
 ---
 name: platform-ssf
-description: SSF샵(ssfshop.com — 삼성물산 패션부문)에서 상품·카테고리 데이터를 수집해
+description: >-
+  SSF샵(ssfshop.com — 삼성물산 패션부문)에서 상품·카테고리 데이터를 수집해
   commerce-intel 데이터 계약 JSON을 만든다. 요청에 SSF샵/SSF/ssfshop이 명시되고 수집·정리
   태스크가 함께 있을 때 쓴다. 예: "SSF샵 여성 데님 정리해줘", "SSF샵 팬츠 카테고리
   전수조사", "SSF샵 데님 판매량순 상위 뽑아줘", "SSF 랭킹 계속 모아줘". **랭킹 크론 축적이

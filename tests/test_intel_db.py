@@ -657,12 +657,17 @@ def modeling_tests():
     # E-MD-9 액션은 약한 단서에 확정적으로 붙지 않는다
     weak = {"verdict": "weak", "kind": "group_compare", "cat_field": "brand",
             "fails": ["표본이 작다"]}
-    check("E-MD-9 약한 단서의 액션은 '아직 정하지 마라'로 시작한다",
-          ins.action_hint(weak).startswith("아직 정하지 마라"), ins.action_hint(weak))
+    # D62 개정 — "아직 정하지 마라" 상투구 대신 **왜 보류인지 + 재확인 방법**을
+    # 카드 값으로 쓴다. 계약은 "확정적으로 굴지 않는다"이지 특정 문구가 아니다:
+    # 판정을 미루는 이유가 있고, 실행 지시("높여라" 류)가 없으면 된다
+    got9 = ins.action_hint(weak)
+    check("E-MD-9 약한 단서의 액션은 판정을 미룬다 (확정 지시 없음)",
+          any(("못 가른다" in l or "우연" in l or "보류" in l) for l in got9)
+          and not any("높여라" in l or "낮춰라" in l for l in got9), got9)
     resp = {"verdict": "strong", "kind": "correlation", "direction": "response_pair",
             "x_label": "하트", "y_label": "후기 수"}
     check("E-MD-10 반응끼리의 상관은 액션에서 선후를 단정하지 않는다",
-          "선후를 모른다" in ins.action_hint(resp), ins.action_hint(resp))
+          any("선후를 모른다" in l for l in ins.action_hint(resp)), ins.action_hint(resp))
 
     # E-MD-12 관문 판정은 **코드**로 한다 — 문구가 바뀌어도 안 흔들린다 (PR #9 리뷰)
     coded = {"verdict": "rejected", "effect": 0.02, "n": 500,
@@ -684,16 +689,34 @@ def modeling_tests():
     lp = {"verdict": "strong", "kind": "correlation", "direction": "lever_pair",
           "x_label": "정가", "y_label": "할인율"}
     got = ins.action_hint(lp)
+    # action_hint가 여러 줄(list)이 됐다(D51) — 부분 문자열은 줄 단위로 본다
     check("E-MD-15 lever끼리의 상관도 액션에서 선후를 단정하지 않는다",
-          "데이터가 답하지 않는다" in got and "폭을 정할 때 참고" not in got, got)
+          any("데이터가 답하지 않는다" in l for l in got)
+          and not any("폭을 정할 때 참고" in l for l in got), got)
 
-    # E-MD-16 recheck_hint도 코드로 가른다 (문구가 바뀌어도 안 흔들린다)
-    r_coded = {"fails": ["문구를 바꿨다"], "fail_codes": ["sample"]}
-    check("E-MD-16 recheck_hint가 fail_codes를 본다",
-          "표본이 쌓이면" in ins.recheck_hint(r_coded), ins.recheck_hint(r_coded))
-    r_old = {"fails": ["표본이 작다 (n=3 < 20)"]}     # 코드 없는 옛 항목은 폴백
+    # E-MD-16 recheck는 코드로 가른다 (문구가 바뀌어도 안 흔들린다) — D62로
+    # 문구가 카드 값 포함 여러 줄이 됐으므로, 특정 문구가 아니라 **관문에 맞는
+    # 종류의 안내인지**를 본다
+    r_coded = {"fails": ["문구를 바꿨다"], "fail_codes": ["sample"], "n": 3}
+    check("E-MD-16 recheck가 fail_codes를 본다",
+          "우연과 못 가른다" in ins.recheck_hint(r_coded), ins.recheck_hint(r_coded))
+    r_old = {"fails": ["표본이 작다 (n=3 < 20)"], "n": 3}   # 코드 없는 옛 항목은 폴백
     check("E-MD-17 코드가 없으면 문구로 폴백한다",
-          "표본이 쌓이면" in ins.recheck_hint(r_old), ins.recheck_hint(r_old))
+          "우연과 못 가른다" in ins.recheck_hint(r_old), ins.recheck_hint(r_old))
+
+    # E-MD-18 재확인 안내에 **그 카드의 값**이 들어간다 (D62) — "다음 관측으로
+    # 재확인" 같은 일반론은 읽는 사람이 할 수 있는 일이 없다
+    r_val = {"verdict": "weak", "kind": "group_compare",
+             "fail_codes": ["effect_small"], "group_a": "진청", "group_b": "중청",
+             "metric_label": "후기 수", "effect": 0.22, "n": 180}
+    lines = ins.recheck_lines(r_val)
+    check("E-MD-18 재확인 안내에 카드 값이 들어간다",
+          any("진청" in l and "후기 수" in l and "0.22" in l for l in lines), lines)
+    check("E-MD-18b 종료 조건이 있다 — 보류가 영원히 보류로 안 남게",
+          any("접는다" in l or "그때 믿는다" in l or "판정이 난다" in l
+              for l in lines), lines)
+    check("E-MD-18c 일반론 상투구가 아니다",
+          not any(l.strip() == "다음 관측으로 재확인" for l in lines))
 
 
 def incremental_key_tests():
@@ -779,6 +802,254 @@ def modeling_role_tests():
     check("E-MD-26 한글·영문은 묶지 않는다",
           d.brand_key("2000아카이브스") != d.brand_key("2000Archives"))
     check("E-MD-27 빈 값은 None", d.brand_key(None) is None and d.brand_key("") is None)
+
+
+def axis_hygiene_tests():
+    """축 위생 (D55) — 표기 변형이 그룹을 가르지 않고, 한 청중이 요약을 독점하지 않는다."""
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    d = importlib.import_module("intel_data")
+    an = importlib.import_module("analyze")
+    ins = importlib.import_module("insight")
+
+    # ── 카테고리 표기 변형 (2026-08-04 여성 데님 리포트 강한 주장 10번) ──
+    # `데님팬츠`와 `데님 팬츠`가 다른 그룹이 되어 서로 비교됐다.
+    check("E-MD-34 카테고리 안쪽 공백만 다른 값은 같은 그룹이다",
+          d.brand_key("데님 팬츠") == d.brand_key("데님팬츠"))
+    check("E-MD-35 계층 표기는 리프와 안 합쳐진다",
+          d.brand_key("의류 > 바지 > 청/데님 팬츠") != d.brand_key("데님팬츠"))
+
+    # 그룹 비교가 실제로 그 키를 쓰는지 — 정규화가 함수에만 있고 호출부에 없으면
+    # 테스트는 통과하는데 리포트는 그대로 갈린다(이 버그가 정확히 그랬다).
+    # **run_group()을 실제로 태운다** (PR #12 2차 리뷰) — 전신은 brand_key()를
+    # 다시 계산해 항상 통과했다. 호출부가 정규화를 빼먹으면 여기서 잡혀야 한다.
+    items = ([{"site": "s", "product_id": "a%d" % i, "category": "데님 팬츠",
+               "like_count": 10 + i} for i in range(25)]
+             + [{"site": "s", "product_id": "b%d" % i, "category": "데님팬츠",
+                 "like_count": 200 + i} for i in range(25)]
+             + [{"site": "s", "product_id": "c%d" % i, "category": "스커트",
+                 "like_count": 50 + i} for i in range(25)])
+    ctx = {"styles": items, "items": items,
+           "eda": {"nulls": [{"field": "like_count", "label": "하트",
+                              "usable": True}]},
+           "cat_axes": [("category", "카테고리")],
+           "num_axes": [("like_count", "하트")],
+           "labels": {"like_count": "하트", "category": "카테고리"},
+           "hierarchy": {"anc": set(), "parent": {}, "umbrella": set()},
+           "contexts": [], "own_brands": []}
+    hyps = an.run_group(ctx)
+    pairs = {(h["group_a"], h["group_b"]) for h in hyps}
+    check("E-MD-36 표기 변형끼리는 서로 비교되지 않는다 (run_group 실호출)",
+          not any({a_, b_} == {"데님 팬츠", "데님팬츠"} for a_, b_ in pairs), pairs)
+    denim = [h for h in hyps if "데님" in (h.get("group_a") or "")
+             or "데님" in (h.get("group_b") or "")]
+    merged_n = {h["n_a"] if "데님" in h["group_a"] else h["n_b"] for h in denim}
+    check("E-MD-36b 변형 50건이 한 그룹(n=50)으로 검정에 들어간다",
+          merged_n == {50}, "비교 %d건, 데님 그룹 n=%s" % (len(hyps), merged_n))
+
+    # ── 청중 편중 (강한 주장 10개가 전부 `마케팅`이던 것) ──
+    hyps = [{"kind": "group_compare", "cat_field": "ax%d" % i, "metric": "like_count",
+             "audience": "마케팅", "effect": 0.9 - i * 0.01} for i in range(30)]
+    hyps += [{"kind": "group_compare", "cat_field": "bx%d" % i, "metric": "discount_rate",
+              "audience": "판매전략", "effect": 0.5} for i in range(4)]
+    hyps += [{"kind": "group_compare", "cat_field": "cx%d" % i, "metric": "fit",
+              "audience": "디자인", "effect": 0.4} for i in range(3)]
+    picked = ins._select(list(hyps), 10)
+    from collections import Counter
+    dist = Counter(h["audience"] for h in picked)
+    check("E-MD-37 자리를 다 채운다 — 상한이 빈칸을 만들지 않는다", len(picked) == 10,
+          len(picked))
+    check("E-MD-38 한 청중이 요약을 독점하지 않는다",
+          max(dist.values()) < len(picked), dict(dist))
+    check("E-MD-39 후보가 남아돌아도 청중 상한을 넘지 않는다",
+          dist["마케팅"] <= ins.AUDIENCE_CAP, dict(dist))
+    assert an is not None      # 임포트가 깨지면 여기서 잡힌다
+
+
+def readability_tests():
+    """읽는 사람 기준 (D56) — 조사·숫자 위치·축 이름·액션 플랜."""
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    an = importlib.import_module("analyze")
+    ins = importlib.import_module("insight")
+
+    # 와/과는 은/는·이/가와 방향이 반대다 — `데님과`, `소재 미표기와`
+    check("E-RD-1 받침 있으면 `과`", an._josa("데님", "와과") == "데님과",
+          an._josa("데님", "와과"))
+    check("E-RD-2 받침 없으면 `와`", an._josa("하트", "와과") == "하트와",
+          an._josa("하트", "와과"))
+    check("E-RD-3 은/는은 방향이 반대", an._josa("데님", "은는") == "데님은")
+
+    # 주장 한 줄에 숫자를 넣지 않는다 — 중앙값은 카드/상세가 쓴다
+    h = {"kind": "group_compare", "cat_field": "category", "cat_label": "카테고리",
+         "group_a": "와이드", "group_b": "쇼츠", "metric": "like_count",
+         "metric_label": "하트", "median_a": 277, "median_b": 104,
+         "n": 1075, "effect": 0.33, "verdict": "strong", "audience": "마케팅"}
+    claim = "%s에서 %s %s보다 %s 높다" % (
+        h["cat_label"], an._josa(h["group_a"], "은는"), h["group_b"],
+        an._josa(h["metric_label"], "이가"))
+    check("E-RD-4 주장에 중앙값이 없다", "중앙값" not in claim and "277" not in claim, claim)
+
+    # 액션 플랜 — 축마다 달라야 하고, 기전 추측이 들어가야 한다
+    a_cat = ins.action_hint(h)
+    a_site = ins.action_hint(dict(h, cat_field="site", cat_label="플랫폼",
+                                  group_a="musinsa", group_b="29cm"))
+    check("E-RD-5 액션 플랜이 여러 줄", len(a_cat) >= 4, len(a_cat))
+    check("E-RD-6 축이 다르면 액션도 다르다", set(a_cat) != set(a_site))
+    check("E-RD-7 기전 추측이 조건부로 들어간다",
+          any("수 있다" in x for x in a_cat), a_cat[:2])
+    a_px = ins.action_hint(dict(h, cat_field="px_denim_rise",
+                                cat_label="밑위(라이즈)(AI 판정)"))
+    check("E-RD-8 프록시 축에도 고유 액션이 붙는다",
+          set(a_px) != set(a_cat) and any("수 있다" in x for x in a_px))
+
+    # 제3자끼리 브랜드 비교는 안 낸다 — 우리 브랜드가 한쪽에 있어야 한다.
+    # **표기 변형까지 자사로 친다** — `brand:` 문맥은 실제 브랜드 값을 다 걷어 온다.
+    import intel_data as d
+    own = {d.brand_key(b) for b in
+           ["2000아카이브스", "2000Archives", "2000 Archives"]}
+    check("E-RD-9 제3자 쌍은 걸린다",
+          d.brand_key("에잇세컨즈") not in own and d.brand_key("잠뱅이") not in own)
+    check("E-RD-10 영문 표기도 자사로 친다",
+          d.brand_key("2000 Archives") in own and d.brand_key("2000archives") in own)
+    check("E-RD-11 한글 표기도 자사로 친다", d.brand_key("2000아카이브스") in own)
+
+    # 그룹 비교 근거 줄 — "상품 1개당"과 그룹별 n·중앙값이 카드에 박힌다 (D60)
+    gh = {"kind": "group_compare", "group_a": "화이트/아이보리", "group_b": "유채색",
+          "n_a": 83, "n_b": 208, "median_a": 12, "median_b": 45, "n": 291}
+    note = ins._n_note(gh)
+    check("E-RD-12 근거 줄이 상품 1개당임을 말한다", "상품 1개당" in note, note)
+    check("E-RD-13 그룹별 n과 중앙값이 병기된다",
+          "83" in note and "208" in note and "12" in note and "45" in note, note)
+    check("E-RD-14 쌍체는 쌍 비교로 표기", "쌍" in ins._n_note({"kind": "paired", "n": 119}))
+
+    # 코드 스팬은 폰트를 바꾸지 않는다 (D60 후속) — Courier에는 한글 글리프가 없어
+    # `데님`이 ■■로 그려졌다(2026-08-04 실물 스크린샷). 「」로 감싼다.
+    pd = importlib.import_module("pdf_doc")
+    rendered = pd.md("`데님` 대 `소재 미표기`")
+    check("E-RD-15 코드 스팬에 폰트 전환 없음", "Courier" not in rendered, rendered)
+    check("E-RD-16 코드 스팬은 「」로 감싼다", "「데님」" in rendered, rendered)
+
+    # 차이없음 문장의 조사 — "데님와"가 아니라 "데님과"
+    nc = ins._null_claim({"kind": "group_compare", "cat_label": "상품명 속 소재(AI 판정)",
+                          "group_a": "데님", "group_b": "소재 미표기",
+                          "metric_label": "평점"})
+    check("E-RD-17 차이없음 문장 조사", "데님과" in nc and "데님와" not in nc, nc)
+
+    # 지표 성격(절대값/비율)이 근거 줄에 붙는다
+    note = ins._n_note({"kind": "group_compare", "group_a": "a", "group_b": "b",
+                        "n_a": 30, "n_b": 40, "median_a": 1, "median_b": 2,
+                        "metric": "like_count", "metric_label": "하트", "n": 70})
+    check("E-RD-18 하트는 누적 절대값으로 표기", "누적 절대값" in note, note)
+    note2 = ins._n_note({"kind": "correlation", "x": "discount_rate", "y": "cvr_view_buy",
+                         "x_label": "할인율(%)", "y_label": "조회→구매 전환(%)", "n": 100})
+    check("E-RD-19 전환 축은 비율로 표기", "비율(%)" in note2, note2)
+
+
+def proxy_space_tests():
+    """값 공간 위생 3겹 (D53) — 적재 가드 · proxy-audit exit 계약 · 읽기 안전망.
+
+    셋 다 [자동] 표기인데 자동 테스트가 없었다(PR #12 리뷰 3). exit 코드는
+    subprocess로 본다 — cmd_proxy_audit의 **반환값**이 아니라 **프로세스 종료
+    코드**가 계약이고, 정확히 그 배선이 끊겨 있었다(리뷰 1 — main()이 반환값을
+    버려 오염을 찾아도 exit 0이었다).
+    """
+    import tempfile
+    work = Path(tempfile.mkdtemp())
+    db = str(work / "px.db")
+    run([SCRIPTS / "intel_db.py", "--db", db, "init"], work, db)
+    con = sqlite3.connect(db)
+    con.execute("INSERT INTO products (site, product_id, name) VALUES ('musinsa','1','상품 A')")
+    con.execute("INSERT INTO proxy_defs (proxy_name, question, material, value_space, method, created_at) "
+                "VALUES ('name_lang','q','name','[\"영문\",\"한국어\"]','rule','2026-08-05')")
+    con.execute("INSERT INTO proxy_cache VALUES ('name_lang','musinsa','1','상품 A','화성어','b','2026-08-05')")
+    con.commit(); con.close()
+
+    # E-PXS-2 — 오염이면 exit 2, --fix 후 0. 반환값이 아니라 프로세스 코드다
+    r = run([SCRIPTS / "intel_db.py", "--db", db, "proxy-audit"], work, db)
+    check("E-PXS-2 오염 DB에서 proxy-audit exit 2", r.returncode == 2,
+          "exit=%d stdout=%s" % (r.returncode, r.stdout.strip()[:60]))
+    r = run([SCRIPTS / "intel_db.py", "--db", db, "proxy-audit", "--fix"], work, db)
+    check("E-PXS-2b --fix는 지우고 exit 0", r.returncode == 0, r.returncode)
+    r = run([SCRIPTS / "intel_db.py", "--db", db, "proxy-audit"], work, db)
+    check("E-PXS-2c 청소 후 exit 0", r.returncode == 0, r.returncode)
+
+    # E-PXS-1 — 순서만 바뀐 재적재는 캐시를 안 지우고, 실질 변경은 지운다
+    con = sqlite3.connect(db)
+    con.execute("INSERT INTO proxy_cache VALUES ('name_lang','musinsa','1','상품 A','영문','b','2026-08-05')")
+    con.commit(); con.close()
+    reorder = work / "reorder.json"
+    reorder.write_text(json.dumps({
+        "proxy": {"proxy_name": "name_lang", "question": "q", "material": "name",
+                  "value_space": ["한국어", "영문"], "method": "rule"},
+        "judgments": []}, ensure_ascii=False), encoding="utf-8")
+    run([SCRIPTS / "intel_db.py", "--db", db, "proxy-load", reorder], work, db)
+    con = sqlite3.connect(db)
+    n = con.execute("SELECT COUNT(*) FROM proxy_cache").fetchone()[0]
+    con.close()
+    check("E-PXS-1 원소 순서만 바뀐 값 공간은 캐시를 지우지 않는다", n == 1, n)
+    real = work / "real.json"
+    real.write_text(json.dumps({
+        "proxy": {"proxy_name": "name_lang", "question": "q", "material": "name",
+                  "value_space": ["한국어", "영문", "혼합"], "method": "rule"},
+        "judgments": []}, ensure_ascii=False), encoding="utf-8")
+    r = run([SCRIPTS / "intel_db.py", "--db", db, "proxy-load", real], work, db)
+    con = sqlite3.connect(db)
+    n = con.execute("SELECT COUNT(*) FROM proxy_cache").fetchone()[0]
+    con.close()
+    check("E-PXS-1b 실질 변경은 옛 캐시를 버리고 그 사실을 찍는다",
+          n == 0 and "버린다" in r.stdout, "n=%d stdout=%s" % (n, r.stdout.strip()[:60]))
+
+    # E-PXS-3 — 오염이 남은 채 분석에 들어가면 그 축을 통째로 뺀다 (읽기 안전망)
+    con = sqlite3.connect(db)
+    con.execute("INSERT INTO proxy_cache VALUES "
+                "('name_lang','musinsa','1','상품 A','금성어','b','2026-08-05')")
+    con.execute("INSERT INTO observations (site, product_id, observed_at, context, price_sale) "
+                "VALUES ('musinsa','1','2026-08-05 10:00:00','brand:테스트',1000)")
+    con.commit(); con.close()
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    intel_data = importlib.import_module("intel_data")
+    data = intel_data.collect(db, None)
+    meta = next(p for p in data["meta"]["proxies"] if p["name"] == "name_lang")
+    check("E-PXS-3 값 공간 밖 값이 남은 축은 전 상품 미판정 처리",
+          all(it.get("px_name_lang") is None for it in data["items"]),
+          [it.get("px_name_lang") for it in data["items"]])
+    check("E-PXS-3b 왜 빠졌는지 off_space로 남긴다", "금성어" in (meta.get("off_space") or []),
+          meta.get("off_space"))
+    shutil.rmtree(work, ignore_errors=True)
+
+
+def survival_tests():
+    """생존 편향 (D54) — 이탈 판정과 동적 속성 축."""
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib.util
+    path = ROOT / "data" / ".tools" / "musinsa_brand_survival.py"
+    if not path.exists():
+        print("  SKIP  생존 — 파일 없음")
+        return
+    spec = importlib.util.spec_from_file_location("bs", str(path))
+    bs = importlib.util.module_from_spec(spec); spec.loader.exec_module(bs)
+
+    items = [{"name": "A", "survival": "survivor"}, {"name": "B", "survival": "dropped"}]
+    prods = [{"product_id": "1", "brand": "A"}, {"product_id": "2", "brand": "B"},
+             {"product_id": "3", "brand": "모르는브랜드"}]
+    rows = bs.to_attrs(items, prods)
+    check("E-SV-1 생존 상태를 상품 속성으로 편다", len(rows) == 2, len(rows))
+    check("E-SV-2 랭킹에 없는 브랜드는 만들지 않는다 (모른다 ≠ 이탈)",
+          all(r["product_id"] != "3" for r in rows))
+    check("E-SV-3 이탈 상품도 포함된다 — 이걸 빼면 생존자만 본다",
+          any(r["value"] == "dropped" for r in rows))
+    # 랭킹은 계속 바뀐다 — 오래 들고 있으면 옛 상태로 분석하게 된다
+    check("E-SV-4 TTL이 짧다 (7일)", all(r["ttl_days"] == 7 for r in rows))
+
+    d = importlib.import_module("intel_data")
+    data = {"items": [{"attr_brand_survival": "survivor"},
+                      {"attr_brand_survival": "dropped"},
+                      {"attr_only_one": "x"}, {"attr_only_one": "x"}]}
+    ax = dict(d.attr_axes(data))
+    check("E-SV-5 값이 2종 이상인 속성만 축이 된다",
+          "attr_brand_survival" in ax and "attr_only_one" not in ax, list(ax))
 
 
 def collector_tests():
@@ -1034,9 +1305,21 @@ def main():
     print("[20] 수집기 — 인코딩·커버리지·카드 매핑 (D48)")
     collector_tests()
 
+    print("[21-a] 생존 편향 — 이탈 판정·동적 축 (D54)")
+    survival_tests()
+
     print("[21] 문맥 문자열·역할 규칙 (D51)")
     context_tests()
     modeling_role_tests()
+
+    print("[21b] 프록시 값 공간 위생 (D53 · E-PXS)")
+    proxy_space_tests()
+
+    print("[22] 축 위생 — 표기 변형·청중 편중 (D55)")
+    axis_hygiene_tests()
+
+    print("[23] 읽는 사람 기준 — 조사·축 이름·액션 플랜 (D56)")
+    readability_tests()
 
     shutil.rmtree(work, ignore_errors=True)
     print("-" * 56)

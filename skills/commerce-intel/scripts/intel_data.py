@@ -387,20 +387,57 @@ def num_axes(data):
     out = list(AXES)
     for p in data["meta"].get("proxies", []):
         if p.get("numeric") and p.get("judged"):
-            out.append(("px_" + p["name"], p["name"] + "(AI)"))
+            # 사람이 읽는 이름 + **AI 판정 표시는 유지한다** (D56) — 노출값과
+            # 판정값을 구분하는 것은 정직성 규칙이고, 사용자가 뺀 것은
+            # 내부 이름(`denim_rise`)이지 "AI 판정"이라는 사실이 아니다.
+            out.append(("px_" + p["name"], "%s(AI 판정)" % (p.get("label") or p["name"])))
     return out
 
 
+# 동적 속성의 **사람이 읽는 이름** (D56 3차 피드백). `attr_brand_survival`이
+# "brand_survival에서 survivor는 dropped보다…"로 그대로 찍혔다 — 읽는 사람이
+# 알 수 없다. 수집 도구가 영문 코드로 쓰는 속성만 여기 옮긴다. 값 라벨의 정의는
+# `docs/survival-bias-removal.md` 사용자 정의(생존=주간 상위30 · 이탈=월간엔 있었으나 주간엔 없음).
+ATTR_LABELS = {"brand_survival": "브랜드 랭킹 생존"}
+ATTR_VALUE_LABELS = {
+    "attr_brand_survival": {"survivor": "생존(주간 상위30 잔류)",
+                            "dropped": "이탈(월간 상위30이었으나 주간엔 없음)"},
+}
+
+
+def display_value(field, v):
+    """그룹 값의 표시 이름 — 매핑이 없으면 원문 그대로."""
+    return ATTR_VALUE_LABELS.get(field, {}).get(v, str(v).strip())
+
+
+def attr_axes(data):
+    """`product_attributes`에서 온 동적 속성 축 (D54).
+
+    값이 **두 종류 이상**일 때만 축이 된다 — 전부 같은 값이면 비교할 상대가 없다.
+    수치처럼 보여도 범주로 둔다: 이 표는 TEXT라 크기 비교의 근거가 없다.
+    """
+    seen = {}
+    for it in data["items"]:
+        for k, v in it.items():
+            if k.startswith("attr_") and v not in (None, ""):
+                seen.setdefault(k, set()).add(v)
+    return [(k, ATTR_LABELS.get(k[5:], k[5:]))
+            for k in sorted(seen) if len(seen[k]) >= 2]
+
+
 def cat_axes(data, base):
-    """범주축 (field, label) — base(호출자의 CAT_AXES) + 범주형 프록시.
+    """범주축 (field, label) — base(호출자의 CAT_AXES) + 동적 속성 + 범주형 프록시.
 
     프록시 대부분이 범주형이다(착용컷/제품컷·영문/한글·로고 유무). 이것들이 그룹 비교
     축이 되어야 "착용컷 상품이 제품컷보다 하트가 높은가" 같은 검정이 성립한다.
     """
-    out = list(base)
+    out = list(base) + attr_axes(data)
     for p in data["meta"].get("proxies", []):
         if not p.get("numeric") and p.get("judged"):
-            out.append(("px_" + p["name"], p["name"] + "(AI)"))
+            # 사람이 읽는 이름 + **AI 판정 표시는 유지한다** (D56) — 노출값과
+            # 판정값을 구분하는 것은 정직성 규칙이고, 사용자가 뺀 것은
+            # 내부 이름(`denim_rise`)이지 "AI 판정"이라는 사실이 아니다.
+            out.append(("px_" + p["name"], "%s(AI 판정)" % (p.get("label") or p["name"])))
     return out
 
 
@@ -416,7 +453,11 @@ def collect(db_path, contexts):
         SELECT p.site, p.product_id, p.name, p.url, p.image_url, p.brand, p.category,
                p.attributes, o.observed_at, o.context,
                o.price_original, o.price_sale, o.discount_rate, o.review_count, o.rating,
-               o.purchase_count, o.like_count, o.viewers_now, o.sold_out, o.rank
+               o.purchase_count, o.like_count, o.viewers_now, o.sold_out, o.rank,
+               -- 구간 표기 원문 (D48) — `add_bands()`가 이걸 읽어 순서형 축을 만든다.
+               -- **빠져 있었다**: 컬럼을 안 뽑으니 `purchase_band`가 늘 None이었고,
+               -- 사용자가 1순위 Y로 지목한 누적판매가 축이 될 수 없었다(D50 화면 수집이 담아 온 표기를 버리고 있던 것).
+               o.view_count_display, o.purchase_count_display, o.like_count_display
         FROM products p
         JOIN observations o ON o.site = p.site AND o.product_id = p.product_id
         WHERE o.observed_at = (
@@ -444,6 +485,13 @@ def collect(db_path, contexts):
         attrs.update(dyn_attrs.get(key, {}))   # 표가 JSON을 덮는다(더 최신)
         d["fit"] = attrs.get("핏")
         d["color"] = attrs.get("컬러")         # 컬러 축은 인프라만 — 채우는 건 8번(보류)
+        # **동적 속성을 전부 필드로 편다** (D54). D35가 "스키마 변경 없이 축을
+        # 늘린다"고 했는데 정작 축 목록(CAT_AXES)이 고정이라, 새 속성을 넣어도
+        # 분석이 안 봤다 — `brand_survival`을 넣고서야 드러났다.
+        for k, v in attrs.items():
+            if k in ("핏", "컬러"):
+                continue                       # 위에서 고정 이름으로 이미 넣었다
+            d["attr_" + k] = v
         d["_attrs"] = attrs
         add_bands(d)           # D48 — 구간 표기 → 순서형 축 (순위로만)
         add_funnel(d)          # D47 — 조회→하트→구매 비율. 재료 없으면 None
@@ -506,9 +554,32 @@ def collect(db_path, contexts):
                     val = None
             it["px_" + pn] = val
             judged += 1 if val is not None else 0
-        proxies.append({"name": pn, "question": d["question"], "method": d["method"],
+        # **값 공간 밖 값이 섞여 있으면 그 축을 쓰지 않는다** (D53 안전망).
+        # 같은 이름으로 값 공간이 바뀌면 옛 판정이 남아 축이 갈린다 — 실측:
+        # `name_lang`에 `영문`(1,120)과 `영문만`(945)이 공존해 같은 개념이 두
+        # 그룹으로 검정됐다. 적재 가드가 앞으로를 막지만, **이미 갈린 DB에서도
+        # 분석이 조용히 틀리면 안 된다.** 축을 빼고 그 사실을 남긴다.
+        off = []
+        if isinstance(space, list):
+            off = sorted({it["px_" + pn] for it in items
+                          if it.get("px_" + pn) is not None
+                          and it["px_" + pn] not in space})
+        if off:
+            for it in items:
+                it["px_" + pn] = None
+            judged = 0
+        # **사람이 읽는 축 이름** (D56). 카드의 `label`이 정본이고, 없으면
+        # `proxy_name`으로 되돌아간다 — 옛 DB에는 컬럼 자체가 없을 수 있다.
+        try:
+            human = d["label"]
+        except (IndexError, KeyError):
+            human = None
+        proxies.append({"name": pn, "label": human or pn, "material": mat,
+                        "question": d["question"], "method": d["method"],
                         "numeric": is_numeric,
-                        "judged": judged, "unjudged": len(items) - judged})
+                        "judged": judged, "unjudged": len(items) - judged,
+                        # 리포트가 "왜 이 축이 없나"에 답할 수 있어야 한다
+                        "off_space": off})
 
     # 시계열 — 축적 관측이 있는 상품의 시점별 지표. 시점이 2개 이상인 상품만.
     ts_rows = conn.execute(f"""

@@ -323,7 +323,12 @@ def main():
         # 에러도 안 나는 종류라, 세어 보지 않으면 아무도 모른다.
         if data:
             before = sheet_rows(ws)
-            ws.append_rows(data, value_input_option="RAW")
+            # 통짜 append는 payload가 커지면 구글이 500을 낸다 — 2026-08-05 실측:
+            # proxy_cache 484,216행 한 호출에 Internal error. rebuild_tab과 같은
+            # 5,000행 단위로 끊는다. 중간 실패 시 진행점은 안 움직이고, 부분 반영은
+            # 다음 실행의 누적 대조가 잡아 --repair로 복구한다.
+            for i in range(0, len(data), 5000):
+                ws.append_rows(data[i:i + 5000], value_input_option="RAW")
             after = sheet_rows(ws)
             landed = None if (before is None or after is None) else after - before
             if landed is not None and landed != len(data):

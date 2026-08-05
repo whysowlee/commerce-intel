@@ -222,6 +222,30 @@ def _is_v2(conn):
                              "AND name='obs_base'").fetchone())
 
 
+def _is_view(conn, name):
+    """그 이름이 뷰인가. **뷰에는 업서트를 못 쓴다**(v2에서 옛 이름이 뷰가 됐다 — D45)."""
+    row = conn.execute(
+        "SELECT type FROM sqlite_master WHERE name=?", (name,)).fetchone()
+    return bool(row) and row[0] == "view"
+
+
+def _migrate_proxy_label(conn):
+    """프록시의 **사람이 읽는 축 이름** 컬럼 (D56).
+
+    리포트에 `denim_rise(AI)`가 그대로 찍혀 나왔다 — 2026-08-04 사용자 지적:
+    "읽는 사람 입장에서 의미 없는 단어들은 빼". 카드가 `label`을 주면 그걸 쓰고,
+    없으면 `proxy_name`으로 되돌아간다.
+
+    **v1·v2 양쪽에서 돈다.** 처음엔 구 스키마 분기에만 넣었다가 v2 DB에서
+    `no column named label`로 죽었다(회귀 4건). 스키마 계열과 무관한
+    부가 컬럼이니 분기 앞에서 한 번만 손본다. 멱등이다.
+    """
+    try:
+        conn.execute("ALTER TABLE proxy_defs ADD COLUMN label TEXT")
+    except sqlite3.OperationalError:
+        pass          # 이미 있거나 표가 아직 없다 — 둘 다 정상
+
+
 def connect(db_path):
     """DB를 연다. **v2 스키마면 뷰·트리거를 얹어 옛 이름 그대로 읽고 쓰게 한다**(D45).
 
@@ -239,6 +263,7 @@ def connect(db_path):
         # **새 DB는 v2로 만든다.** 구 스키마로 시작하면 나중에 또 옮겨야 한다.
         conn.executescript(SCHEMA_V2)
         conn.executescript(SCHEMA_TAIL)   # runs·platforms·proxy_*·insights·sync_state
+    _migrate_proxy_label(conn)   # v1·v2 공통 (D56)
     if _is_v2(conn):
         # 뷰·트리거는 매번 다시 만든다(멱등) — 스크립트가 갱신되면 곧바로 반영된다
         conn.executescript(VIEWS_V2)
@@ -774,16 +799,57 @@ def cmd_proxy_load(conn, args):
 
 
 def _proxy_load_one(conn, data):
+    """프록시 정의 + 판정을 적재한다.
+
+    **값 공간이 바뀌면 옛 캐시를 버린다** (D53). 전에는 정의만 덮어쓰고 캐시를
+    그대로 뒀는데, 그러면 **같은 이름 아래 두 값 공간이 섞인다.** 2026-08-04 실측:
+
+        name_lang  정의 [혼합·한국어·영문]  캐시에 `영문만` 945 · `한글만` 673
+        thumb_cut  정의 [제품 단독컷·착용컷] 캐시에 `스튜디오 모델컷` 65 …
+
+    값 공간 검사는 **적재 시점의 새 정의**로만 도니 옛 값은 검사를 안 거친다.
+    그 결과 같은 개념이 두 그룹으로 갈려 그룹 비교의 n이 쪼개지고, 분석은
+    "영문과 영문만은 다르다"를 검정하게 된다.
+    """
     d = data.get("proxy") or {}
     if not d.get("proxy_name"):
         raise SystemExit("proxy.proxy_name이 없다")
-    conn.execute(
-        "INSERT INTO proxy_defs VALUES (?,?,?,?,?,?) "
-        "ON CONFLICT(proxy_name) DO UPDATE SET question=excluded.question, "
-        "material=excluded.material, value_space=excluded.value_space, method=excluded.method",
-        (d["proxy_name"], d.get("question"), d.get("material"),
-         json.dumps(d.get("value_space"), ensure_ascii=False), d.get("method"), now_str()))
+    name = d["proxy_name"]
     space = d.get("value_space")
+    new_space = json.dumps(space, ensure_ascii=False)
+    prev = conn.execute(
+        "SELECT value_space FROM proxy_defs WHERE proxy_name=?", (name,)).fetchone()
+
+    def _space_changed(prev_json, cur):
+        """실질 변경만 본다 (PR #12 리뷰 7). JSON 문자열 비교는 리스트 원소
+        **순서**만 바뀌어도 변경으로 오판해 캐시를 지운다 — 과잉 드롭 방향이라
+        틀리진 않지만, 값 공간을 다듬을 때마다 판정이 통째로 날아간다.
+        리스트끼리는 집합으로 비교한다(값 공간에서 순서는 계약이 아니다 —
+        판정 검사도 `val not in space` 소속만 본다)."""
+        try:
+            old = json.loads(prev_json or "null")
+        except ValueError:
+            return True          # 못 읽는 옛 정의 — 바뀐 것으로 취급(안전한 방향)
+        if isinstance(old, list) and isinstance(cur, list):
+            return set(old) != set(cur)
+        return old != cur
+
+    dropped = 0
+    if prev and _space_changed(prev[0], space):
+        # 정의가 바뀌었다 — 옛 판정은 다른 계약으로 만들어진 값이라 못 쓴다.
+        # **조용히 섞느니 지운다.** 지웠다는 사실과 건수를 찍는다.
+        dropped = conn.execute(
+            "DELETE FROM proxy_cache WHERE proxy_name=?", (name,)).rowcount
+        print("%s: 값 공간이 바뀌어 옛 판정 %d건을 버린다\n  이전 %s\n  이후 %s"
+              % (name, dropped, prev[0][:70], new_space[:70]))
+    conn.execute(
+        "INSERT INTO proxy_defs (proxy_name, question, material, value_space, "
+        "method, created_at, label) VALUES (?,?,?,?,?,?,?) "
+        "ON CONFLICT(proxy_name) DO UPDATE SET question=excluded.question, "
+        "material=excluded.material, value_space=excluded.value_space, "
+        "method=excluded.method, label=excluded.label",
+        (name, d.get("question"), d.get("material"),
+         new_space, d.get("method"), now_str(), d.get("label")))
     is_numeric = space == "numeric"
     new = dup = bad = 0
     for j in data.get("judgments", []):
@@ -815,6 +881,54 @@ def _proxy_load_one(conn, data):
     print(msg)
 
 
+def cmd_proxy_audit(conn, args):
+    """값 공간 밖 판정이 남아 있나 본다 (D53). `--fix`면 지운다.
+
+    적재 시점 가드(위)가 앞으로를 막고, 이건 **이미 들어간 것**을 찾는다.
+    조용히 남아 있으면 축이 갈린 채로 분석이 돈다.
+    """
+    bad_total = 0
+    for name, space_json in conn.execute(
+            "SELECT proxy_name, value_space FROM proxy_defs ORDER BY 1"):
+        try:
+            space = json.loads(space_json or "null")
+        except ValueError:
+            space = None
+        rows = conn.execute(
+            "SELECT value, COUNT(*) FROM proxy_cache WHERE proxy_name=? GROUP BY 1",
+            (name,)).fetchall()
+        if space == "numeric":
+            bad = [(v, n) for v, n in rows
+                   if v is not None and not _is_num(v)]
+        elif isinstance(space, list):
+            bad = [(v, n) for v, n in rows if v not in space]
+        else:
+            continue
+        if not bad:
+            continue
+        cnt = sum(n for _, n in bad)
+        bad_total += cnt
+        print("%s: 값 공간 밖 %d건 — %s"
+              % (name, cnt, ", ".join("%s(%d)" % b for b in bad[:5])))
+        if getattr(args, "fix", False):
+            for v, _ in bad:
+                conn.execute("DELETE FROM proxy_cache WHERE proxy_name=? AND value IS ?",
+                             (name, v))
+            conn.commit()
+            print("  → 지웠다")
+    if not bad_total:
+        print("값 공간 밖 판정 없음 — 전 프록시 정상")
+    return 0 if (bad_total == 0 or getattr(args, "fix", False)) else 2
+
+
+def _is_num(v):
+    try:
+        float(v)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
 def cmd_stats(conn, _args):
     for t in ("products", "observations", "variants", "variant_observations", "platforms", "runs", "proxy_defs", "proxy_cache"):
         n = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
@@ -844,8 +958,59 @@ def cmd_merge(conn, args):
     src.row_factory = sqlite3.Row
     stats = {}
 
-    # 관측 계열 — 키가 겹치면 스킵. INSERT OR IGNORE가 곧 그 규칙이다
-    for table in ("observations", "variant_observations", "runs"):
+    # ── 순서가 규칙의 일부다 (D59) ────────────────────────────────────────
+    # v2는 관측을 `pk`(상품)와 `run_ref`(수집)로 잇는다. 상품·런이 먼저 없으면
+    # 트리거가 그 참조를 NULL로 풀고, 바깥의 `INSERT OR IGNORE`가 그 실패를 조용히
+    # 삼킨다 — **예외도 없이 관측 0건**이 된다. 실측(2026-08-04): 빈 DB에 seed를
+    # 합쳤더니 상품 2,722은 들어오고 관측 4,670은 전부 사라졌다.
+    # 그래서 런 → 정적(상품·옵션) → 관측 → 판정 순으로 간다.
+    # 정적 계열 — 빈 값으로 덮지 않는다. `runs`는 이력이라 그대로 가져온다
+    for table, keys in (("runs", ("run_id",)),
+                        ("products", ("site", "product_id")),
+                        ("variants", ("site", "product_id", "option_id")),
+                        ("platforms", ("platform_key",)),
+                        ("proxy_defs", ("proxy_name",)),
+                        ("proxy_cache", ("proxy_name", "site", "product_id", "fingerprint")),
+                        # 판정은 **들어온 값이 이긴다** — v2 트리거가 그렇게 하고
+                        # (ttl_days=NULL을 의도적으로 넣는다), v1도 같아야 한다
+                        ("product_attributes", ("site", "product_id", "attr_name"))):
+        try:
+            rows = src.execute(f"SELECT * FROM {table}").fetchall()
+        except sqlite3.OperationalError:
+            continue
+        if not rows:
+            continue
+        cols = [c for c in rows[0].keys()]
+        upd = [c for c in cols if c not in keys]
+        before = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        # **v2에서는 옛 이름이 뷰다 — 뷰에는 업서트를 못 쓴다**("cannot UPSERT a view").
+        # v2가 업서트 의미를 `INSTEAD OF INSERT` 트리거 안으로 옮겨 뒀으니(D45),
+        # 뷰에는 평범한 INSERT를 던지고 덮어쓸지 지킬지는 트리거의 COALESCE가 정한다.
+        # D45 때 이 함수가 같이 안 고쳐져서 **새로 만든 DB에서 merge가 전부 죽었다** —
+        # 새 DB는 항상 v2로 지어지므로, 팀원이 처음 합치려는 순간 예외가 났다(D59).
+        if _is_view(conn, table):
+            stmt = ("INSERT INTO %s (%s) VALUES (%s)"
+                    % (table, ",".join(cols), ",".join("?" * len(cols))))
+        elif table == "product_attributes":
+            # 판정은 덮는다(v2 트리거와 같은 규칙) — COALESCE로 지키면 `ttl_days=NULL`의
+            # 의도가 무시되고, v1과 v2가 같은 명령에 다르게 반응한다
+            sets = ", ".join("%s = excluded.%s" % (c, c) for c in upd)
+            stmt = ("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT(%s) DO UPDATE SET %s"
+                    % (table, ",".join(cols), ",".join("?" * len(cols)), ",".join(keys), sets))
+        else:
+            # COALESCE(excluded.x, x) — 들어온 값이 null이면 기존 값을 지킨다
+            sets = ", ".join("%s = COALESCE(excluded.%s, %s.%s)" % (c, c, table, c) for c in upd)
+            stmt = ("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT(%s) DO UPDATE SET %s"
+                    % (table, ",".join(cols), ",".join("?" * len(cols)), ",".join(keys), sets))
+        conn.executemany(
+            stmt,
+            [tuple(r[c] for c in cols) for r in rows])
+        after = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        stats[table] = (after - before, len(rows))
+
+    # 관측 계열 — 키가 겹치면 스킵. INSERT OR IGNORE가 곧 그 규칙이다.
+    # **상품·런 뒤에 온다**(위 주석 D59) — 앞서면 참조가 안 풀려 조용히 0건이 된다
+    for table in ("observations", "variant_observations"):
         try:
             rows = src.execute(f"SELECT * FROM {table}").fetchall()
         except sqlite3.OperationalError:
@@ -857,30 +1022,6 @@ def cmd_merge(conn, args):
         conn.executemany(
             "INSERT OR IGNORE INTO %s (%s) VALUES (%s)"
             % (table, ",".join(cols), ",".join("?" * len(cols))),
-            [tuple(r[c] for c in cols) for r in rows])
-        after = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-        stats[table] = (after - before, len(rows))
-
-    # 정적 계열 — 빈 값으로 덮지 않는다
-    for table, keys in (("products", ("site", "product_id")),
-                        ("variants", ("site", "product_id", "option_id")),
-                        ("platforms", ("platform_key",)),
-                        ("proxy_defs", ("proxy_name",)),
-                        ("proxy_cache", ("proxy_name", "site", "product_id", "fingerprint"))):
-        try:
-            rows = src.execute(f"SELECT * FROM {table}").fetchall()
-        except sqlite3.OperationalError:
-            continue
-        if not rows:
-            continue
-        cols = [c for c in rows[0].keys()]
-        upd = [c for c in cols if c not in keys]
-        before = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-        # COALESCE(excluded.x, x) — 들어온 값이 null이면 기존 값을 지킨다
-        sets = ", ".join("%s = COALESCE(excluded.%s, %s.%s)" % (c, c, table, c) for c in upd)
-        conn.executemany(
-            "INSERT INTO %s (%s) VALUES (%s) ON CONFLICT(%s) DO UPDATE SET %s"
-            % (table, ",".join(cols), ",".join("?" * len(cols)), ",".join(keys), sets),
             [tuple(r[c] for c in cols) for r in rows])
         after = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         stats[table] = (after - before, len(rows))
@@ -918,6 +1059,8 @@ def main():
     sp.add_argument("--ttl-days", type=int, default=STATIC_TTL_DAYS)
     sp = sub.add_parser("import-snapshots"); sp.add_argument("dir")
     sp = sub.add_parser("proxy-load"); sp.add_argument("file")
+    sp = sub.add_parser("proxy-audit", help="값 공간 밖 판정 점검 (D53)")
+    sp.add_argument("--fix", action="store_true", help="찾은 것을 지운다")
     sp = sub.add_parser("export")
     sp.add_argument("--table", required=True,
                     choices=["products", "observations", "variants", "variant_observations", "platforms", "runs", "proxy_defs", "proxy_cache"])
@@ -951,6 +1094,11 @@ def main():
         cmd_import_snapshots(conn, args)
     elif args.cmd == "proxy-load":
         cmd_proxy_load(conn, args)
+    elif args.cmd == "proxy-audit":
+        # `return`이 아니라 `sys.exit` — 진입점이 `main()` 반환값을 버려서
+        # 오염을 찾아도 프로세스는 0으로 끝났다(PR #12 리뷰 Blocker).
+        # E-PXS-2가 명시한 exit 2 계약은 check 커맨드와 같은 패턴으로만 지켜진다.
+        sys.exit(cmd_proxy_audit(conn, args))
     elif args.cmd == "export":
         cmd_export(conn, args)
     elif args.cmd == "stats":

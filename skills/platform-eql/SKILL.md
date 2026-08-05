@@ -1,6 +1,7 @@
 ---
 name: platform-eql
-description: EQL(eqlstore.com, 한섬 편집숍)에서 상품 데이터를 수집해 commerce-intel 데이터
+description: >-
+  EQL(eqlstore.com, 한섬 편집숍)에서 상품 데이터를 수집해 commerce-intel 데이터
   계약 JSON을 만든다. 요청에 EQL/이큐엘/eqlstore가 명시되고 수집·정리 태스크가 함께 있을 때
   쓴다. 예: "EQL에서 이 브랜드 상품 정리해줘", "EQL 우먼 아우터 카테고리 전수조사",
   "eqlstore 신상품 훑어줘", "EQL 랭킹 계속 모아줘". **랭킹 크론 축적이 허용된다(D41,

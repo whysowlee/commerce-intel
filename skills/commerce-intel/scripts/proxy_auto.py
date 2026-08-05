@@ -172,7 +172,10 @@ def run_rules(rows, cards):
                            "value": value, "basis": basis,
                            "fingerprint": str(_material(r, card.get("material", "name"))),
                            "judged_at": now})
-        proxy = {k: card[k] for k in ("proxy_name", "question", "material", "method")
+        # `label`도 넘긴다 (D56) — 리포트 축 이름이 여기서 오지 않으면
+        # `denim_rise` 같은 내부 이름이 그대로 PDF에 찍힌다
+        proxy = {k: card[k] for k in
+                 ("proxy_name", "question", "material", "method", "label")
                  if k in card}
         proxy["value_space"] = "numeric" if card.get("numeric") else card.get("value_space")
         out.append({"proxy": proxy, "judgments": judged,
@@ -218,7 +221,8 @@ def plan_vision(conn, rows, cards, batch_size):
                  for fp, v in by_fp.items()]
         batches = [items[i:i + batch_size] for i in range(0, len(items), batch_size)]
         cards_out = [{k: c[k] for k in
-                      ("proxy_name", "question", "material", "method", "value_space")
+                      ("proxy_name", "question", "material", "method",
+                       "value_space", "label")
                       if k in c} for c in group]
         plans.append({"material": material, "cards": cards_out, "batches": batches,
                       "unique_materials": len(items), "no_material": no_material,
