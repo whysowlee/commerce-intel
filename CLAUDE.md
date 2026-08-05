@@ -51,7 +51,9 @@ tests/                    run_tests.py 회귀 111건 + test_intel_db.py 41건. �
 
 - 정본 DB는 `data/intel.db`(SQLite, **스키마 v3** — D65) + 프록시 판정은 별도
   `data/proxy.db`, 구글 시트는 단방향 미러다 — 파이프라인은
-  수집 → raw JSON → 검증 → DB 적재 → 시트 미러 → 리포트 (SPEC-INTEL §2·§3)
+  수집 → raw JSON → 검증 → DB 적재 → 시트 미러 → 리포트 (SPEC-INTEL §2·§3).
+  `INTEL_DB_URL`(libsql://)이 설정돼 있으면 정본은 **Turso 클라우드**다(D67 —
+  `docs/TURSO-SETUP.md`). DB는 반드시 `schema_v3.open_db()` 경유로 연다
 - 수집 원본은 `data/raw/`, 스냅샷은 `data/snapshots/`, 리포트는 `output/` — **전부 git 미추적**이다
 - **원본의 축적 스냅샷 47개+를 그대로 가져왔다**(무신사 바지 35 · 29CM 여성슈즈 9 · 그 외).
   crontab 잡도 이 경로로 재등록됐으니 축적이 이어진다. `intel_db.py import-snapshots`로

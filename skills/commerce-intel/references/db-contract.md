@@ -77,6 +77,14 @@
 아래 표 이름은 전부 **뷰**다(D45) — 물리 저장은 정수 사전·대리키(`schema_v3.py`)이고,
 읽고 쓰는 계약은 뷰가 진다. v1·v2 파일은 열리지 않는다 — `migrate_v3.py`로 이관한다.
 
+**클라우드 정본 (Turso — D67).** `INTEL_DB_URL=libsql://...` + `INTEL_DB_TOKEN`이
+있으면 모든 도구가 클라우드 정본을 본다(프록시는 `PROXY_DB_URL`/`PROXY_DB_TOKEN`).
+환경변수가 없으면 지금처럼 로컬 파일이고, **명시적 `--db` 인자는 항상 환경변수를
+이긴다**(테스트·리허설 격리). DB는 반드시 `schema_v3.open_db()`/`intel_db.connect()`로
+연다 — libsql 드라이버의 비호환(행 튜플·예외 타입 등)을 호환 래퍼가 흡수하는
+유일한 통로다. 세팅·이관·팀 온보딩은 `docs/TURSO-SETUP.md`. 수집 시작 전
+`intel_db.py check-run`으로 공유 runs의 최근 중복 수집을 확인한다.
+
 | 테이블 | 내용 | 키 | 갱신 |
 |---|---|---|---|
 | `products` | 정적 속성 — 이름·URL·이미지·브랜드(대표명)·카테고리(계층에서 도로 편 파생 값)·`static_verified_at`. **attributes JSON·first/last_seen_at·raw_extras는 v3에서 제거**(D65-2 — 속성은 product_attributes가 유일 정본, 원문 부가 정보는 raw JSON에 있다) | (site, product_id) | upsert — 새 값이 비어 있지 않을 때만 덮는다 |

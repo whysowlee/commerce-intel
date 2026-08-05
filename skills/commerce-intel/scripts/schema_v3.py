@@ -226,18 +226,206 @@ CREATE TABLE IF NOT EXISTS proxy_cache (
 """
 
 
-def proxy_db_path(db_path):
-    """정본 DB 경로 → 프록시 DB 경로. 기본은 같은 폴더의 `proxy.db`.
+# ── Turso(libSQL) 연결 추상화 (D67) ────────────────────────────────────────
+# 목표: 팀원 여러 명이 하나의 클라우드 정본을 쓰되, 환경변수가 없으면 지금처럼
+# 로컬 SQLite 파일로 돈다(테스트·CI·오프라인 개발 하위호환).
+#
+#     INTEL_DB_URL=libsql://...  INTEL_DB_TOKEN=...   → Turso
+#     (미설정)                                        → 로컬 파일 (기존 그대로)
+#
+# **드라이버 호환 래퍼가 이 층의 본체다.** libsql_experimental은 sqlite3과
+# 비슷해 보이지만 실측(2026-08-05)으로 갈린 게 넷이다:
+#   ① row_factory 없음 — 행이 튜플로만 온다. 이 코드베이스는 전부 r["컬럼"]
+#      이름 접근이라 그대로 꽂으면 전면 파손된다 → description 기반 Row 셔ム
+#   ② 제약 위반이 sqlite3.IntegrityError가 아니라 **ValueError**로 온다 —
+#      적재의 "중복 N건 스킵" 카운팅이 첫 중복에서 죽는다 → 예외 번역
+#   ③ total_changes 없음 → SELECT total_changes()로 대행
+#   ④ lastrowid가 불안정 → last_insert_rowid() 조회로 대행 (_dim이 이 값으로
+#      사전 id를 받는다 — 틀리면 조용히 엉뚱한 브랜드에 매달린다)
 
-    `INTEL_PROXY_DB`로 덮을 수 있다(테스트·리허설이 격리 경로를 쓸 때).
-    정본과 나란히 두는 이유: 팀원마다 DB 폴더가 다르고(D31), 프록시가 정본을
-    따라다니지 않으면 merge·분석이 캐시를 못 찾는다.
+
+def is_libsql_url(target):
+    return isinstance(target, str) and target.startswith("libsql://")
+
+
+class LibsqlRow(tuple):
+    """sqlite3.Row 흉내 — 인덱스·이름 접근, keys(), dict() 캐스팅이 다 된다."""
+    __slots__ = ()
+    _names = ()
+
+    def __new__(cls, names, values):
+        row = super().__new__(cls, values)
+        # tuple 서브클래스라 인스턴스 속성을 못 둔다(__slots__) — 동적 서브클래스에
+        # 이름을 싣는 대신, 호출부(_wrap_rows)가 이름별 클래스를 만들어 재사용한다
+        return row
+
+    def keys(self):
+        return list(self._names)
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            try:
+                return super().__getitem__(self._names.index(key))
+            except ValueError:
+                raise IndexError(f"no such column: {key}")
+        return super().__getitem__(key)
+
+
+def _row_class(names):
+    cls = type("LibsqlRowN", (LibsqlRow,), {"_names": tuple(names), "__slots__": ()})
+    return cls
+
+
+def _translate_libsql_error(e):
+    """libsql의 ValueError를 sqlite3 예외 체계로 번역한다 — 호출부의
+    `except sqlite3.IntegrityError`(중복 카운팅)가 그대로 살아야 한다."""
+    import sqlite3
+    msg = str(e)
+    if any(k in msg for k in ("UNIQUE constraint", "NOT NULL constraint",
+                              "CHECK constraint", "FOREIGN KEY constraint")):
+        return sqlite3.IntegrityError(msg)
+    return sqlite3.OperationalError(msg)
+
+
+class LibsqlCursor:
+    """커서 래퍼 — description 기반으로 행을 LibsqlRow로 감싼다."""
+
+    def __init__(self, conn, cur):
+        self._conn = conn
+        self._cur = cur
+        desc = cur.description
+        self._cls = _row_class([d[0] for d in desc]) if desc else None
+
+    @property
+    def description(self):
+        return self._cur.description
+
+    @property
+    def rowcount(self):
+        return getattr(self._cur, "rowcount", -1)
+
+    @property
+    def lastrowid(self):
+        # 드라이버의 lastrowid가 실측에서 어긋났다 — SQLite 함수로 직접 묻는다
+        return self._conn._raw.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    def _wrap(self, row):
+        return self._cls(None, row) if (row is not None and self._cls) else row
+
+    def fetchone(self):
+        return self._wrap(self._cur.fetchone())
+
+    def fetchall(self):
+        return [self._wrap(r) for r in self._cur.fetchall()]
+
+    def fetchmany(self, size):
+        return [self._wrap(r) for r in self._cur.fetchmany(size)]
+
+    def __iter__(self):
+        while True:
+            row = self.fetchone()
+            if row is None:
+                return
+            yield row
+
+
+class LibsqlConnection:
+    """libsql_experimental 커넥션의 sqlite3 호환 래퍼.
+
+    row_factory 대입은 받아만 둔다(항상 Row처럼 동작하므로 무해) — 기존 코드의
+    `conn.row_factory = sqlite3.Row` 줄이 죽지 않게.
     """
-    env = os.environ.get("INTEL_PROXY_DB")
+
+    def __init__(self, raw):
+        self._raw = raw
+        self.row_factory = None
+
+    def execute(self, sql, params=()):
+        try:
+            return LibsqlCursor(self, self._raw.execute(sql, params))
+        except ValueError as e:
+            raise _translate_libsql_error(e) from e
+
+    def executemany(self, sql, seq):
+        try:
+            return LibsqlCursor(self, self._raw.executemany(sql, list(seq)))
+        except ValueError as e:
+            raise _translate_libsql_error(e) from e
+
+    def executescript(self, script):
+        try:
+            return self._raw.executescript(script)
+        except ValueError as e:
+            raise _translate_libsql_error(e) from e
+
+    def commit(self):
+        self._raw.commit()
+
+    def close(self):
+        # 드라이버 버전에 따라 close가 없을 수 있다 — 없으면 GC에 맡긴다
+        if hasattr(self._raw, "close"):
+            self._raw.close()
+
+    @property
+    def total_changes(self):
+        return self._raw.execute("SELECT total_changes()").fetchone()[0]
+
+
+def open_db(target, token=None):
+    """경로 또는 libsql:// URL → 커넥션. 이 저장소의 **모든 DB 열기 통로**다 (D67).
+
+    - libsql:// → Turso. 토큰은 인자 또는 INTEL_DB_TOKEN
+    - 그 외     → 로컬 SQLite (file: 접두사 허용). row_factory=Row까지 맞춰 준다
+    """
+    import sqlite3
+    if is_libsql_url(target):
+        import libsql_experimental as libsql   # Turso 모드에서만 필요 (조건부 의존)
+        raw = libsql.connect(
+            target, auth_token=token or os.environ.get("INTEL_DB_TOKEN", ""))
+        return LibsqlConnection(raw)
+    path = str(target)
+    if path.startswith("file:") and "?" not in path:
+        path = path[len("file:"):]
+    conn = sqlite3.connect(path, uri=path.startswith("file:"))
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def default_db_target():
+    """정본 DB의 기본 대상 — INTEL_DB_URL > INTEL_DB > data/intel.db.
+
+    명시적 --db 인자가 있으면 그게 이긴다(호출부 규칙) — 테스트가 임시 파일을
+    넘기는데 환경변수가 그걸 Turso로 납치하면 안 된다.
+    """
+    return (os.environ.get("INTEL_DB_URL")
+            or os.environ.get("INTEL_DB")
+            or "data/intel.db")
+
+
+def proxy_db_path(db_path):
+    """정본 DB 경로 → 프록시 DB 경로(또는 URL).
+
+    우선순위: PROXY_DB_URL(Turso 별도 DB — D67) > INTEL_PROXY_DB(로컬 격리 경로)
+    > 정본 옆 `proxy.db`. 정본과 나란히 두는 이유: 팀원마다 DB 폴더가 다르고(D31),
+    프록시가 정본을 따라다니지 않으면 merge·분석이 캐시를 못 찾는다.
+    """
+    env = os.environ.get("PROXY_DB_URL") or os.environ.get("INTEL_PROXY_DB")
     if env:
         return env
+    if is_libsql_url(str(db_path)):
+        # 정본이 Turso인데 프록시 URL이 없다 — 프록시는 미사용으로 본다.
+        # 로컬 경로를 지어내면 팀원마다 다른 캐시가 조용히 생긴다.
+        return ""
     parent = Path(db_path).parent
     return str(parent / "proxy.db") if str(parent) not in ("", ".") else "proxy.db"
+
+
+def proxy_db_exists(target):
+    """프록시 DB가 '있다'고 볼 수 있나 — 로컬은 파일 존재, URL은 참(원격은
+    미리 알 수 없다 — 연결 실패는 호출부의 OperationalError 처리가 받는다)."""
+    if not target:
+        return False
+    return True if is_libsql_url(target) else os.path.exists(target)
 
 
 def proxy_connect(path):
@@ -245,12 +433,13 @@ def proxy_connect(path):
     PRAGMA foreign_keys는 파일이 아니라 커넥션 설정이라, 빼먹은 커넥션에서는
     CASCADE가 조용히 안 돈다.
     """
-    import sqlite3
-    parent = Path(path).parent
-    if str(parent) not in ("", "."):
-        parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
+    if is_libsql_url(path):
+        conn = open_db(path, token=os.environ.get("PROXY_DB_TOKEN"))
+    else:
+        parent = Path(path).parent
+        if str(parent) not in ("", "."):
+            parent.mkdir(parents=True, exist_ok=True)
+        conn = open_db(path)
     conn.executescript(PROXY_SCHEMA)
     conn.execute("PRAGMA foreign_keys = ON")
     return conn

@@ -26,7 +26,8 @@ from collections import Counter
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from schema_v3 import category_path_map, proxy_connect, proxy_db_path  # noqa: E402
+from schema_v3 import (category_path_map, open_db, proxy_connect,  # noqa: E402
+                       proxy_db_exists, proxy_db_path)
 
 # ── 동일 상품 매칭 ──────────────────────────────────────────────────────────
 # 규칙은 하나뿐이다: **정규화 상품명 완전일치.** 유사도·가격 보조 매칭은 금지다 —
@@ -307,7 +308,7 @@ def category_hierarchy(db_path, catalog_path=None):
     except (OSError, TypeError, ValueError, KeyError):
         pass    # 카탈로그가 없어도 DB 경로만으로 돌아간다 — 덜 걸러질 뿐이다
     try:
-        conn = sqlite3.connect(db_path)
+        conn = open_db(db_path)
         try:
             # v3 (D65-3): 계층이 categories 표에 정식으로 있다 — parent 사슬을 그대로
             # 배운다. 깊이 제한이 없고, 상품에 안 달린 중간 노드도 계층에 든다.
@@ -453,8 +454,7 @@ def cat_axes(data, base):
 
 
 def collect(db_path, contexts):
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    conn = open_db(db_path)          # 로컬 경로·libsql:// URL 둘 다 (D67)
     ctx_where, params = "", []
     if contexts:
         ctx_where = " AND o.context IN (%s)" % ",".join("?" * len(contexts))
@@ -538,7 +538,7 @@ def collect(db_path, contexts):
     proxies = []
     pconn = None
     ppath = proxy_db_path(db_path)
-    if os.path.exists(ppath):
+    if proxy_db_exists(ppath):
         pconn = proxy_connect(ppath)
     psrc = pconn or conn
     try:
@@ -818,8 +818,7 @@ def product_series(db_path, contexts):
     반환: {(site, product_id): [{observed_at, price_sale, like_count, review_count,
                                  sold_out, rank}, ...]}  — 시각 오름차순
     """
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    conn = open_db(db_path)
     where, params = "", []
     if contexts:
         where = " WHERE context IN (%s)" % ",".join("?" * len(contexts))

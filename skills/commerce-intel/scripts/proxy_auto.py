@@ -257,10 +257,9 @@ def main():
     cards, bad_cards = validate_cards(cards)
     for name, why in bad_cards:
         print("  카드 버림 %-16s %s" % (name, why))
-    conn = sqlite3.connect(a.db)
-    conn.row_factory = sqlite3.Row
+    from schema_v3 import open_db, proxy_connect, proxy_db_path
+    conn = open_db(a.db)             # 로컬 경로·libsql:// URL 둘 다 (D67)
     # 캐시는 별도 proxy.db에 있다 (D65-8) — 비전 배치 계획이 이걸 본다
-    from schema_v3 import proxy_connect, proxy_db_path
     pconn = proxy_connect(proxy_db_path(a.db))
     rows = _load_rows(conn, a.context)
     print("상품 %s건 · 카드 %d장" % ("{:,}".format(len(rows)), len(cards)))

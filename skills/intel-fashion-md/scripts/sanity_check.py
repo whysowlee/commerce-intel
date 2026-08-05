@@ -62,22 +62,29 @@ def fail(msg):
 
 
 def open_ro(path):
-    con = sqlite3.connect("file:%s?mode=ro" % path, uri=True)
-    # v3(D65-8)는 프록시 표가 별도 proxy.db다 — 있으면 읽기 전용으로 붙인다.
-    # 이름을 한정하지 않으므로 main에 표가 있으면(v2) main이 이기고, 없으면
-    # 붙인 쪽에서 풀린다 — 두 스키마가 같은 코드로 돈다.
-    px = _os.environ.get("INTEL_PROXY_DB") or _os.path.join(
-        _os.path.dirname(_os.path.abspath(path)), "proxy.db")
-    if _os.path.exists(px):
-        con.execute("ATTACH DATABASE 'file:%s?mode=ro' AS px" % px)
-    return con
+    """정본을 연다 — 로컬 파일은 읽기 전용(mode=ro), libsql:// URL은 Turso(D67).
+
+    Turso는 ATTACH를 지원하지 않으므로 프록시(px 필터)는 여기서 붙이지 않고
+    open_proxy()의 **별도 커넥션**으로 읽는다 — 로컬도 같은 경로로 통일한다.
+    """
+    if str(path).startswith("libsql://"):
+        from schema_v3 import open_db
+        return open_db(path)
+    return sqlite3.connect("file:%s?mode=ro" % path, uri=True)
+
+
+def open_proxy(path):
+    """프록시 DB 커넥션(px 필터용). 없으면 None — px 필터가 없으면 안 쓴다."""
+    from schema_v3 import proxy_connect, proxy_db_exists, proxy_db_path
+    px = proxy_db_path(str(path))
+    return proxy_connect(px) if proxy_db_exists(px) else None
 
 
 def table_columns(con, table):
     return [r[1] for r in con.execute("PRAGMA table_info(%s)" % table)]
 
 
-def build_rows(con, claim):
+def build_rows(con, claim, pxcon=None):
     """claim의 필터를 적용한 행(dict 리스트)을 결정적 순서로 반환."""
     table = claim.get("table", "observations")
     if table not in ALLOWED_TABLES:
@@ -173,14 +180,16 @@ def build_rows(con, claim):
         for site, pid, nm, img in con.execute(
                 "SELECT site, product_id, name, image_url FROM products"):
             pcols[(site, pid)] = {"name": nm, "image": img}
+        if pxcon is None:
+            raise ValueError("px 필터가 있는데 proxy DB가 없다 (proxy.db 또는 PROXY_DB_URL)")
         for px_name, want in sorted(px_filters.items()):
-            d = con.execute("SELECT material FROM proxy_defs WHERE proxy_name=?",
+            d = pxcon.execute("SELECT material FROM proxy_defs WHERE proxy_name=?",
                             (px_name,)).fetchone()
             if not d:
                 raise ValueError("proxy_defs에 없음: %s" % px_name)
             mat = d[0]
             vmap = {}
-            for site, pid, fp, val in con.execute(
+            for site, pid, fp, val in pxcon.execute(
                     "SELECT site, product_id, fingerprint, value FROM proxy_cache "
                     "WHERE proxy_name=? ORDER BY judged_at", (px_name,)):
                 cur = pcols.get((site, pid), {}).get(mat)
@@ -313,12 +322,12 @@ def compute(rows, claim):
     raise ValueError("허용되지 않은 metric: %s (허용: %s)" % (metric, ", ".join(METRICS)))
 
 
-def check_claim(con, claim):
+def check_claim(con, claim, pxcon=None):
     """claim 1건 검증. dict 결과 반환 (status: PASS/WARN/FAIL)."""
     cid = claim.get("id", "?")
     res = {"id": cid, "desc": claim.get("desc", "")}
     try:
-        rows = build_rows(con, claim)
+        rows = build_rows(con, claim, pxcon)
         got, n_used, n_null, warns = compute(rows, claim)
     except Exception as e:  # claim 해석 불가 = FAIL (조용히 스킵 금지)
         res.update(status="FAIL", reason="해석 불가: %s" % e)
@@ -390,7 +399,8 @@ def main():
         fail("claims 0건 — 빈 검증으로 PASS 처리하지 않음")
         return 2
 
-    results = [check_claim(con, c) for c in claims]
+    pxcon = open_proxy(args.db)
+    results = [check_claim(con, c, pxcon) for c in claims]
     n_pass = sum(1 for r in results if r["status"] == "PASS")
     n_warn = sum(1 for r in results if r["status"] == "WARN")
     n_fail = sum(1 for r in results if r["status"] == "FAIL")

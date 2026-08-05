@@ -29,16 +29,18 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# 작업 폴더 기준이다(스킬 §파일 규약). 스크립트 위치 기준이 아니므로
-# 스킬을 어디에 설치하든 DB는 그 작업의 data/ 아래에 생긴다.
-DEFAULT_DB = os.environ.get("INTEL_DB", "data/intel.db")
-STATIC_TTL_DAYS = 90          # D7
-DEFAULT_CYCLE_MINUTES = 1440  # D8 — 갱신 주기 미상일 때 24시간
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from schema_v3 import (SCHEMA_V3, TRIGGERS_V3, VIEWS_V3,   # noqa: E402
-                       assign_category, proxy_connect, proxy_db_path,
+                       assign_category, default_db_target, is_libsql_url,
+                       open_db, proxy_connect, proxy_db_exists, proxy_db_path,
                        rowid_parts)
+
+# 작업 폴더 기준이다(스킬 §파일 규약). Turso 이전(D67) 후에는 INTEL_DB_URL이
+# 이기고, 없으면 기존 INTEL_DB(로컬 경로) → data/intel.db 순이다.
+# 명시적 --db 인자는 항상 이 기본값을 이긴다.
+DEFAULT_DB = default_db_target()
+STATIC_TTL_DAYS = 90          # D7
+DEFAULT_CYCLE_MINUTES = 1440  # D8 — 갱신 주기 미상일 때 24시간
 
 # 속성별 ttl_days는 **명시된 것만 저장한다(미지정=NULL)**. NULL이면 reuse-attrs의
 # 전역 --ttl-days(기본 90=STATIC_TTL_DAYS)를 따른다 — 그래야 --ttl-days 0 같은 명시
@@ -74,15 +76,18 @@ def _is_view(conn, name):
 def connect(db_path):
     """DB를 연다. 새 DB는 v3로 짓고, v3면 뷰·트리거를 다시 얹는다(멱등 — D45 규약).
 
+    `libsql://` URL이면 Turso다(D67) — open_db()의 호환 래퍼가 sqlite3처럼
+    보이게 하므로 아래 로직은 로컬과 같은 코드로 돈다.
+
     **구 스키마(v1·v2)는 그대로 두고 열기를 거부한다** — 자동으로 갈아엎지 않는다.
     이관은 `migrate_v3.py`가 백업·검산까지 하고 바꿔 끼운다(v1은 `migrate_v2.py`를
     먼저). 정본을 조용히 바꾸지 않는다.
     """
-    parent = Path(db_path).parent
-    if str(parent) not in ("", "."):
-        parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    if not is_libsql_url(str(db_path)):
+        parent = Path(db_path).parent
+        if str(parent) not in ("", "."):
+            parent.mkdir(parents=True, exist_ok=True)
+    conn = open_db(db_path)
     ver = _schema_version(conn)
     if ver is None:
         conn.executescript(SCHEMA_V3)
@@ -457,6 +462,36 @@ def cmd_check(conn, args):
     return 0 if fresh else 1
 
 
+def check_duplicate_run(conn, site, story, target, within_hours=24):
+    """최근 N시간 안에 같은 (site, story, target) 수집이 있었나 (D67).
+
+    정본이 클라우드 공유가 되면 runs가 팀 전체의 이력이다 — 시트 우회 조회(D32)
+    없이 이 표만 봐도 "남이 방금 했다"가 잡힌다. 있으면 그 run을 돌려준다.
+    """
+    row = conn.execute(
+        "SELECT run_id, collected_at FROM runs "
+        "WHERE site=? AND story=? AND target=? "
+        "AND collected_at > datetime('now', ?) "
+        "ORDER BY collected_at DESC LIMIT 1",
+        (site, story, target, f"-{int(within_hours)} hours")).fetchone()
+    return dict(row) if row else None
+
+
+def cmd_check_run(conn, args):
+    """수집 시작 전 중복 확인. exit 0 = 진행 가능, 1 = 최근 수집 있음(--force로 무시)."""
+    dup = check_duplicate_run(conn, args.site, args.story, args.target,
+                              args.within_hours)
+    if dup and not args.force:
+        print(f"⚠️ 최근 수집 있음: {dup['run_id']} ({dup['collected_at']}) — "
+              f"{args.within_hours}시간 이내 같은 대상. 계속하려면 --force")
+        return 1
+    if dup:
+        print(f"최근 수집 {dup['run_id']}({dup['collected_at']})이 있지만 --force로 진행한다")
+    else:
+        print("최근 중복 수집 없음 — 진행 가능")
+    return 0
+
+
 def cmd_reuse_attrs(conn, args):
     """raw JSON의 미분류 상품에 DB의 TTL 유효 정적 속성을 채워 넣는다(핏 재분류 절감)."""
     data = json.loads(Path(args.raw).read_text(encoding="utf-8"))
@@ -804,7 +839,7 @@ def cmd_stats(conn, args):
         print(f"{t:20} {n:>8}")
     # 프록시는 별도 DB다 (D65-8) — 파일이 있을 때만 센다
     ppath = proxy_db_path(args.db)
-    if os.path.exists(ppath):
+    if proxy_db_exists(ppath):
         pconn = proxy_connect(ppath)
         for t in ("proxy_defs", "proxy_cache"):
             n = pconn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
@@ -1055,6 +1090,12 @@ def main():
     sp.add_argument("--config", default="data/sheets_config.json")
     sp.add_argument("--creds", default=os.environ.get(
         "INTEL_SHEETS_CREDENTIALS", str(Path.home() / ".config/intel/service-account.json")))
+    sp = sub.add_parser("check-run", help="수집 시작 전 최근 중복 수집 확인 (D67)")
+    sp.add_argument("--site", required=True)
+    sp.add_argument("--story", required=True)
+    sp.add_argument("--target", required=True)
+    sp.add_argument("--within-hours", type=int, default=24)
+    sp.add_argument("--force", action="store_true", help="중복이 있어도 진행")
     sp = sub.add_parser("reuse-attrs")
     sp.add_argument("raw")
     sp.add_argument("--out")
@@ -1092,6 +1133,8 @@ def main():
             load_file(conn, f)
     elif args.cmd == "check":
         sys.exit(cmd_check(conn, args))
+    elif args.cmd == "check-run":
+        sys.exit(cmd_check_run(conn, args))
     elif args.cmd == "reuse-attrs":
         cmd_reuse_attrs(conn, args)
     elif args.cmd == "merge":

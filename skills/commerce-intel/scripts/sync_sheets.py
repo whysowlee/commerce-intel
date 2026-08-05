@@ -24,7 +24,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from intel_db import connect  # noqa: E402
-from schema_v3 import proxy_connect, proxy_db_path, rowid_parts  # noqa: E402
+from schema_v3 import (proxy_connect, proxy_db_exists,  # noqa: E402
+                       proxy_db_path, rowid_parts)
 
 # 프록시 표 2종은 별도 DB(proxy.db — D65-8)에서 읽는다. 탭 구성은 그대로 —
 # 팀원이 보는 창구가 파일 분리 때문에 달라질 이유는 없다.
@@ -252,7 +253,7 @@ def main():
     # 프록시 표는 별도 DB에 산다 (D65-8). 파일이 없으면(아직 프록시 미사용) 그 탭은
     # 빈 테이블과 같게 다룬다 — 진행점(sync_state)은 여전히 정본 쪽에 남는다.
     ppath = proxy_db_path(args.db)
-    pconn = proxy_connect(ppath) if os.path.exists(ppath) else None
+    pconn = proxy_connect(ppath) if proxy_db_exists(ppath) else None
 
     def src_of(table):
         return pconn if table in PROXY_TABLES else conn

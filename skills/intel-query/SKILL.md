@@ -16,9 +16,11 @@ metadata:
 commerce-intel DB(Turso)를 자연어 질문으로 조회하는 스킬.
 비기술 팀원(마케터, 디자이너)이 SQL을 모르고도 데이터를 조회할 수 있게 한다.
 
-> **전제**: 정본 DB의 Turso 이전이 끝나 있어야 한다. 아직이면(로컬
-> `data/intel.db`만 있는 상태) 이 스킬은 동작하지 않는다 — 그때는 그 사실을
-> 말하고, 로컬 DB가 있는 환경이라면 commerce-intel 쪽 도구로 조회를 안내한다.
+> **전제**: 정본 DB의 Turso 이전이 끝나 있어야 한다(절차: 레포
+> `docs/TURSO-SETUP.md` — DB 생성·`tools/upload_to_turso.py` 이관·읽기 전용
+> 토큰 발급). 아직이면(로컬 `data/intel.db`만 있는 상태) 이 스킬은 동작하지
+> 않는다 — 그때는 그 사실을 말하고, 로컬 DB가 있는 환경이라면 commerce-intel
+> 쪽 도구로 조회를 안내한다.
 
 ## DB 연결 정보
 

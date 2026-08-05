@@ -444,6 +444,7 @@ platform-cafe24가 아니라 platform-ownmall이다). 신규 7건:
 | E-DB-32 | 브랜드 표기 변형 (D65-4) | 대표명·별명에 없는 표기가 brand_key(D51)로 기존 브랜드와 일치하면 **candidate 별명 자동 등록** 후 대표명으로 적재된다. 한글·영문은 묶지 않는다(음차 매칭 없음) | [자동] |
 | E-DB-33 | runs 정식 FK (D65-7) | runs는 정수 PK `id`, obs·variant_obs의 `run_id`가 그걸 FK로 가리킨다(v2 run_ref는 rowid 참조라 제약 불가였다). 이관은 id=구 rowid로 매겨 번역 없이 성립한다 | [자동] |
 | E-DB-34 | 시점 비정형 지표 (D65-6) | `items[].obs_attrs`가 obs_attr 행으로 붙는다. 값 null은 저장하지 않고, 관측 솎기 시 CASCADE로 함께 지워진다 | [자동] |
+| E-DB-36 | Turso 연결 (D67) | 모든 DB 열기는 `open_db()` 경유 — `libsql://`이면 호환 래퍼(행 이름 접근·IntegrityError 번역·lastrowid 대행)가 씌워진다. 환경변수 없으면 로컬 SQLite(하위호환), 명시적 `--db`가 환경변수를 이긴다. v3 뷰·트리거가 libsql 위에서 왕복하는 것까지 고정 | [자동 — tests/test_turso_connect.py A·B층. C층(실연결·읽기 전용 거부)은 자격 있을 때만] |
 | E-DB-35 | proxy.db 분리 (D65-8) | 프록시 표는 정본 옆 `proxy.db`다. 정의 삭제 시 캐시가 CASCADE로 함께 사라진다(FK는 커넥션마다 PRAGMA로 켜야 돈다). rule 카드는 lazy 판정 — collect가 캐시 miss를 defs.rules로 즉석 판정·적재한다 | [자동 — E-PXS·증분 키 회귀가 proxy.db 경로로 돈다] |
 
 ### 3-9. E-CH — 카테고리 계층 (2026-08-04 신설 · D42)
