@@ -30,6 +30,10 @@ turso db tokens create commerce-intel-proxy       # 프록시 쓰기 (lazy 판�
 
 turso db show commerce-intel --url                # libsql://commerce-intel-xxx.turso.io
 turso db show commerce-intel-proxy --url
+
+# (선택) 실연결 테스트 전용 DB — tests/test_turso_connect.py C층이 여기에만 쓴다.
+# 공유 정본에 테스트가 표를 만들었다 지우게 하지 않는다
+turso db create commerce-intel-test
 ```
 
 > **시트 미러는 읽기 전용 토큰으로 못 돈다** — `sync_state`(미러 진행점)를 DB에

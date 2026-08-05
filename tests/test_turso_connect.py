@@ -9,8 +9,11 @@
       (row 이름 접근·IntegrityError 번역·lastrowid·executescript).
       드라이버는 파이썬 3.10+에서만 설치된다 — 시스템 3.9면 스킵된다
   [B] 로컬 폴백 — 환경변수 없이 open_db가 로컬 SQLite로 도는지 (항상 돈다)
-  [C] Turso 실연결 — INTEL_DB_URL·INTEL_DB_TOKEN이 있을 때만:
-      연결·쓰기/읽기 왕복·(TURSO_RO_TOKEN이 있으면) 읽기 전용 토큰의 INSERT 거부
+  [C] Turso 실연결 — **TURSO_TEST_URL·TURSO_TEST_TOKEN**(테스트 전용 DB)이 있을
+      때만: 연결·쓰기/읽기 왕복·(TURSO_RO_TOKEN이 있으면) 읽기 전용 거부.
+      팀 공유 정본(INTEL_DB_URL)에는 절대 쓰지 않는다 — 테스트가 정본에 표를
+      만들었다 지우는 것 자체가 사고다(PR #13 리뷰). `turso db create
+      commerce-intel-test`로 따로 만든다.
 """
 import os
 import sqlite3
@@ -103,12 +106,16 @@ def local_fallback_tests():
 
 
 def turso_live_tests():
-    """[C] 실 Turso — 자격이 있을 때만. CI·로컬 기본 실행에서는 스킵된다."""
-    url = os.environ.get("INTEL_DB_URL", "")
+    """[C] 실 Turso — **테스트 전용 DB**(TURSO_TEST_URL)가 있을 때만.
+
+    INTEL_DB_URL(팀 공유 정본)은 쓰지 않는다 — 이 테스트는 표를 만들고 지운다.
+    """
+    url = os.environ.get("TURSO_TEST_URL", "")
     if not url.startswith("libsql://"):
-        print("  SKIP  [C] INTEL_DB_URL 미설정 — 실연결 검증 생략")
+        print("  SKIP  [C] TURSO_TEST_URL 미설정 — 실연결 검증 생략 "
+              "(테스트 전용 DB를 쓴다 — 공유 정본 INTEL_DB_URL 아님)")
         return
-    conn = open_db(url)
+    conn = open_db(url, token=os.environ.get("TURSO_TEST_TOKEN"))
     one = conn.execute("SELECT 1").fetchone()
     check("C1 Turso 연결·SELECT", one[0] == 1, one)
     conn.execute("CREATE TABLE IF NOT EXISTS _connect_test (k INTEGER, v TEXT)")

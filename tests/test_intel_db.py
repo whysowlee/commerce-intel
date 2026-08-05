@@ -531,6 +531,19 @@ def schema_v3_tests():
     fk = conn.execute("PRAGMA foreign_key_list(obs_base)").fetchall()
     check("E-DB-33b obs_base.run_id가 runs(id)를 정식 FK로 가리킨다",
           any(f[2] == "runs" and f[3] == "run_id" for f in fk), fk)
+    # E-DB-33c 미등록 run_id는 NULL로 새지 않고 즉시 죽는다 (PR #13 리뷰 — D59 함정)
+    loud = False
+    try:
+        conn.execute("INSERT INTO observations (site, product_id, observed_at, "
+                     "context, price_sale, run_id) VALUES "
+                     "('29cm','P1','2026-08-04 11:00:00','brand:t',1,'없는런')")
+    except sqlite3.IntegrityError:
+        loud = True
+    check("E-DB-33c 미등록 run_id는 트리거가 거부한다 (NULL로 흘리지 않는다)", loud)
+    check("E-DB-33d run_id 없는 관측(NULL)은 여전히 허용된다",
+          conn.execute("INSERT INTO observations (site, product_id, observed_at, "
+                       "context, price_sale) VALUES "
+                       "('29cm','P1','2026-08-04 11:30:00','brand:t',2)").rowcount >= 0)
 
     # E-DB-6 부분 SET UPDATE
     conn.execute("UPDATE products SET brand='새브랜드' WHERE site='29cm' AND product_id='P1'")
@@ -549,7 +562,8 @@ def schema_v3_tests():
     except sqlite3.IntegrityError:
         dup = True
     check("E-DB-5 중복 관측은 IntegrityError로 남는다", dup)
-    o = conn.execute("SELECT price_sale, rank, run_id, context FROM observations").fetchone()
+    o = conn.execute("SELECT price_sale, rank, run_id, context FROM observations "
+                     "WHERE context='ranking:t'").fetchone()
     check("E-DB-4 관측이 뷰로 그대로 읽힌다",
           tuple(o) == (1000, 3, "R1", "ranking:t"), tuple(o))
 
@@ -850,6 +864,33 @@ def context_tests():
           co({"story": "brand-linesheet", "target": "market:X"}) == "brand:market:X")
     check("E-CX-5 target이 비어도 죽지 않는다",
           co({"story": "ranking-snapshot"}) == "ranking:")
+
+
+def check_run_tests():
+    """팀 중복 수집 방지 (D67) — **시간대 회귀 포함** (PR #13 리뷰 Blocker).
+
+    collected_at은 로컬 시간 문자열이다. 컷오프를 SQL `datetime('now')`(UTC)로
+    계산하면 KST에서 창이 9시간 넓어진다 — "2시간 전 수집, 1시간 창"이 중복으로
+    오판된다. 그 케이스를 고정한다.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    intel_db = importlib.import_module("intel_db")
+    work = Path(tempfile.mkdtemp(prefix="ckrun-"))
+    conn = intel_db.connect(str(work / "r.db"))
+    two_h_ago = (datetime.now() - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute("INSERT INTO runs (run_id, site, story, target, collected_at) "
+                 "VALUES ('R2H','musinsa','ranking-snapshot','스커트',?)", (two_h_ago,))
+    conn.commit()
+    dup = intel_db.check_duplicate_run(conn, "musinsa", "ranking-snapshot", "스커트", 3)
+    check("E-DR-1 창 안(2시간 전, 창 3시간)의 수집은 중복으로 잡힌다",
+          dup and dup["run_id"] == "R2H", dup)
+    dup = intel_db.check_duplicate_run(conn, "musinsa", "ranking-snapshot", "스커트", 1)
+    check("E-DR-2 창 밖(2시간 전, 창 1시간)은 중복이 아니다 — UTC 혼용이면 "
+          "KST에서 여기가 중복으로 오판된다", dup is None, dup)
+    check("E-DR-3 다른 target은 남의 일이다",
+          intel_db.check_duplicate_run(conn, "musinsa", "ranking-snapshot", "바지", 24) is None)
+    shutil.rmtree(work, ignore_errors=True)
 
 
 def modeling_role_tests():
@@ -1379,6 +1420,9 @@ def main():
     print("[21] 문맥 문자열·역할 규칙 (D51)")
     context_tests()
     modeling_role_tests()
+
+    print("[21c] 팀 중복 수집 방지 — 시간대 회귀 (D67 · E-DR)")
+    check_run_tests()
 
     print("[21b] 프록시 값 공간 위생 (D53 · E-PXS)")
     proxy_space_tests()

@@ -467,13 +467,18 @@ def check_duplicate_run(conn, site, story, target, within_hours=24):
 
     정본이 클라우드 공유가 되면 runs가 팀 전체의 이력이다 — 시트 우회 조회(D32)
     없이 이 표만 봐도 "남이 방금 했다"가 잡힌다. 있으면 그 run을 돌려준다.
+
+    **컷오프는 파이썬 로컬 시간으로 계산한다** — `collected_at`은 now_str() 규약의
+    로컬 시간 문자열인데 SQL의 `datetime('now')`는 UTC라, 섞으면 KST 기준 창이
+    9시간 넓어진다(PR #13 리뷰 Blocker). cmd_check·reuse-attrs와 같은 규약이다.
     """
+    cutoff = (datetime.now() - timedelta(hours=within_hours)).strftime(
+        "%Y-%m-%d %H:%M:%S")
     row = conn.execute(
         "SELECT run_id, collected_at FROM runs "
-        "WHERE site=? AND story=? AND target=? "
-        "AND collected_at > datetime('now', ?) "
+        "WHERE site=? AND story=? AND target=? AND collected_at > ? "
         "ORDER BY collected_at DESC LIMIT 1",
-        (site, story, target, f"-{int(within_hours)} hours")).fetchone()
+        (site, story, target, cutoff)).fetchone()
     return dict(row) if row else None
 
 

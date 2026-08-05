@@ -39,6 +39,7 @@ v2(D45)가 반복 텍스트를 정수로 접었다면, v3는 **묵시적이던 �
   매칭 → 별명 등록)는 파이썬 `resolve_brand()`(intel_db)가 적재 경로에서 한다.
 """
 import os
+import sys
 from pathlib import Path
 
 # 사전 + 본체. 뷰가 구 이름을 그대로 쓰므로 물리 테이블은 `_base`를 유지한다.
@@ -282,7 +283,8 @@ def _translate_libsql_error(e):
     import sqlite3
     msg = str(e)
     if any(k in msg for k in ("UNIQUE constraint", "NOT NULL constraint",
-                              "CHECK constraint", "FOREIGN KEY constraint")):
+                              "CHECK constraint", "FOREIGN KEY constraint",
+                              "미등록 run_id")):   # 트리거 RAISE(ABORT) — sqlite3와 같은 분류로
         return sqlite3.IntegrityError(msg)
     return sqlite3.OperationalError(msg)
 
@@ -600,6 +602,12 @@ END;
 
 DROP TRIGGER IF EXISTS trg_obs_ins;
 CREATE TRIGGER trg_obs_ins INSTEAD OF INSERT ON observations BEGIN
+  -- 미등록 run_id는 **그 자리에서 죽는다** (PR #13 리뷰). NULL로 흘리면 관측이
+  -- 수집 이력과 조용히 끊긴다 — D59가 두 번 재발한 바로 그 함정이라, 호출 순서
+  -- 규율(런 먼저)만으로는 부족하고 트리거가 막는다. run_id 없는 관측은 허용.
+  SELECT RAISE(ABORT, '미등록 run_id — 런(runs)을 먼저 넣어라 (D59)')
+   WHERE NEW.run_id IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM runs WHERE run_id = NEW.run_id);
   INSERT OR IGNORE INTO contexts(name) VALUES (NEW.context);
   INSERT INTO obs_base (pk, observed_at, context_id, run_id,
       price_original, price_sale, discount_rate, review_count, rating,
@@ -632,6 +640,9 @@ END;
 
 DROP TRIGGER IF EXISTS trg_vobs_ins;
 CREATE TRIGGER trg_vobs_ins INSTEAD OF INSERT ON variant_observations BEGIN
+  SELECT RAISE(ABORT, '미등록 run_id — 런(runs)을 먼저 넣어라 (D59)')
+   WHERE NEW.run_id IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM runs WHERE run_id = NEW.run_id);
   INSERT INTO variant_obs_base (vk, observed_at, sold_out, stock_qty,
                                 stock_display, stock_basis, run_id)
   VALUES (
@@ -705,7 +716,13 @@ def brand_id(conn, name, cache):
 
 # ── 카테고리 경로 (D65-3) ──────────────────────────────────────────────────
 def split_category(path):
-    """`'여성 > 스커트 > 미니'` → ['여성', '스커트', '미니']. 빈 조각은 버린다."""
+    """`'여성 > 스커트 > 미니'` → ['여성', '스커트', '미니']. 빈 조각은 버린다.
+
+    **알려진 한계**: 카테고리 이름 자체에 `>`가 들어 있으면 그 지점에서 갈린다 —
+    평문 경로 문자열에는 구분자와 리터럴을 가를 방법이 없다(이스케이프 규약이
+    없다). 실측 카탈로그 1,546개·라이브 442행에는 그런 이름이 없고, 나타나면
+    수집 어댑터가 이름을 치환하는 것이 맞다(저장 형식이 아니라 입력의 문제다).
+    """
     if not path:
         return []
     return [p.strip() for p in str(path).split(">") if p.strip()]
@@ -720,6 +737,12 @@ def ensure_category_path(conn, path, cache=None):
     parts = split_category(path)
     if not parts:
         return None
+    if len(parts) > 5:
+        # products 뷰는 5단까지만 도로 편다(리프 쪽 우선) — 조용히 잘리면 아무도
+        # 모른다(PR #13 리뷰). 저장은 전 단계가 되므로 뷰(VIEWS_V3)만 늘리면 된다.
+        print("경고: 카테고리 깊이 %d단 — products 뷰는 5단까지만 편다. "
+              "VIEWS_V3의 카테고리 체인을 늘려라: %s" % (len(parts), path),
+              file=sys.stderr)
     cache = cache if cache is not None else {}
     parent = None
     for depth, name in enumerate(parts, start=1):

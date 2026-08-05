@@ -335,6 +335,7 @@ def main():
                       % ("{:,}".format(plan["no_material"]), mat))
         print("  → 배치를 proxy-extractor 에이전트들에 나눠 주고, 결과를 proxy-load")
     conn.close()
+    pconn.close()
     return 0
 
 

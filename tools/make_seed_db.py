@@ -184,10 +184,16 @@ def copy_proxy(src_db: Path, dst_path: Path) -> dict[str, int]:
     if not dst.execute("SELECT 1 FROM sqlite_master WHERE name='proxy_defs'").fetchone():
         dst.executescript(PROXY_SCHEMA)
     dst.execute("ATTACH DATABASE ? AS px", (str(ppath),))
+    # 컬럼을 명시한다 — `SELECT *`는 두 DB의 컬럼 순서 일치를 암묵 가정한다
+    # (스키마가 한쪽만 늘면 조용히 어긋난다 — 이 파일의 다른 insert와 같은 규칙)
+    dcols = "proxy_name, question, material, value_space, method, created_at, label, rules"
+    ccols = "proxy_name, site, product_id, fingerprint, value, basis, judged_at"
     n_def = dst.execute(
-        "INSERT OR IGNORE INTO main.proxy_defs SELECT * FROM px.proxy_defs").rowcount
+        f"INSERT OR IGNORE INTO main.proxy_defs ({dcols}) "
+        f"SELECT {dcols} FROM px.proxy_defs").rowcount
     n_cache = dst.execute(
-        "INSERT OR IGNORE INTO main.proxy_cache SELECT c.* FROM px.proxy_cache c "
+        f"INSERT OR IGNORE INTO main.proxy_cache ({ccols}) "
+        f"SELECT {ccols} FROM px.proxy_cache c "
         "WHERE (c.site, c.product_id) IN (SELECT site, product_id FROM main.products)"
     ).rowcount
     dst.commit()
