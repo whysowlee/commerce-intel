@@ -62,7 +62,15 @@ def fail(msg):
 
 
 def open_ro(path):
-    return sqlite3.connect("file:%s?mode=ro" % path, uri=True)
+    con = sqlite3.connect("file:%s?mode=ro" % path, uri=True)
+    # v3(D65-8)는 프록시 표가 별도 proxy.db다 — 있으면 읽기 전용으로 붙인다.
+    # 이름을 한정하지 않으므로 main에 표가 있으면(v2) main이 이기고, 없으면
+    # 붙인 쪽에서 풀린다 — 두 스키마가 같은 코드로 돈다.
+    px = _os.environ.get("INTEL_PROXY_DB") or _os.path.join(
+        _os.path.dirname(_os.path.abspath(path)), "proxy.db")
+    if _os.path.exists(px):
+        con.execute("ATTACH DATABASE 'file:%s?mode=ro' AS px" % px)
+    return con
 
 
 def table_columns(con, table):

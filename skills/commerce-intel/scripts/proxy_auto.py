@@ -158,6 +158,17 @@ def _cached(conn, proxy_name):
         return set()
 
 
+def _card_proxy(card):
+    """카드 → proxy-load가 먹는 정의 dict. `label`(D56)과 **rule 본문**(D65-8)을
+    함께 넘긴다 — 본문이 defs에 저장돼야 분석이 캐시 miss를 즉석(lazy) 판정한다."""
+    proxy = {k: card[k] for k in
+             ("proxy_name", "question", "material", "method", "label",
+              "rules", "numeric")
+             if k in card}
+    proxy["value_space"] = "numeric" if card.get("numeric") else card.get("value_space")
+    return proxy
+
+
 def run_rules(rows, cards):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     out = []
@@ -172,13 +183,7 @@ def run_rules(rows, cards):
                            "value": value, "basis": basis,
                            "fingerprint": str(_material(r, card.get("material", "name"))),
                            "judged_at": now})
-        # `label`도 넘긴다 (D56) — 리포트 축 이름이 여기서 오지 않으면
-        # `denim_rise` 같은 내부 이름이 그대로 PDF에 찍힌다
-        proxy = {k: card[k] for k in
-                 ("proxy_name", "question", "material", "method", "label")
-                 if k in card}
-        proxy["value_space"] = "numeric" if card.get("numeric") else card.get("value_space")
-        out.append({"proxy": proxy, "judgments": judged,
+        out.append({"proxy": _card_proxy(card), "judgments": judged,
                     "_coverage": len(judged) / len(rows) if rows else 0})
     return out
 
@@ -241,7 +246,10 @@ def main():
     ap.add_argument("--batch-size", type=int, default=30,
                     help="배치 하나에 담을 재료 수 (기본 30)")
     ap.add_argument("--min-coverage", type=float, default=0.10,
-                    help="이 비율 미만으로만 판정된 rule 카드는 버린다 (기본 0.10)")
+                    help="이 비율 미만으로만 판정된 rule 카드는 버린다 (기본 0.10, --eager 전용)")
+    ap.add_argument("--eager", action="store_true",
+                    help="rule 카드를 지금 전량 판정한다 (D65-8 이전의 기본 동작). "
+                         "없으면 정의만 내보내고 판정은 분석 시점에 lazy로 된다")
     a = ap.parse_args()
 
     raw = json.load(open(a.cards, encoding="utf-8"))
@@ -251,39 +259,53 @@ def main():
         print("  카드 버림 %-16s %s" % (name, why))
     conn = sqlite3.connect(a.db)
     conn.row_factory = sqlite3.Row
+    # 캐시는 별도 proxy.db에 있다 (D65-8) — 비전 배치 계획이 이걸 본다
+    from schema_v3 import proxy_connect, proxy_db_path
+    pconn = proxy_connect(proxy_db_path(a.db))
     rows = _load_rows(conn, a.context)
     print("상품 %s건 · 카드 %d장" % ("{:,}".format(len(rows)), len(cards)))
 
     # ── rule ────────────────────────────────────────────────────────────
+    # 기본은 **lazy**다 (D65-8): 정의(카드 본문 포함)만 내보내고, 판정은 분석
+    # (intel_data.collect)이 캐시 miss를 만난 시점에 즉석으로 한다. --eager는
+    # 지금 전량 판정하는 옛 동작 — 커버리지·값 다양성 필터는 판정이 있어야
+    # 성립하므로 eager 쪽에만 있다.
     rule_cards = [c for c in cards if c.get("method", "rule") == "rule"]
     kept, dropped = [], []
-    for r in run_rules(rows, rule_cards):
-        name = r["proxy"]["proxy_name"]
-        # 커버리지가 바닥이면 축으로 못 쓴다 — 그룹 비교는 값마다 n이 필요하다.
-        # **버렸다는 사실을 찍는다.** 조용히 빠지면 "신호가 없었다"로 읽힌다.
-        if r["_coverage"] < a.min_coverage:
-            dropped.append((name, "커버리지 %.0f%%" % (100 * r["_coverage"])))
-            continue
-        if r["proxy"].get("value_space") != "numeric" \
-                and len({j["value"] for j in r["judgments"]}) < 2:
-            dropped.append((name, "값이 1종뿐 — 비교 상대가 없다"))
-            continue
-        kept.append({"proxy": r["proxy"], "judgments": r["judgments"]})
+    if a.eager:
+        for r in run_rules(rows, rule_cards):
+            name = r["proxy"]["proxy_name"]
+            # 커버리지가 바닥이면 축으로 못 쓴다 — 그룹 비교는 값마다 n이 필요하다.
+            # **버렸다는 사실을 찍는다.** 조용히 빠지면 "신호가 없었다"로 읽힌다.
+            if r["_coverage"] < a.min_coverage:
+                dropped.append((name, "커버리지 %.0f%%" % (100 * r["_coverage"])))
+                continue
+            if r["proxy"].get("value_space") != "numeric" \
+                    and len({j["value"] for j in r["judgments"]}) < 2:
+                dropped.append((name, "값이 1종뿐 — 비교 상대가 없다"))
+                continue
+            kept.append({"proxy": r["proxy"], "judgments": r["judgments"]})
+    else:
+        kept = [{"proxy": _card_proxy(c), "judgments": []} for c in rule_cards]
 
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
     json.dump(kept, open(a.out, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-    print("\n[rule] 즉석 판정")
-    for r in kept:
-        vals = {}
-        for j in r["judgments"]:
-            vals[j["value"]] = vals.get(j["value"], 0) + 1
-        top = ", ".join("%s %s" % (k, v) for k, v in
-                        sorted(vals.items(), key=lambda kv: -kv[1])[:4])
-        print("  채택 %-18s %5d건 (%3.0f%%) — %s"
-              % (r["proxy"]["proxy_name"], len(r["judgments"]),
-                 100 * len(r["judgments"]) / (len(rows) or 1), top))
-    for name, why in dropped:
-        print("  버림 %-18s %s" % (name, why))
+    if a.eager:
+        print("\n[rule] 즉석 판정 (--eager)")
+        for r in kept:
+            vals = {}
+            for j in r["judgments"]:
+                vals[j["value"]] = vals.get(j["value"], 0) + 1
+            top = ", ".join("%s %s" % (k, v) for k, v in
+                            sorted(vals.items(), key=lambda kv: -kv[1])[:4])
+            print("  채택 %-18s %5d건 (%3.0f%%) — %s"
+                  % (r["proxy"]["proxy_name"], len(r["judgments"]),
+                     100 * len(r["judgments"]) / (len(rows) or 1), top))
+        for name, why in dropped:
+            print("  버림 %-18s %s" % (name, why))
+    else:
+        print("\n[rule] 정의 %d장 내보냄 — 판정은 분석 시점에 lazy (지금 하려면 --eager)"
+              % len(kept))
     print("  → intel_db.py proxy-load %s" % a.out)
 
     # ── vision ──────────────────────────────────────────────────────────
@@ -294,7 +316,7 @@ def main():
     elif vision_cards:
         os.makedirs(a.batch_dir, exist_ok=True)
         print("\n[vision] 서브 에이전트에 던질 배치 — 재료 하나에 질문 여러 개")
-        for plan in plan_vision(conn, rows, vision_cards, a.batch_size):
+        for plan in plan_vision(pconn, rows, vision_cards, a.batch_size):
             mat = plan["material"]
             for i, batch in enumerate(plan["batches"], 1):
                 path = os.path.join(a.batch_dir, "%s-%03d.json" % (mat, i))

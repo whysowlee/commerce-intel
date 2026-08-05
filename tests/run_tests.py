@@ -322,9 +322,9 @@ def main():
         c.execute("INSERT INTO products (site, product_id, name, brand, category) "
                   "VALUES ('musinsa',?,?,?,'데님팬츠')", (pid, "n-" + pid, brand))
     c.execute("INSERT INTO observations (site, product_id, observed_at, context, run_id) "
-              "VALUES ('musinsa','p2','2026-08-04 00:00:00','market','r-in')")
+              "VALUES ('musinsa','p2','2026-08-04 00:00:00','market:데님팬츠(여성)','r-in')")
     c.execute("INSERT INTO observations (site, product_id, observed_at, context, run_id) "
-              "VALUES ('musinsa','p3','2026-08-04 00:00:00','market','r-out')")
+              "VALUES ('musinsa','p3','2026-08-04 00:00:00','market:데님팬츠(남성)','r-out')")
     c.execute("INSERT INTO insights (run_stamp, target, context, verdict, idx, claim) "
               "VALUES ('s','자사','brand:2000아카이브스','strong',1,'주장')")
     c.execute("INSERT INTO insights (run_stamp, target, context, verdict, idx, claim) "
@@ -363,9 +363,9 @@ def main():
           rc2.returncode == 1 and "범위 밖 상품" in (rc2.stdout + rc2.stderr),
           rc2.stdout + rc2.stderr)
 
-    print("\n[M] merge — 새로 만든 DB(v2)에 합쳐지는가 (D59)")
+    print("\n[M] merge — 새로 만든 DB(v3)에 합쳐지는가 (D59·D65)")
 
-    # 새 DB는 항상 v2로 지어지고, v2에서 옛 이름은 뷰다(D45). 그래서
+    # 새 DB는 항상 v3로 지어지고, 옛 이름은 뷰다(D45). 그래서
     # ① 뷰에는 업서트를 못 쓰고 ② 관측은 상품·런보다 **나중에** 들어가야 하며
     # ③ 속성 판정은 애초에 merge 대상에서 빠져 있었다. 팀원이 seed를 합치는
     # 바로 그 첫 명령이 여기에 전부 걸렸다 — 실측으로 잡은 것을 고정한다.
@@ -376,7 +376,7 @@ def main():
     s.execute("INSERT INTO products (site, product_id, name, brand, category) "
               "VALUES ('musinsa','x1','이름','브랜드','데님팬츠')")
     s.execute("INSERT INTO observations (site, product_id, observed_at, context, "
-              "price_sale, run_id) VALUES ('musinsa','x1','2026-08-04 00:00:00','market',10000,'r1')")
+              "price_sale, run_id) VALUES ('musinsa','x1','2026-08-04 00:00:00','market:데님팬츠(여성)',10000,'r1')")
     s.execute("INSERT INTO product_attributes (site, product_id, attr_name, value, basis, "
               "decided_at) VALUES ('musinsa','x1','핏','와이드','image','2026-08-04 00:00:00')")
     s.commit()

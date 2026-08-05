@@ -21,8 +21,12 @@ import os
 import re
 import sqlite3
 import statistics as st
+import sys
 from collections import Counter
 from datetime import datetime
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from schema_v3 import category_path_map, proxy_connect, proxy_db_path  # noqa: E402
 
 # ── 동일 상품 매칭 ──────────────────────────────────────────────────────────
 # 규칙은 하나뿐이다: **정규화 상품명 완전일치.** 유사도·가격 보조 매칭은 금지다 —
@@ -304,11 +308,18 @@ def category_hierarchy(db_path, catalog_path=None):
         pass    # 카탈로그가 없어도 DB 경로만으로 돌아간다 — 덜 걸러질 뿐이다
     try:
         conn = sqlite3.connect(db_path)
-        rows = conn.execute(
-            "SELECT DISTINCT category FROM products WHERE category LIKE '%>%'").fetchall()
+        try:
+            # v3 (D65-3): 계층이 categories 표에 정식으로 있다 — parent 사슬을 그대로
+            # 배운다. 깊이 제한이 없고, 상품에 안 달린 중간 노드도 계층에 든다.
+            for path in category_path_map(conn).values():
+                _feed_path([p.strip() for p in path.split(">") if p.strip()], anc, parent)
+        except sqlite3.Error:
+            # v2 이하 폴백 — 상품의 경로 문자열에서 배운다
+            rows = conn.execute(
+                "SELECT DISTINCT category FROM products WHERE category LIKE '%>%'").fetchall()
+            for (c,) in rows:
+                _feed_path([p.strip() for p in c.split(">") if p.strip()], anc, parent)
         conn.close()
-        for (c,) in rows:
-            _feed_path([p.strip() for p in c.split(">") if p.strip()], anc, parent)
     except sqlite3.Error:
         pass
     # 자식을 거느린 적이 있는 값 = 우산. parent 맵의 값들이 곧 그 목록이다.
@@ -448,10 +459,11 @@ def collect(db_path, contexts):
     if contexts:
         ctx_where = " AND o.context IN (%s)" % ",".join("?" * len(contexts))
         params = list(contexts)
-    # 상품별 최신 관측 + 정적 속성
+    # 상품별 최신 관측 + 정적 속성. attributes(JSON)는 v3에서 사라졌다(D65-2) —
+    # 속성은 product_attributes(attr_base)가 유일한 정본이다.
     rows = conn.execute(f"""
         SELECT p.site, p.product_id, p.name, p.url, p.image_url, p.brand, p.category,
-               p.attributes, o.observed_at, o.context,
+               o.observed_at, o.context,
                o.price_original, o.price_sale, o.discount_rate, o.review_count, o.rating,
                o.purchase_count, o.like_count, o.viewers_now, o.sold_out, o.rank,
                -- 구간 표기 원문 (D48) — `add_bands()`가 이걸 읽어 순서형 축을 만든다.
@@ -481,8 +493,7 @@ def collect(db_path, contexts):
             continue
         seen.add(key)
         d = dict(r)
-        attrs = json.loads(d.pop("attributes") or "{}")
-        attrs.update(dyn_attrs.get(key, {}))   # 표가 JSON을 덮는다(더 최신)
+        attrs = dict(dyn_attrs.get(key, {}))
         d["fit"] = attrs.get("핏")
         d["color"] = attrs.get("컬러")         # 컬러 축은 인프라만 — 채우는 건 8번(보류)
         # **동적 속성을 전부 필드로 편다** (D54). D35가 "스키마 변경 없이 축을
@@ -521,10 +532,17 @@ def collect(db_path, contexts):
             })
         prev[key] = dict(r)
 
-    # 파생 프록시 주입 (D19) — 재료 지문이 현재 값과 맞는 캐시만 유효하다
+    # 파생 프록시 주입 (D19) — 재료 지문이 현재 값과 맞는 캐시만 유효하다.
+    # v3: 정의·캐시는 별도 proxy.db다(D65-8). 파일이 없으면 정본 안의 옛 표를
+    # 본다(v2 스냅샷·리허설 DB 하위호환) — 어느 쪽도 없으면 프록시 없음.
     proxies = []
+    pconn = None
+    ppath = proxy_db_path(db_path)
+    if os.path.exists(ppath):
+        pconn = proxy_connect(ppath)
+    psrc = pconn or conn
     try:
-        defs = conn.execute("SELECT * FROM proxy_defs").fetchall()
+        defs = psrc.execute("SELECT * FROM proxy_defs").fetchall()
     except sqlite3.OperationalError:
         defs = []
     for d in defs:
@@ -535,10 +553,47 @@ def collect(db_path, contexts):
             space = d["value_space"]
         is_numeric = space == "numeric"
         cache = {(r["site"], r["product_id"]): (r["fingerprint"], r["value"])
-                 for r in conn.execute(
+                 for r in psrc.execute(
                      "SELECT site, product_id, fingerprint, value FROM proxy_cache "
                      "WHERE proxy_name=? ORDER BY judged_at", (pn,))}
         fp_field = {"image": "image_url", "name": "name"}.get(mat)
+        # ── lazy 판정 (D65-8) ─────────────────────────────────────────
+        # rule 카드는 본문이 defs.rules에 있다 — 캐시 miss(미판정·재료 교체)를
+        # 여기서 즉석 판정하고 캐시에 남긴다. 전량 선행 판정(proxy_auto --eager)
+        # 없이도 분석 시점에 축이 채워진다. vision 카드는 재료가 이미지라 배치
+        # 경로(proxy_auto → proxy-extractor)만 가능하다 — 여기선 건드리지 않는다.
+        card = None
+        if pconn is not None:
+            try:
+                body = json.loads(d["rules"]) if d["rules"] else None
+            except (TypeError, ValueError, KeyError, IndexError):
+                body = None
+            if body:
+                card = dict(body, proxy_name=pn, material=mat)
+        if card:
+            import proxy_auto                       # 판정 규칙은 한 벌이다 (D43)
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            wrote = 0
+            for it in items:
+                k = (it["site"], it["product_id"])
+                fp_now = it.get(fp_field) if fp_field else None
+                hit = cache.get(k)
+                if hit and (fp_field is None or hit[0] == fp_now):
+                    continue
+                res = proxy_auto.judge_row(card, it)
+                if res is None:
+                    continue                        # 판정 불가 — 저장하지 않는다
+                val, basis = res
+                if isinstance(space, list) and val not in space:
+                    continue                        # 값 공간 밖 — 정의가 계약이다
+                fp = str(fp_now if fp_now is not None else (it.get("name") or ""))
+                pconn.execute(
+                    "INSERT OR IGNORE INTO proxy_cache VALUES (?,?,?,?,?,?,?)",
+                    (pn, it["site"], str(it["product_id"]), fp, val, basis, now))
+                cache[k] = (fp, val)
+                wrote += 1
+            if wrote:
+                pconn.commit()
         judged = 0
         for it in items:
             hit = cache.get((it["site"], it["product_id"]))
@@ -580,6 +635,8 @@ def collect(db_path, contexts):
                         "judged": judged, "unjudged": len(items) - judged,
                         # 리포트가 "왜 이 축이 없나"에 답할 수 있어야 한다
                         "off_space": off})
+    if pconn is not None:
+        pconn.close()
 
     # 시계열 — 축적 관측이 있는 상품의 시점별 지표. 시점이 2개 이상인 상품만.
     ts_rows = conn.execute(f"""

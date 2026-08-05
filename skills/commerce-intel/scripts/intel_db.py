@@ -36,176 +36,10 @@ STATIC_TTL_DAYS = 90          # D7
 DEFAULT_CYCLE_MINUTES = 1440  # D8 — 갱신 주기 미상일 때 24시간
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from schema_v2 import (SCHEMA_V2, TRIGGERS_V2, VIEWS_V2,   # noqa: E402
+from schema_v3 import (SCHEMA_V3, TRIGGERS_V3, VIEWS_V3,   # noqa: E402
+                       assign_category, proxy_connect, proxy_db_path,
                        rowid_parts)
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS products (
-    site TEXT NOT NULL,
-    product_id TEXT NOT NULL,
-    name TEXT, url TEXT, image_url TEXT, brand TEXT, category TEXT,
-    attributes TEXT,          -- JSON 문자열 (예: {"핏": "와이드"})
-    attributes_basis TEXT,    -- name/detail/image/group/unknown
-    static_verified_at TEXT,  -- 정적 속성 TTL 기준 시각
-    first_seen_at TEXT, last_seen_at TEXT,
-    PRIMARY KEY (site, product_id)
-);
-CREATE TABLE IF NOT EXISTS observations (
-    site TEXT NOT NULL,
-    product_id TEXT NOT NULL,
-    observed_at TEXT NOT NULL,
-    context TEXT NOT NULL,    -- 예: "ranking:바지" · "brand:인사일런스" · "market:데님팬츠(남성)"
-    price_original INTEGER, price_sale INTEGER, discount_rate INTEGER,
-    review_count INTEGER, rating REAL,
-    view_count INTEGER, view_count_display TEXT,
-    purchase_count INTEGER, purchase_count_display TEXT,
-    like_count INTEGER, like_count_display TEXT,
-    viewers_now INTEGER, buyers_now INTEGER,
-    sold_out INTEGER,         -- 0/1/NULL(미노출)
-    rank INTEGER,
-    run_id TEXT,
-    PRIMARY KEY (site, product_id, observed_at, context)
-);
-CREATE INDEX IF NOT EXISTS idx_obs_context ON observations (site, context, observed_at);
-CREATE TABLE IF NOT EXISTS variants (          -- 옵션 구성 (정적)
-    site TEXT NOT NULL,
-    product_id TEXT NOT NULL,
-    option_id TEXT NOT NULL,
-    option_name TEXT, color TEXT, size TEXT,
-    first_seen_at TEXT, last_seen_at TEXT,
-    PRIMARY KEY (site, product_id, option_id)
-);
-CREATE TABLE IF NOT EXISTS variant_observations (  -- 옵션별 재고 관측 (append only)
-    site TEXT NOT NULL,
-    product_id TEXT NOT NULL,
-    option_id TEXT NOT NULL,
-    observed_at TEXT NOT NULL,
-    sold_out INTEGER,
-    stock_qty INTEGER, stock_display TEXT,
-    stock_basis TEXT,          -- option_api/probe_read/probe_cart/unknown
-    run_id TEXT,
-    PRIMARY KEY (site, product_id, option_id, observed_at)
-);
-CREATE TABLE IF NOT EXISTS product_attributes (  -- 동적 속성 (D35 — 2026-08-03)
-    -- 스키마 변경 없이 분석 축을 늘린다. 핏 하나만 담던 products.attributes(JSON)로는
-    -- 컬러·소재·넥라인·시즌을 더할 때마다 컬럼을 추가해야 했다. 축을 행으로 뺀다.
-    -- proxy_cache와 같은 모양이라, AI 프록시 판정(D19) 결과도 그대로 이 표로 들어온다.
-    site TEXT NOT NULL,
-    product_id TEXT NOT NULL,
-    attr_name TEXT NOT NULL,      -- "핏" · "컬러" · "소재" · "넥라인" …
-    value TEXT,                   -- 판정 값 (null = 판정 실패는 저장하지 않는다)
-    basis TEXT,                   -- name/detail/image/group/proxy/unknown
-    decided_at TEXT,              -- TTL 기준 시각
-    ttl_days INTEGER,             -- 속성별 만료(컬러는 안 변함=크게, 시즌은 짧게). null=기본 90
-    PRIMARY KEY (site, product_id, attr_name)
-);
-CREATE INDEX IF NOT EXISTS idx_attr_name ON product_attributes (attr_name, value);
-CREATE TABLE IF NOT EXISTS platforms (
-    platform_key TEXT PRIMARY KEY,   -- 예: "musinsa" · "zigzag"
-    name TEXT, url TEXT, engine TEXT,
-    discovered_for_brand TEXT,
-    recon TEXT,               -- 정찰 결과 JSON (channel-scout 산출)
-    skill_status TEXT,        -- none/candidate/recon_done/draft/ready
-    updated_at TEXT
-);
-CREATE TABLE IF NOT EXISTS runs (
-    run_id TEXT PRIMARY KEY,
-    site TEXT, story TEXT, target TEXT,
-    collected_at TEXT, item_count INTEGER, source_total INTEGER,
-    incomplete INTEGER, notes TEXT, raw_file TEXT, loaded_at TEXT
-);
-CREATE TABLE IF NOT EXISTS proxy_defs (       -- 파생 프록시 정의 카드 (D19)
-    proxy_name TEXT PRIMARY KEY,
-    question TEXT, material TEXT,  -- name/image/badge/detail
-    value_space TEXT,              -- JSON 배열 또는 "numeric"
-    method TEXT,                   -- rule/vision/llm
-    created_at TEXT
-);
-CREATE TABLE IF NOT EXISTS proxy_cache (       -- 판정 캐시 — 재료 지문이 같으면 재사용
-    proxy_name TEXT NOT NULL,
-    site TEXT NOT NULL, product_id TEXT NOT NULL,
-    fingerprint TEXT NOT NULL,     -- 판정 재료 식별자(image_url·name 등)
-    value TEXT, basis TEXT, judged_at TEXT,
-    PRIMARY KEY (proxy_name, site, product_id, fingerprint)
-);
-CREATE TABLE IF NOT EXISTS insights (       -- 인사이트 엔진 산출 (D28)
-    -- 팀원이 읽는 창구는 시트다(D31 개정 2026-08-03). PDF는 네 손에서만 나오므로
-    -- 결과가 DB를 거쳐야 미러가 실어 나른다. 파이프라인 원칙과 같다 — 무엇도 DB를
-    -- 건너뛰지 않는다.
-    run_stamp TEXT NOT NULL,       -- 같은 실행의 결과를 묶는 키 (YYYYMMDD-HHmm)
-    target TEXT NOT NULL,          -- 리포트 대상 이름
-    context TEXT,                  -- 관측 문맥 (쉼표 구분)
-    verdict TEXT NOT NULL,         -- strong / weak / rejected
-    idx INTEGER NOT NULL,          -- 그 갈래 안의 순번 (1부터)
-    claim TEXT, audience TEXT,
-    effect REAL, effect_kind TEXT, n INTEGER, p REAL,
-    holdout TEXT, fails TEXT, recheck TEXT,
-    detail_pdf TEXT, detail_page INTEGER,
-    created_at TEXT,
-    PRIMARY KEY (run_stamp, target, verdict, idx)
-);
-CREATE TABLE IF NOT EXISTS sync_state (
-    table_name TEXT PRIMARY KEY,
-    last_synced_key TEXT,     -- observations는 마지막 rowid, 나머지는 마지막 전체 미러 시각
-    updated_at TEXT
-);
-"""
-
-# v2에서도 그대로 쓰는 공용 표들 — 사전으로 접을 반복 텍스트가 없다.
-# 새 DB를 v2로 만들 때 SCHEMA_V2와 함께 실행한다.
-SCHEMA_TAIL = """
-CREATE TABLE IF NOT EXISTS platforms (
-    platform_key TEXT PRIMARY KEY,   -- 예: "musinsa" · "zigzag"
-    name TEXT, url TEXT, engine TEXT,
-    discovered_for_brand TEXT,
-    recon TEXT,               -- 정찰 결과 JSON (channel-scout 산출)
-    skill_status TEXT,        -- none/candidate/recon_done/draft/ready
-    updated_at TEXT
-);
-CREATE TABLE IF NOT EXISTS runs (
-    run_id TEXT PRIMARY KEY,
-    site TEXT, story TEXT, target TEXT,
-    collected_at TEXT, item_count INTEGER, source_total INTEGER,
-    incomplete INTEGER, notes TEXT, raw_file TEXT, loaded_at TEXT
-);
-CREATE TABLE IF NOT EXISTS proxy_defs (       -- 파생 프록시 정의 카드 (D19)
-    proxy_name TEXT PRIMARY KEY,
-    question TEXT, material TEXT,  -- name/image/badge/detail
-    value_space TEXT,              -- JSON 배열 또는 "numeric"
-    method TEXT,                   -- rule/vision/llm
-    created_at TEXT
-);
-CREATE TABLE IF NOT EXISTS proxy_cache (       -- 판정 캐시 — 재료 지문이 같으면 재사용
-    proxy_name TEXT NOT NULL,
-    site TEXT NOT NULL, product_id TEXT NOT NULL,
-    fingerprint TEXT NOT NULL,     -- 판정 재료 식별자(image_url·name 등)
-    value TEXT, basis TEXT, judged_at TEXT,
-    PRIMARY KEY (proxy_name, site, product_id, fingerprint)
-);
-CREATE TABLE IF NOT EXISTS insights (       -- 인사이트 엔진 산출 (D28)
-    -- 팀원이 읽는 창구는 시트다(D31 개정 2026-08-03). PDF는 네 손에서만 나오므로
-    -- 결과가 DB를 거쳐야 미러가 실어 나른다. 파이프라인 원칙과 같다 — 무엇도 DB를
-    -- 건너뛰지 않는다.
-    run_stamp TEXT NOT NULL,       -- 같은 실행의 결과를 묶는 키 (YYYYMMDD-HHmm)
-    target TEXT NOT NULL,          -- 리포트 대상 이름
-    context TEXT,                  -- 관측 문맥 (쉼표 구분)
-    verdict TEXT NOT NULL,         -- strong / weak / rejected
-    idx INTEGER NOT NULL,          -- 그 갈래 안의 순번 (1부터)
-    claim TEXT, audience TEXT,
-    effect REAL, effect_kind TEXT, n INTEGER, p REAL,
-    holdout TEXT, fails TEXT, recheck TEXT,
-    detail_pdf TEXT, detail_page INTEGER,
-    created_at TEXT,
-    PRIMARY KEY (run_stamp, target, verdict, idx)
-);
-CREATE TABLE IF NOT EXISTS sync_state (
-    table_name TEXT PRIMARY KEY,
-    last_synced_key TEXT,     -- observations는 마지막 rowid, 나머지는 마지막 전체 미러 시각
-    updated_at TEXT
-);
-"""
-
-STATIC_FIELDS = ("name", "url", "image_url", "brand", "category")
 # 속성별 ttl_days는 **명시된 것만 저장한다(미지정=NULL)**. NULL이면 reuse-attrs의
 # 전역 --ttl-days(기본 90=STATIC_TTL_DAYS)를 따른다 — 그래야 --ttl-days 0 같은 명시
 # 전역값이 무시되지 않는다(2026-08-03 버그 수정). 긴 TTL이 필요한 속성(컬러·lifecycle)은
@@ -217,115 +51,55 @@ OBS_FIELDS = (
 )
 
 
-def _is_v2(conn):
-    return bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
-                             "AND name='obs_base'").fetchone())
+def _schema_version(conn):
+    """None(빈 DB) · 3 · 2 · 1. v3 표식은 product_categories다(v3에만 있다)."""
+    tabs = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    if not tabs:
+        return None
+    if "product_categories" in tabs:
+        return 3
+    if "obs_base" in tabs:
+        return 2
+    return 1
 
 
 def _is_view(conn, name):
-    """그 이름이 뷰인가. **뷰에는 업서트를 못 쓴다**(v2에서 옛 이름이 뷰가 됐다 — D45)."""
+    """그 이름이 뷰인가. **뷰에는 업서트를 못 쓴다**(옛 이름이 뷰가 됐다 — D45)."""
     row = conn.execute(
         "SELECT type FROM sqlite_master WHERE name=?", (name,)).fetchone()
     return bool(row) and row[0] == "view"
 
 
-def _migrate_proxy_label(conn):
-    """프록시의 **사람이 읽는 축 이름** 컬럼 (D56).
-
-    리포트에 `denim_rise(AI)`가 그대로 찍혀 나왔다 — 2026-08-04 사용자 지적:
-    "읽는 사람 입장에서 의미 없는 단어들은 빼". 카드가 `label`을 주면 그걸 쓰고,
-    없으면 `proxy_name`으로 되돌아간다.
-
-    **v1·v2 양쪽에서 돈다.** 처음엔 구 스키마 분기에만 넣었다가 v2 DB에서
-    `no column named label`로 죽었다(회귀 4건). 스키마 계열과 무관한
-    부가 컬럼이니 분기 앞에서 한 번만 손본다. 멱등이다.
-    """
-    try:
-        conn.execute("ALTER TABLE proxy_defs ADD COLUMN label TEXT")
-    except sqlite3.OperationalError:
-        pass          # 이미 있거나 표가 아직 없다 — 둘 다 정상
-
-
 def connect(db_path):
-    """DB를 연다. **v2 스키마면 뷰·트리거를 얹어 옛 이름 그대로 읽고 쓰게 한다**(D45).
+    """DB를 연다. 새 DB는 v3로 짓고, v3면 뷰·트리거를 다시 얹는다(멱등 — D45 규약).
 
-    구 스키마 DB는 그대로 둔다 — 자동으로 갈아엎지 않는다. 이관은 `migrate_v2.py`가
-    새 파일에 짓고 검산이 통과한 뒤 사람이 바꿔 끼운다. 정본을 조용히 바꾸지 않는다.
+    **구 스키마(v1·v2)는 그대로 두고 열기를 거부한다** — 자동으로 갈아엎지 않는다.
+    이관은 `migrate_v3.py`가 백업·검산까지 하고 바꿔 끼운다(v1은 `migrate_v2.py`를
+    먼저). 정본을 조용히 바꾸지 않는다.
     """
     parent = Path(db_path).parent
     if str(parent) not in ("", "."):
         parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-    empty = not conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1").fetchone()
-    if empty:
-        # **새 DB는 v2로 만든다.** 구 스키마로 시작하면 나중에 또 옮겨야 한다.
-        conn.executescript(SCHEMA_V2)
-        conn.executescript(SCHEMA_TAIL)   # runs·platforms·proxy_*·insights·sync_state
-    _migrate_proxy_label(conn)   # v1·v2 공통 (D56)
-    if _is_v2(conn):
-        # 뷰·트리거는 매번 다시 만든다(멱등) — 스크립트가 갱신되면 곧바로 반영된다
-        conn.executescript(VIEWS_V2)
-        conn.executescript(TRIGGERS_V2)
-        conn.commit()
-        return conn
-    conn.executescript(SCHEMA)
-    try:  # 구버전 DB 마이그레이션 — raw_extras(재료 보존, D19)
-        conn.execute("ALTER TABLE products ADD COLUMN raw_extras TEXT")
-    except sqlite3.OperationalError:
-        pass
-    _migrate_attrs(conn)
-    # 구버전 마이그레이션·set-attrs가 속성에 ttl_days=90을 강제로 넣었다 — 그러면
-    # reuse-attrs의 전역 --ttl-days(예: 0)가 무시된다. 90을 NULL로 정리해 전역 TTL을
-    # 따르게 한다. 멱등(이미 NULL이면 no-op). 명시 TTL(lifecycle 3650·컬러 등)은 90이
-    # 아니라 건드리지 않는다. 현행 코드는 90을 강제하지 않으므로(미지정=NULL) 앞으로
-    # 90은 생기지 않는다 — 이 정리는 구 데이터용 일회성이다.
-    try:
-        conn.execute("UPDATE product_attributes SET ttl_days=NULL WHERE ttl_days=90")
-        conn.commit()
-    except sqlite3.OperationalError:
-        pass
+    ver = _schema_version(conn)
+    if ver is None:
+        conn.executescript(SCHEMA_V3)
+    elif ver != 3:
+        raise SystemExit(
+            f"{db_path}: v{ver} 스키마다 — v3로 이관해야 연다.\n"
+            + ("  python3 skills/commerce-intel/scripts/migrate_v3.py --src " + str(db_path)
+               if ver == 2 else
+               "  python3 skills/commerce-intel/scripts/migrate_v2.py --src %s --dst <v2>\n"
+               "  python3 skills/commerce-intel/scripts/migrate_v3.py --src <v2>" % db_path))
+    # FK는 커넥션 설정이다 — 매번 켠다. 뷰·트리거도 매번 다시 만든다(멱등) —
+    # 스크립트가 갱신되면 곧바로 반영된다.
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.executescript(VIEWS_V3)
+    conn.executescript(TRIGGERS_V3)
+    conn.commit()
     return conn
-
-
-def _migrate_attrs(conn):
-    """products.attributes(JSON) → product_attributes(행) 소급 이관 (D35).
-
-    한 번만 옮기면 된다 — 이미 옮긴 (site, product_id, attr_name)은 건너뛴다(멱등).
-    **판정 실패(`null`)는 옮기지 않는다.** `{"핏": null}`은 "판정 못 함"이라 재판정
-    대상이지 저장 대상이 아니다 — 저장하면 TTL 안에 재시도가 막힌다.
-    기존 JSON은 지우지 않는다(폐기 예정 리포트가 아직 읽는다 — 하위호환).
-    """
-    done = conn.execute(
-        "SELECT COUNT(*) FROM product_attributes WHERE basis='migrated'").fetchone()[0]
-    if done:
-        return
-    rows = conn.execute(
-        "SELECT site, product_id, attributes, attributes_basis, static_verified_at "
-        "FROM products WHERE attributes IS NOT NULL AND attributes != '{}'").fetchall()
-    moved = 0
-    for r in rows:
-        try:
-            attrs = json.loads(r["attributes"] or "{}")
-        except (TypeError, ValueError):
-            continue
-        for name, value in attrs.items():
-            if value is None:
-                continue
-            conn.execute(
-                "INSERT OR IGNORE INTO product_attributes "
-                "(site, product_id, attr_name, value, basis, decided_at, ttl_days) "
-                "VALUES (?,?,?,?,?,?,?)",
-                (r["site"], r["product_id"], name, value,
-                 r["attributes_basis"] or "migrated",
-                 r["static_verified_at"], None))   # ttl_days NULL — 전역 reuse TTL을 따른다
-            moved += 1
-    if moved:
-        # 이관 표식 — 다음 connect에서 다시 돌지 않게 (기존 basis는 보존)
-        conn.execute("UPDATE product_attributes SET basis='migrated' "
-                     "WHERE basis IS NULL")
-        conn.commit()
 
 
 def now_str():
@@ -352,10 +126,14 @@ def context_of(meta):
     되어 같은 대상이 두 문맥으로 갈린다(2026-08-04에 실제로 3개 문맥이 그렇게
     들어갔다). 수집기가 실수로 붙여 와도 여기서 걷어낸다 — 조용히 갈리는 것보다
     낫다. 다른 접두사가 붙어 오면 그건 의도일 수 있으니 건드리지 않는다.
+
+    **모르는 story는 접두사가 `adhoc`이다** (D65-1). v3의 contexts CHECK가 접두사
+    4종(brand/market/ranking/adhoc)만 받으므로, story 문자열을 그대로 접두사로
+    쓰면 적재가 그 자리에서 죽는다 — 어떤 story든 문맥은 4종 중 하나로 들어간다.
     """
     story = meta.get("story", "")
     target = str(meta.get("target", "") or "")
-    prefix = STORY_PREFIX.get(story, story or "adhoc")
+    prefix = STORY_PREFIX.get(story) or "adhoc"
     if target.startswith(prefix + ":"):
         target = target[len(prefix) + 1:]
     return f"{prefix}:{target}"
@@ -365,7 +143,70 @@ def run_context(row):
     """runs 행(story·target) → observations의 context 문자열. context_of와 같은 규칙이다."""
     story = (row.get("story") or "").strip()
     target = (row.get("target") or "").strip()
-    return f"{STORY_PREFIX.get(story, story or 'adhoc')}:{target}"
+    return f"{STORY_PREFIX.get(story) or 'adhoc'}:{target}"
+
+
+def resolve_brand(conn, notation, site=None, cache=None):
+    """수집 브랜드 표기 → **대표명** (D65-4). 별명 등록의 유일한 자동 통로다.
+
+    ① 대표명 완전일치 → 그대로
+    ② 별명(notation) 완전일치 → 그 브랜드의 대표명 (rejected는 제외)
+    ③ brand_key(표기 정규화 — D51) 일치 → 그 브랜드에 candidate 별명을 달고 대표명
+    ④ 다 아니면 표기 그대로 — 뷰 트리거가 새 브랜드(대표명=표기)로 만든다
+
+    음차 매칭은 하지 않는다(근거가 없다 — D51). 한글·영문 표기는 ③에서도 다른
+    키라 서로 안 묶인다. candidate 확정/기각은 사람이 verify_status로 한다.
+    """
+    if notation in (None, ""):
+        return None
+    notation = str(notation).strip()
+    if not notation:
+        return None
+    cache = cache if cache is not None else {}
+    hit = cache.get(("resolved", notation))
+    if hit:
+        return hit
+    row = conn.execute("SELECT 1 FROM brands WHERE representative_name=?",
+                       (notation,)).fetchone()
+    if row:
+        cache[("resolved", notation)] = notation
+        return notation
+    row = conn.execute(
+        "SELECT b.representative_name FROM brand_aliases a "
+        "JOIN brands b ON b.brand_id=a.brand_id "
+        "WHERE a.notation=? AND COALESCE(a.verify_status,'') != 'rejected'",
+        (notation,)).fetchone()
+    if row:
+        cache[("resolved", notation)] = row[0]
+        return row[0]
+    from intel_data import brand_key   # 표기 정규화 규칙은 한 벌이다 (D51)
+    keymap = cache.get("_brand_keymap")
+    if keymap is None:
+        keymap = {}
+        for (rep,) in conn.execute("SELECT representative_name FROM brands"):
+            keymap.setdefault(brand_key(rep), rep)
+        for rep, nt in conn.execute(
+                "SELECT b.representative_name, a.notation FROM brand_aliases a "
+                "JOIN brands b ON b.brand_id=a.brand_id "
+                "WHERE COALESCE(a.verify_status,'') != 'rejected'"):
+            keymap.setdefault(brand_key(nt), rep)
+        cache["_brand_keymap"] = keymap
+    rep = keymap.get(brand_key(notation))
+    if rep:
+        sid = None
+        if site:
+            r = conn.execute("SELECT site_id FROM sites WHERE name=?", (site,)).fetchone()
+            sid = r[0] if r else None
+        conn.execute(
+            "INSERT OR IGNORE INTO brand_aliases "
+            "(brand_id, notation, site_id, source, verify_status, verified_at) "
+            "SELECT brand_id, ?, ?, 'platform', 'candidate', NULL FROM brands "
+            "WHERE representative_name=?", (notation, sid, rep))
+        cache[("resolved", notation)] = rep
+        return rep
+    keymap[brand_key(notation)] = notation   # 새 브랜드 — 다음 표기 변형이 여기 붙는다
+    cache[("resolved", notation)] = notation
+    return notation
 
 
 def load_file(conn, path, quiet=False):
@@ -380,19 +221,22 @@ def load_file(conn, path, quiet=False):
 
     run_id = uuid.uuid4().hex[:12]
     conn.execute(
-        "INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO runs (run_id, site, story, target, collected_at, item_count, "
+        "source_total, incomplete, notes, raw_file, loaded_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",     # id는 자동 — 정수 PK (D65-7)
         (run_id, site, meta.get("story"), meta.get("target"), collected_at,
          meta.get("item_count"), meta.get("source_total"),
          1 if meta.get("incomplete") else 0,
          json.dumps(meta.get("notes", []), ensure_ascii=False), str(path), now_str()),
     )
 
-    new_obs = dup_obs = n_var = 0
+    new_obs = dup_obs = n_var = n_oattr = 0
+    cache = {}
     for it in items:
         pid = str(it.get("product_id", "")).strip()
         if not pid:
             continue
-        _upsert_product(conn, site, pid, it, collected_at)
+        _upsert_product(conn, site, pid, it, collected_at, cache)
         if isinstance(it.get("variants"), list):
             n_var += _load_variants(conn, site, pid, it["variants"], collected_at, run_id)
         cols = [it.get(f) for f in OBS_FIELDS]
@@ -405,37 +249,56 @@ def load_file(conn, path, quiet=False):
                 (site, pid, collected_at, ctx, *cols, run_id),
             )
             new_obs += 1
+            # 계약 외 시점 지표 (D65-6) — items[].obs_attrs: {"이름": 값} 또는
+            # {"이름": {"value": 값, "basis": "api"}}. 관측이 새로 들어갔을 때만 단다.
+            oattrs = it.get("obs_attrs")
+            if isinstance(oattrs, dict) and oattrs:
+                n_oattr += _load_obs_attrs(conn, site, pid, collected_at, ctx, oattrs)
         except sqlite3.IntegrityError:
             dup_obs += 1
     conn.commit()
     if not quiet:
         var_msg = f", 옵션 관측 {n_var}건" if n_var else ""
+        var_msg += f", 시점 속성 {n_oattr}건" if n_oattr else ""
         print(f"{Path(path).name}: 관측 {new_obs}건 적재, 중복 {dup_obs}건 스킵{var_msg} (context={ctx})")
     return new_obs, dup_obs
 
 
+def _load_obs_attrs(conn, site, pid, observed_at, ctx, oattrs):
+    """관측 하나에 비정형 지표를 단다 (obs_attr — D65-6). 값 None은 저장하지 않는다."""
+    row = conn.execute(
+        "SELECT _rowid FROM observations WHERE site=? AND product_id=? "
+        "AND observed_at=? AND context=?", (site, pid, observed_at, ctx)).fetchone()
+    if not row:
+        return 0
+    n = 0
+    for name, v in oattrs.items():
+        value, basis = (v.get("value"), v.get("basis")) if isinstance(v, dict) else (v, "api")
+        if value is None:
+            continue
+        conn.execute(
+            "INSERT INTO obs_attr (obs_id, attr_name, value, basis) VALUES (?,?,?,?) "
+            "ON CONFLICT(obs_id, attr_name) DO UPDATE SET value=excluded.value, "
+            "basis=excluded.basis", (row[0], name, str(value), basis))
+        n += 1
+    return n
+
+
 def _load_variants(conn, site, pid, variants, collected_at, run_id):
-    """variants[]를 정적(variants)·시변(variant_observations)으로 나눠 적재한다."""
+    """variants[]를 정적(variants)·시변(variant_observations)으로 나눠 적재한다.
+
+    옵션명·색상·사이즈를 None으로 덮지 않는 병합은 v3에선 뷰 트리거의 COALESCE가
+    한다(trg_variants_ins) — v1 물리 테이블 시절의 파이썬 병합은 걷어냈다.
+    """
     n = 0
     for v in variants:
         oid = str(v.get("option_id") or v.get("option_name") or "").strip()
         if not oid:
             continue
-        # **알던 값을 None으로 덮지 않는다.** `OR REPLACE`는 행을 지우고 새로 넣어서
-        # 이번에 안 온 옵션명·색상·사이즈를 NULL로 만든다(v2 트리거는 COALESCE를
-        # 유지하므로 두 스키마의 동작이 갈렸다 — PR #9 리뷰). 병합을 여기서 한다.
-        prev = conn.execute(
-            "SELECT option_name, color, size, first_seen_at FROM variants "
-            "WHERE site=? AND product_id=? AND option_id=?", (site, pid, oid)).fetchone()
-        keep = lambda new, old: new if new not in (None, "") else old
         conn.execute(
-            "INSERT OR REPLACE INTO variants (site, product_id, option_id, option_name,"
-            " color, size, first_seen_at, last_seen_at) VALUES (?,?,?,?,?,?,?,?)",
-            (site, pid, oid,
-             keep(v.get("option_name"), prev["option_name"] if prev else None),
-             keep(v.get("color"), prev["color"] if prev else None),
-             keep(v.get("size"), prev["size"] if prev else None),
-             (prev["first_seen_at"] if prev else None) or collected_at, collected_at),
+            "INSERT INTO variants (site, product_id, option_id, option_name,"
+            " color, size) VALUES (?,?,?,?,?,?)",
+            (site, pid, oid, v.get("option_name"), v.get("color"), v.get("size")),
         )
         so = v.get("sold_out")
         try:
@@ -454,47 +317,56 @@ def _load_variants(conn, site, pid, variants, collected_at, run_id):
     return n
 
 
-def _upsert_product(conn, site, pid, it, seen_at):
+def _upsert_product(conn, site, pid, it, seen_at, cache=None):
+    """상품 정적 속성 upsert. v3에서 달라진 것(D65-2·3·4):
+
+    - attributes(JSON) **컬럼**이 사라졌다 — 수집이 들고 온 속성(핏 등 비싼 판단)은
+      product_attributes(attr_base)로 직행한다. 실질값만 쓰고(unknown/빈값은 버린다 —
+      기존 판단을 지키는 v2 규칙 그대로), 판정 실패는 저장하지 않는다(D35)
+    - raw_extras·first/last_seen_at은 저장하지 않는다 — 원문 부가 정보는 raw JSON에 있다
+    - 브랜드는 resolve_brand()로 대표명으로 바꿔 넣는다(표기 변형은 별명으로)
+    - 카테고리는 뷰 트리거가 못 다루므로 assign_category()를 여기서 부른다
+    """
+    cache = cache if cache is not None else {}
+    rep_brand = resolve_brand(conn, it.get("brand"), site, cache)
     row = conn.execute(
-        "SELECT * FROM products WHERE site=? AND product_id=?", (site, pid)
+        "SELECT site FROM products WHERE site=? AND product_id=?", (site, pid)
     ).fetchone()
-    attrs = it.get("attributes")
-    basis = it.get("attributes_basis")
-    incoming_has_attrs = bool(attrs) and any(
-        v not in (None, "", "unknown") for v in attrs.values()
-    )
-    extras = it.get("raw_extras")
     if row is None:
         conn.execute(
-            "INSERT INTO products (site, product_id, name, url, image_url, brand, category, "
-            "attributes, attributes_basis, static_verified_at, first_seen_at, last_seen_at, "
-            "raw_extras) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO products (site, product_id, name, url, image_url, brand, "
+            "static_verified_at) VALUES (?,?,?,?,?,?,?)",
             (site, pid, it.get("name"), it.get("url"), it.get("image_url"),
-             it.get("brand"), it.get("category"),
-             json.dumps(attrs, ensure_ascii=False) if attrs else None, basis,
-             seen_at, seen_at, seen_at,
-             json.dumps(extras, ensure_ascii=False) if extras else None),
+             rep_brand, seen_at),
         )
-        return
-    # 정적 필드는 새 값이 비어 있지 않을 때만 덮는다.
-    updates, params = [], []
-    for f in STATIC_FIELDS:
-        v = it.get(f)
-        if v not in (None, ""):
-            updates.append(f"{f}=?")
-            params.append(v)
-    # attributes: 들어온 값이 실질값이면 덮고, 아니면 기존(비싼 판단)을 지킨다.
-    if incoming_has_attrs:
-        updates += ["attributes=?", "attributes_basis=?"]
-        params += [json.dumps(attrs, ensure_ascii=False), basis]
-    if extras:
-        updates.append("raw_extras=?")
-        params.append(json.dumps(extras, ensure_ascii=False))
-    updates += ["static_verified_at=?", "last_seen_at=?"]
-    params += [seen_at, seen_at, site, pid]
-    conn.execute(
-        f"UPDATE products SET {', '.join(updates)} WHERE site=? AND product_id=?", params
-    )
+    else:
+        # 정적 필드는 새 값이 비어 있지 않을 때만 덮는다.
+        updates, params = [], []
+        for f in ("name", "url", "image_url"):
+            v = it.get(f)
+            if v not in (None, ""):
+                updates.append(f"{f}=?")
+                params.append(v)
+        if rep_brand:
+            updates.append("brand=?")
+            params.append(rep_brand)
+        updates.append("static_verified_at=?")
+        params += [seen_at, site, pid]
+        conn.execute(
+            f"UPDATE products SET {', '.join(updates)} WHERE site=? AND product_id=?",
+            params)
+    if it.get("category"):
+        assign_category(conn, site, pid, it["category"], cache)
+    # 수집이 들고 온 속성 → attr_base. 실질값만 — unknown으로 기존 판단을 덮지 않는다
+    attrs = it.get("attributes") or {}
+    basis = it.get("attributes_basis")
+    for aname, aval in attrs.items():
+        if aval in (None, "", "unknown"):
+            continue
+        conn.execute(
+            "INSERT INTO product_attributes (site, product_id, attr_name, value, "
+            "basis, decided_at, ttl_days) VALUES (?,?,?,?,?,?,NULL)",
+            (site, pid, aname, aval, basis or "unknown", seen_at))
 
 
 def team_coverage(conn, site, context, cycle, config, creds):
@@ -589,7 +461,6 @@ def cmd_reuse_attrs(conn, args):
     """raw JSON의 미분류 상품에 DB의 TTL 유효 정적 속성을 채워 넣는다(핏 재분류 절감)."""
     data = json.loads(Path(args.raw).read_text(encoding="utf-8"))
     site = data.get("meta", {}).get("site")
-    cutoff = (datetime.now() - timedelta(days=args.ttl_days)).strftime("%Y-%m-%d %H:%M:%S")
     filled = expired = 0
     for it in data.get("items", []):
         attrs = it.get("attributes") or {}
@@ -618,23 +489,8 @@ def cmd_reuse_attrs(conn, args):
             continue
         if any_expired:
             expired += 1
-            continue
-        # 폴백: 아직 표로 안 옮겨진 구버전 JSON (하위호환)
-        row = conn.execute(
-            "SELECT attributes, attributes_basis, static_verified_at FROM products "
-            "WHERE site=? AND product_id=? AND attributes IS NOT NULL",
-            (site, pid),
-        ).fetchone()
-        if not row:
-            continue
-        if row["static_verified_at"] and row["static_verified_at"] < cutoff:
-            expired += 1
-            continue
-        db_attrs = json.loads(row["attributes"])
-        if any(v not in (None, "", "unknown") for v in db_attrs.values()):
-            it["attributes"] = db_attrs
-            it["attributes_basis"] = row["attributes_basis"]
-            filled += 1
+        # products.attributes(JSON) 폴백은 v3에서 제거됐다 (D65-2) — 속성의
+        # 정본은 attr_base 하나다. v2 시절 JSON은 migrate_v3가 표로 옮겼다.
     data.setdefault("meta", {}).setdefault("notes", []).append(
         f"DB 재사용: 속성 {filled}건 채움 (TTL {args.ttl_days}일, 만료로 제외 {expired}건)"
     )
@@ -769,7 +625,10 @@ def cmd_import_snapshots(conn, args):
 
 
 def cmd_export(conn, args):
-    # v2에서 옛 이름은 뷰라 rowid가 없다 — 뷰는 물리 키를 `_rowid`로 내준다.
+    # 프록시 표는 별도 DB에 산다 (D65-8) — 같은 명령으로 내보내되 커넥션만 바꾼다
+    if args.table in ("proxy_defs", "proxy_cache"):
+        conn = proxy_connect(proxy_db_path(args.db))
+    # 옛 이름은 뷰라 rowid가 없다 — 뷰는 물리 키를 `_rowid`로 내준다.
     # WHERE·ORDER는 별칭이 아니라 진짜 참조 가능한 표현식으로 짠다 (PR #9 리뷰)
     sel, key = rowid_parts(conn, args.table)
     q = f"{sel} FROM {args.table}"
@@ -787,15 +646,20 @@ def cmd_export(conn, args):
                 w.writerow(list(r))
 
 
-def cmd_proxy_load(conn, args):
-    """프록시 정의 + 판정 묶음(JSON)을 등록한다. proxy-extractor 반환 형식과 같다."""
+def cmd_proxy_load(pconn, args):
+    """프록시 정의 + 판정 묶음(JSON)을 등록한다. proxy-extractor 반환 형식과 같다.
+
+    v3부터 프록시는 별도 DB(`proxy.db` — D65-8)에 산다. 정의에 rule 카드 본문
+    (`rules`/`numeric`)이 실려 오면 defs에 함께 저장한다 — 분석이 캐시 miss를
+    만났을 때 그 자리에서 판정하는(lazy) 재료다.
+    """
     data = json.loads(Path(args.file).read_text(encoding="utf-8"))
     # proxy-extractor가 다중 카드를 배열로 반환한다 — 배열이면 각 원소를 순차 적재
     if isinstance(data, list):
         for one in data:
-            _proxy_load_one(conn, one)
+            _proxy_load_one(pconn, one)
         return
-    _proxy_load_one(conn, data)
+    _proxy_load_one(pconn, data)
 
 
 def _proxy_load_one(conn, data):
@@ -842,14 +706,18 @@ def _proxy_load_one(conn, data):
             "DELETE FROM proxy_cache WHERE proxy_name=?", (name,)).rowcount
         print("%s: 값 공간이 바뀌어 옛 판정 %d건을 버린다\n  이전 %s\n  이후 %s"
               % (name, dropped, prev[0][:70], new_space[:70]))
+    # rule 카드 본문 — lazy 판정(D65-8)의 재료. 없으면 NULL(비전 카드 등)
+    body = {k: d[k] for k in ("rules", "numeric") if d.get(k)}
+    rules_json = json.dumps(body, ensure_ascii=False) if body else None
     conn.execute(
         "INSERT INTO proxy_defs (proxy_name, question, material, value_space, "
-        "method, created_at, label) VALUES (?,?,?,?,?,?,?) "
+        "method, created_at, label, rules) VALUES (?,?,?,?,?,?,?,?) "
         "ON CONFLICT(proxy_name) DO UPDATE SET question=excluded.question, "
         "material=excluded.material, value_space=excluded.value_space, "
-        "method=excluded.method, label=excluded.label",
+        "method=excluded.method, label=excluded.label, "
+        "rules=COALESCE(excluded.rules, rules)",
         (name, d.get("question"), d.get("material"),
-         new_space, d.get("method"), now_str(), d.get("label")))
+         new_space, d.get("method"), now_str(), d.get("label"), rules_json))
     is_numeric = space == "numeric"
     new = dup = bad = 0
     for j in data.get("judgments", []):
@@ -929,10 +797,19 @@ def _is_num(v):
         return False
 
 
-def cmd_stats(conn, _args):
-    for t in ("products", "observations", "variants", "variant_observations", "platforms", "runs", "proxy_defs", "proxy_cache"):
+def cmd_stats(conn, args):
+    for t in ("products", "observations", "variants", "variant_observations",
+              "platforms", "runs", "brand_aliases", "brand_platforms", "obs_attr"):
         n = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-        print(f"{t:14} {n:>8}")
+        print(f"{t:20} {n:>8}")
+    # 프록시는 별도 DB다 (D65-8) — 파일이 있을 때만 센다
+    ppath = proxy_db_path(args.db)
+    if os.path.exists(ppath):
+        pconn = proxy_connect(ppath)
+        for t in ("proxy_defs", "proxy_cache"):
+            n = pconn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+            print(f"{t:20} {n:>8}  (proxy.db)")
+        pconn.close()
     ctxs = conn.execute(
         "SELECT context, COUNT(*) n, MIN(observed_at) a, MAX(observed_at) b "
         "FROM observations GROUP BY context ORDER BY n DESC LIMIT 20").fetchall()
@@ -958,21 +835,27 @@ def cmd_merge(conn, args):
     src.row_factory = sqlite3.Row
     stats = {}
 
+    def _dest_cols(table):
+        """대상 쪽에서 받을 수 있는 컬럼. 뷰·물리 표 공통 (PRAGMA는 뷰에도 돈다)."""
+        return {d[1] for d in conn.execute(f"PRAGMA table_info({table})")}
+
     # ── 순서가 규칙의 일부다 (D59) ────────────────────────────────────────
-    # v2는 관측을 `pk`(상품)와 `run_ref`(수집)로 잇는다. 상품·런이 먼저 없으면
+    # 관측은 `pk`(상품)와 `run_id`(수집)를 참조한다. 상품·런이 먼저 없으면
     # 트리거가 그 참조를 NULL로 풀고, 바깥의 `INSERT OR IGNORE`가 그 실패를 조용히
     # 삼킨다 — **예외도 없이 관측 0건**이 된다. 실측(2026-08-04): 빈 DB에 seed를
     # 합쳤더니 상품 2,722은 들어오고 관측 4,670은 전부 사라졌다.
     # 그래서 런 → 정적(상품·옵션) → 관측 → 판정 순으로 간다.
-    # 정적 계열 — 빈 값으로 덮지 않는다. `runs`는 이력이라 그대로 가져온다
+    #
+    # 컬럼은 **대상이 아는 것만** 넘긴다 — v2 소스의 attributes·first_seen_at·
+    # discovered_for_brand 등 v3에서 사라진 컬럼이 그대로 오면 INSERT가 통째로
+    # 죽는다. 걸러진 컬럼 중 category(경로 재조립)와 discovered_for_brand는
+    # 아래 후처리가 정규화 테이블로 옮긴다.
     for table, keys in (("runs", ("run_id",)),
                         ("products", ("site", "product_id")),
                         ("variants", ("site", "product_id", "option_id")),
                         ("platforms", ("platform_key",)),
-                        ("proxy_defs", ("proxy_name",)),
-                        ("proxy_cache", ("proxy_name", "site", "product_id", "fingerprint")),
-                        # 판정은 **들어온 값이 이긴다** — v2 트리거가 그렇게 하고
-                        # (ttl_days=NULL을 의도적으로 넣는다), v1도 같아야 한다
+                        # 판정은 **들어온 값이 이긴다** — 뷰 트리거가 그렇게 하고
+                        # (ttl_days=NULL을 의도적으로 넣는다)
                         ("product_attributes", ("site", "product_id", "attr_name"))):
         try:
             rows = src.execute(f"SELECT * FROM {table}").fetchall()
@@ -980,23 +863,17 @@ def cmd_merge(conn, args):
             continue
         if not rows:
             continue
-        cols = [c for c in rows[0].keys()]
+        dest_ok = _dest_cols(table)
+        # `id`(runs 정수 PK)는 대상이 새로 매긴다 — 상대 번호를 들고 오면 충돌한다
+        cols = [c for c in rows[0].keys()
+                if c in dest_ok and c not in ("rowid", "_rowid") and (table, c) != ("runs", "id")]
         upd = [c for c in cols if c not in keys]
         before = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-        # **v2에서는 옛 이름이 뷰다 — 뷰에는 업서트를 못 쓴다**("cannot UPSERT a view").
-        # v2가 업서트 의미를 `INSTEAD OF INSERT` 트리거 안으로 옮겨 뒀으니(D45),
+        # **옛 이름이 뷰면 업서트를 못 쓴다**("cannot UPSERT a view" — D59).
         # 뷰에는 평범한 INSERT를 던지고 덮어쓸지 지킬지는 트리거의 COALESCE가 정한다.
-        # D45 때 이 함수가 같이 안 고쳐져서 **새로 만든 DB에서 merge가 전부 죽었다** —
-        # 새 DB는 항상 v2로 지어지므로, 팀원이 처음 합치려는 순간 예외가 났다(D59).
         if _is_view(conn, table):
             stmt = ("INSERT INTO %s (%s) VALUES (%s)"
                     % (table, ",".join(cols), ",".join("?" * len(cols))))
-        elif table == "product_attributes":
-            # 판정은 덮는다(v2 트리거와 같은 규칙) — COALESCE로 지키면 `ttl_days=NULL`의
-            # 의도가 무시되고, v1과 v2가 같은 명령에 다르게 반응한다
-            sets = ", ".join("%s = excluded.%s" % (c, c) for c in upd)
-            stmt = ("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT(%s) DO UPDATE SET %s"
-                    % (table, ",".join(cols), ",".join("?" * len(cols)), ",".join(keys), sets))
         else:
             # COALESCE(excluded.x, x) — 들어온 값이 null이면 기존 값을 지킨다
             sets = ", ".join("%s = COALESCE(excluded.%s, %s.%s)" % (c, c, table, c) for c in upd)
@@ -1008,6 +885,20 @@ def cmd_merge(conn, args):
         after = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         stats[table] = (after - before, len(rows))
 
+        # 카테고리는 뷰 트리거가 못 받는다(경로 분해 — schema_v3 docstring). 소스의
+        # category 문자열(뷰가 계층을 도로 편 것)을 여기서 다시 계층으로 넣는다.
+        if table == "products":
+            cache, n_cat = {}, 0
+            for r in rows:
+                if "category" in r.keys() and r["category"]:
+                    assign_category(conn, r["site"], r["product_id"], r["category"], cache)
+                    n_cat += 1
+            if n_cat:
+                stats["product_categories"] = (n_cat, n_cat)
+
+    # 브랜드 별명·입점 매핑 (D65-4·5) — brand_id는 DB마다 다르므로 대표명으로 잇는다
+    _merge_brand_tables(conn, src, stats)
+
     # 관측 계열 — 키가 겹치면 스킵. INSERT OR IGNORE가 곧 그 규칙이다.
     # **상품·런 뒤에 온다**(위 주석 D59) — 앞서면 참조가 안 풀려 조용히 0건이 된다
     for table in ("observations", "variant_observations"):
@@ -1017,7 +908,9 @@ def cmd_merge(conn, args):
             continue                       # 상대 DB가 더 옛 스키마일 수 있다
         if not rows:
             continue
-        cols = [c for c in rows[0].keys() if c != "rowid"]
+        dest_ok = _dest_cols(table)
+        cols = [c for c in rows[0].keys()
+                if c in dest_ok and c not in ("rowid", "_rowid")]
         before = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         conn.executemany(
             "INSERT OR IGNORE INTO %s (%s) VALUES (%s)"
@@ -1026,6 +919,9 @@ def cmd_merge(conn, args):
         after = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         stats[table] = (after - before, len(rows))
 
+    # 프록시 — 소스 파일 안에 있으면(v2 정본·seed) 대상 **proxy.db**로 간다 (D65-8)
+    _merge_proxy(conn, src, args, stats)
+
     conn.commit()
     src.close()
     print("합침: %s → %s" % (args.source, args.db))
@@ -1033,6 +929,115 @@ def cmd_merge(conn, args):
         print("  %-22s 신규 %6d / 상대 %6d" % (t, added, seen))
     if not stats:
         print("  가져올 것이 없었다 (빈 DB이거나 스키마가 다르다)")
+
+
+def _merge_brand_tables(conn, src, stats):
+    """brand_aliases·brand_platforms를 대표명 기준으로 합친다.
+
+    정수 brand_id는 DB마다 다르게 매겨진다 — 그대로 복사하면 남의 브랜드에
+    붙는다. 소스의 brands를 조인해 대표명으로 풀고, 대상에서 다시 id로 잠근다.
+    대상에 없는 브랜드(상품 없이 별명만 있던 것)는 브랜드부터 만든다.
+    """
+    for table, cols, key_cols in (
+            ("brand_aliases",
+             ("notation", "source", "verify_status", "verified_at"), ("notation",)),
+            ("brand_platforms",
+             ("platform_key", "brand_page_url", "discovered_at", "product_count"),
+             ("platform_key",))):
+        try:
+            rows = src.execute(
+                "SELECT b.representative_name AS _rep, t.* FROM %s t "
+                "JOIN brands b ON b.brand_id = t.brand_id" % table).fetchall()
+        except sqlite3.OperationalError:
+            continue
+        if not rows:
+            continue
+        before = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        for r in rows:
+            conn.execute("INSERT OR IGNORE INTO brands (representative_name) VALUES (?)",
+                         (r["_rep"],))
+            present = [c for c in cols if c in r.keys()]
+            conn.execute(
+                "INSERT OR IGNORE INTO %s (brand_id, %s) "
+                "SELECT brand_id, %s FROM brands WHERE representative_name=?"
+                % (table, ",".join(present), ",".join("?" * len(present))),
+                tuple(r[c] for c in present) + (r["_rep"],))
+        after = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        stats[table] = (after - before, len(rows))
+
+    # v2 소스의 platforms.discovered_for_brand(쉼표 텍스트) → brand_platforms 행.
+    # v3 대상에는 그 컬럼이 없어 위 필터에서 걸러졌다 — 정보는 여기서 살린다 (D65-5)
+    try:
+        rows = src.execute("SELECT platform_key, discovered_for_brand, updated_at "
+                           "FROM platforms WHERE discovered_for_brand IS NOT NULL "
+                           "AND discovered_for_brand != ''").fetchall()
+    except sqlite3.OperationalError:
+        rows = []
+    n = 0
+    for r in rows:
+        for name in [b.strip() for b in r["discovered_for_brand"].split(",") if b.strip()]:
+            conn.execute("INSERT OR IGNORE INTO brands (representative_name) VALUES (?)",
+                         (name,))
+            conn.execute(
+                "INSERT OR IGNORE INTO brand_platforms (brand_id, platform_key, "
+                "discovered_at) SELECT brand_id, ?, ? FROM brands "
+                "WHERE representative_name=?", (r["platform_key"], r["updated_at"], name))
+            n += 1
+    if n:
+        stats["brand_platforms(v2)"] = (n, n)
+
+
+def _merge_proxy(conn, src, args, stats):
+    """소스에 실려 온 proxy_defs·proxy_cache를 대상 proxy.db로 합친다.
+
+    v2 정본과 seed DB는 프록시 표를 한 파일에 담고 있다. v3 정본끼리라면 소스에
+    이 표가 없다 — 그때는 팀원의 proxy.db를 이 명령에 **한 번 더** 주면 된다
+    (proxy.db 자체도 스키마가 같아 소스로 먹힌다).
+    """
+    try:
+        defs = src.execute("SELECT * FROM proxy_defs").fetchall()
+    except sqlite3.OperationalError:
+        return
+    if not defs:
+        return
+    pconn = proxy_connect(proxy_db_path(args.db))
+    before_d = pconn.execute("SELECT COUNT(*) FROM proxy_defs").fetchone()[0]
+    for r in defs:
+        cols = [c for c in r.keys() if c in
+                ("proxy_name", "question", "material", "value_space", "method",
+                 "created_at", "label", "rules")]
+        sets = ", ".join("%s = COALESCE(excluded.%s, %s)" % (c, c, c)
+                         for c in cols if c != "proxy_name")
+        pconn.execute(
+            "INSERT INTO proxy_defs (%s) VALUES (%s) "
+            "ON CONFLICT(proxy_name) DO UPDATE SET %s"
+            % (",".join(cols), ",".join("?" * len(cols)), sets),
+            tuple(r[c] for c in cols))
+    stats["proxy_defs"] = (
+        pconn.execute("SELECT COUNT(*) FROM proxy_defs").fetchone()[0] - before_d,
+        len(defs))
+    try:
+        rows = src.execute("SELECT * FROM proxy_cache ORDER BY rowid").fetchall()
+    except sqlite3.OperationalError:
+        rows = []
+    if rows:
+        known = {r[0] for r in pconn.execute("SELECT proxy_name FROM proxy_defs")}
+        before = pconn.execute("SELECT COUNT(*) FROM proxy_cache").fetchone()[0]
+        cols = [c for c in rows[0].keys() if c != "rowid"]
+        # FK(정의 없는 판정)는 OR IGNORE로도 안 삼켜진다 — 미리 거른다.
+        # 걸러진 건수는 보고한다(조용히 빠지면 "다 합쳐졌다"로 읽힌다)
+        ok = [r for r in rows if r["proxy_name"] in known]
+        pconn.executemany(
+            "INSERT OR IGNORE INTO proxy_cache (%s) VALUES (%s)"
+            % (",".join(cols), ",".join("?" * len(cols))),
+            [tuple(r[c] for c in cols) for r in ok])
+        after = pconn.execute("SELECT COUNT(*) FROM proxy_cache").fetchone()[0]
+        stats["proxy_cache"] = (after - before, len(rows))
+        if len(ok) != len(rows):
+            print("  ※ 정의 없는 판정 %d건은 건너뛰었다 (proxy_defs에 카드가 없다)"
+                  % (len(rows) - len(ok)))
+    pconn.commit()
+    pconn.close()
 
 
 def main():
@@ -1063,7 +1068,10 @@ def main():
     sp.add_argument("--fix", action="store_true", help="찾은 것을 지운다")
     sp = sub.add_parser("export")
     sp.add_argument("--table", required=True,
-                    choices=["products", "observations", "variants", "variant_observations", "platforms", "runs", "proxy_defs", "proxy_cache"])
+                    choices=["products", "observations", "variants", "variant_observations",
+                             "platforms", "runs", "proxy_defs", "proxy_cache",
+                             "brand_aliases", "brand_platforms", "product_categories",
+                             "categories", "obs_attr"])
     sp.add_argument("--format", choices=["csv", "json"], default="csv")
     sp.add_argument("--since-rowid", type=int, default=None)
     sub.add_parser("stats")
@@ -1093,12 +1101,13 @@ def main():
     elif args.cmd == "import-snapshots":
         cmd_import_snapshots(conn, args)
     elif args.cmd == "proxy-load":
-        cmd_proxy_load(conn, args)
+        # 프록시는 별도 DB다 (D65-8) — 정본 커넥션이 아니라 proxy.db로 간다
+        cmd_proxy_load(proxy_connect(proxy_db_path(args.db)), args)
     elif args.cmd == "proxy-audit":
         # `return`이 아니라 `sys.exit` — 진입점이 `main()` 반환값을 버려서
         # 오염을 찾아도 프로세스는 0으로 끝났다(PR #12 리뷰 Blocker).
         # E-PXS-2가 명시한 exit 2 계약은 check 커맨드와 같은 패턴으로만 지켜진다.
-        sys.exit(cmd_proxy_audit(conn, args))
+        sys.exit(cmd_proxy_audit(proxy_connect(proxy_db_path(args.db)), args))
     elif args.cmd == "export":
         cmd_export(conn, args)
     elif args.cmd == "stats":
