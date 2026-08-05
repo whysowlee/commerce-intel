@@ -1,13 +1,14 @@
 ---
 name: intel-query
 description: >-
-  commerce-intel 정본 DB(Turso)를 자연어로 조회한다. 비기술 팀원이 SQL 없이
-  상품·가격·랭킹·브랜드 데이터를 물어볼 때 쓴다. 예시 발화 — "무신사에서 우리
-  브랜드 순위 변동 보여줘", "할인율 20% 이상인 상품", "품절된 옵션 몇 개야".
-  자연어를 SELECT 쿼리로 바꿔 Turso HTTP API로 실행하고(읽기 전용), 결과를
-  표·요약·차트로 정리해 답한다. 수집·적재·리포트 생성은 commerce-intel이 담당한다.
+  commerce-intel 정본 DB(Turso)를 자연어로 조회하고, 커머스 플랫폼에서
+  상품·랭킹 데이터를 수집·적재한다. 조회 예시 — "무신사에서 우리 브랜드 순위
+  변동 보여줘", "할인율 20% 이상인 상품", "품절된 옵션 몇 개야" (자연어를
+  SELECT로 바꿔 Turso HTTP API 읽기 전용 실행, 표·요약·차트로 답한다).
+  수집 예시 — "무신사에서 2000아카이브스 수집해줘", "여성 바지 랭킹 수집"
+  (레포의 플랫폼 어댑터를 따라 수집하고 Python 파이프라인으로 적재한다).
 metadata:
-  version: 1.0.0
+  version: 1.1.0
   db-schema: v3 (D65)
 ---
 
@@ -148,11 +149,101 @@ async function queryDB(sql) {
 
 → 멀티턴으로 자연스럽게 이어간다. 이전 맥락(무신사, 2000아카이브스, 할인 상품)을 유지하고 시계열 쿼리(같은 상품의 observations를 observed_at 순으로)로 전환한다. 시점이 여러 개면 라인 차트 아티팩트가 낫다.
 
+## 수집 (Collect + Load)
+
+조회뿐 아니라 데이터 수집·적재도 할 수 있다. 수집은 레포의 기존 Python
+파이프라인을 Bash로 호출하는 방식이다 — 이 스킬은 수집 방법을 직접 기술하지
+않고 **레포의 플랫폼 어댑터 스킬을 읽고 따른다.**
+
+### 환경 전제
+
+- 레포: `~/workspace/commerce-intel` (다르면 환경변수 `INTEL_REPO`)
+- Python: 레포 루트에 `.venv`가 있어야 한다 (없으면 `docs/TURSO-SETUP.md`의 venv도 가능)
+- 환경변수: `INTEL_DB_URL`, `INTEL_DB_TOKEN`(**쓰기 토큰**)이 `~/.config/intel/env`
+  또는 `.venv/bin/activate`에 설정돼 있어야 한다
+
+환경이 안 갖춰져 있으면(레포 없음·venv 없음·쓰기 토큰 없음) 수집 불가를
+안내하고 조회만 가능하다고 말한다 — 조회는 이 환경 없이도 된다.
+
+### 수집 워크플로우
+
+사용자가 수집을 요청하면 이 순서를 따른다:
+
+1. **중복 확인** — 최근 24시간 내 같은 대상 수집이 있었는지 (팀 공유 DB라 남의 수집도 잡힌다):
+   ```bash
+   cd ${INTEL_REPO:-~/workspace/commerce-intel} && source .venv/bin/activate
+   python3 skills/commerce-intel/scripts/intel_db.py check-run \
+       --site {사이트} --story {스토리} --target {대상}     # exit 1이면 최근 수집 있음
+   ```
+   story 값은 셋 중 하나다: `brand-linesheet` / `market-scan` / `ranking-snapshot`.
+   이미 있으면 사용자에게 알리고, 재수집 의사를 확인한 뒤에만 `--force`로 진행한다.
+
+2. **플랫폼 어댑터 읽기** — 수집 방법은 플랫폼마다 다르다. 레포의 플랫폼 스킬을 읽어서 따른다:
+   - 무신사: `skills/platform-musinsa/SKILL.md` / 29CM: `skills/platform-29cm/SKILL.md`
+   - 자사몰: `skills/platform-ownmall/SKILL.md` / 그 외: `skills/platform-{이름}/SKILL.md`
+   - 어댑터가 없는 플랫폼이면 `skills/platform-generic/`을 참고하되, 사용자에게
+     "이 플랫폼은 전용 어댑터가 없어서 범용 방식으로 진행합니다"라고 알린다.
+
+3. **수집 실행** — 어댑터의 지시에 따라 API 호출 또는 브라우저 자동화로 수집하고,
+   계약 JSON 형식(`skills/commerce-intel/references/story-catalog.md`)으로 저장한다.
+   저장 위치는 레포 파일 규약을 따른다: 라인시트·전수조사는 `data/raw/`,
+   랭킹 스냅샷은 `data/snapshots/` (파일명 `<site>-<story>-<대상>-<YYYYMMDD-HHmm>.json`).
+
+4. **검증** — 적재 전에 반드시 검증한다(레포 규칙: 검증 FAIL 파일은 적재하지 않는다):
+   ```bash
+   python3 skills/commerce-intel/scripts/validate_data.py {json_파일_경로}
+   ```
+
+5. **적재 + 시트 미러**:
+   ```bash
+   python3 skills/commerce-intel/scripts/intel_db.py load {json_파일_경로}
+   python3 skills/commerce-intel/scripts/sync_sheets.py    # 팀이 보는 창구 갱신
+   ```
+
+6. **결과 보고** — 적재 결과(관측 몇 건 신규, 중복 몇 건 스킵)를 사용자에게 알린다.
+   시트 미러가 실패해도 적재는 유효하다 — 그 사실만 알린다.
+
+### 스토리 유형
+
+| 스토리 | 명령 예시 | 설명 |
+|--------|----------|------|
+| 브랜드 라인시트 (brand-linesheet) | "무신사에서 2000아카이브스 수집해줘" | 특정 브랜드의 전 상품 |
+| 카테고리 전수조사 (market-scan) | "무신사 여성 데님팬츠 전수조사" | 특정 카테고리의 전 상품 |
+| 랭킹 모니터링 (ranking-snapshot) | "무신사 여성 바지 랭킹 수집" | 특정 카테고리 랭킹 스냅샷 |
+
+### 수집 안전 규칙
+
+1. **수집 전 반드시 중복 확인**한다 (check-run). 같은 대상을 중복 수집하면 팀 공유 DB에 불필요한 행이 쌓인다.
+2. **차단(403/429/CAPTCHA)을 우회하지 않는다.** 막히면 멈추고 보고한다.
+3. **추정하지 않는다.** 사이트에 노출되지 않는 값은 null로 넣는다 — 0과 다르다. 리뷰 수로 판매량을 역산하는 식의 추정은 하지 않는다.
+4. **대규모 수집(1,000건 이상) 전에 사용자에게 규모와 예상 소요를 알린다.**
+5. **쓰기 토큰을 이 파일이나 대화에 적지 않는다** — 환경변수로만 관리한다. 이 파일에 넣어도 되는 토큰은 조회용 읽기 전용뿐이다.
+
+### 유틸리티 명령 (Bash)
+
+모두 레포 루트에서 venv 활성화 후 실행:
+
+```bash
+cd ${INTEL_REPO:-~/workspace/commerce-intel} && source .venv/bin/activate
+```
+
+| 용도 | 명령 |
+|------|------|
+| DB 통계 | `python3 skills/commerce-intel/scripts/intel_db.py stats` |
+| 시트 미러 | `python3 skills/commerce-intel/scripts/sync_sheets.py` |
+| 프록시 감사 | `python3 skills/commerce-intel/scripts/intel_db.py proxy-audit` |
+| 속성 재사용 | `python3 skills/commerce-intel/scripts/intel_db.py reuse-attrs {raw.json}` |
+| 데이터 내보내기 | `python3 skills/commerce-intel/scripts/intel_db.py export --table {테이블명}` |
+| 라이프사이클 태그 | `python3 skills/commerce-intel/scripts/intel_db.py tag-lifecycle` |
+
 ## 참고 파일
 
 | 파일 | 언제 읽는가 |
 |---|---|
 | `references/schema-v3.md` | 컬럼 타입·제약·계층 구조가 정확히 필요할 때 (복잡한 조인·집계 전) |
+| 레포 `skills/platform-*/SKILL.md` | 수집 요청 시 해당 플랫폼 어댑터 |
+| 레포 `skills/commerce-intel/references/story-catalog.md` | 수집 시 계약 JSON 형식·검증된 절차 |
+| 레포 `skills/commerce-intel/references/db-contract.md` | 적재 규칙·null 의미론 |
 
 ## 설치 (팀원 온보딩 — 사람이 읽는 절차)
 
