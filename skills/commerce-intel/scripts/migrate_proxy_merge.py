@@ -38,22 +38,44 @@ PROXY_TABLES = [
 ]
 
 
-def migrate(db_path: str, dry_run: bool = False) -> bool:
-    db_path = Path(db_path).resolve()
-    proxy_path = db_path.parent / "proxy.db"
+def _resolve_proxy_source(db_path_str: str):
+    """프록시 DB 소스를 찾는다.
 
-    if not proxy_path.exists():
-        print(f"proxy.db가 없다: {proxy_path}")
-        print("이미 이관됐거나 프록시를 사용한 적이 없다 — 할 일 없음.")
-        return True
+    우선순위: PROXY_DB_URL(터소) > INTEL_PROXY_DB(로컬 격리) > 정본 옆 proxy.db.
+    터소 URL이면 open_db로 연결하고, 로컬이면 파일 존재 확인.
+    """
+    env = os.environ.get("PROXY_DB_URL") or os.environ.get("INTEL_PROXY_DB")
+    if env:
+        if env.startswith("libsql://"):
+            return env, "turso"
+        return Path(env), "local"
+    db_path = Path(db_path_str).resolve()
+    return db_path.parent / "proxy.db", "local"
+
+
+def migrate(db_path: str, dry_run: bool = False) -> bool:
+    proxy_source, source_type = _resolve_proxy_source(db_path)
+
+    if source_type == "local":
+        proxy_path = Path(proxy_source)
+        if not proxy_path.exists():
+            print(f"proxy.db가 없다: {proxy_path}")
+            print("이미 이관됐거나 프록시를 사용한 적이 없다 — 할 일 없음.")
+            return True
+
+    db_path_resolved = Path(db_path).resolve()
 
     # 본 DB 열기
-    conn = open_db(str(db_path))
+    conn = open_db(str(db_path_resolved))
     conn.execute("PRAGMA foreign_keys = ON")
 
-    # proxy.db 열기 (읽기 전용)
-    pconn = sqlite3.connect(f"file:{proxy_path}?mode=ro", uri=True)
-    pconn.row_factory = sqlite3.Row
+    # 프록시 DB 열기
+    if source_type == "turso":
+        pconn = open_db(str(proxy_source),
+                        token=os.environ.get("PROXY_DB_TOKEN"))
+    else:
+        pconn = sqlite3.connect(f"file:{proxy_source}?mode=ro", uri=True)
+        pconn.row_factory = sqlite3.Row
 
     print(f"── proxy.db 이관 시작 ──")
     print(f"  원본: {proxy_path}")
@@ -120,10 +142,13 @@ def migrate(db_path: str, dry_run: bool = False) -> bool:
         return False
 
     # 성공 시 백업
-    backup = proxy_path.with_suffix(".db.merged-backup")
-    proxy_path.rename(backup)
-    print(f"\n성공! proxy.db → {backup.name} 으로 이름 변경.")
-    print("Turso의 commerce-intel-proxy DB는 수동으로 삭제하라.")
+    if source_type == "local":
+        backup = Path(proxy_source).with_suffix(".db.merged-backup")
+        Path(proxy_source).rename(backup)
+        print(f"\n성공! proxy.db → {backup.name} 으로 이름 변경.")
+    else:
+        print(f"\n성공! Turso 프록시 DB에서 데이터를 본 DB로 복사했다.")
+        print(f"Turso의 commerce-intel-proxy DB는 수동으로 삭제하라: {proxy_source}")
     return True
 
 
