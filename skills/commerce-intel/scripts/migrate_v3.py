@@ -257,11 +257,8 @@ def migrate(src_path, dst_path, proxy_path):
                          src.execute("SELECT COUNT(*) FROM variant_obs_base").fetchone()[0],
                          report.get("variant_observations", 0))
 
-    # ⑨ 프록시 → proxy.db (D65-8). rowid 순서 보존 — 증분 미러 진행점 번역의 전제
-    px = sqlite3.connect(proxy_path)
-    # D69: proxy 테이블은 SCHEMA_V3에 포함 — 별도 스키마 불필요
-    pass  # proxy.db 생성 로직은 D69에서 폐기
-    px.execute("PRAGMA foreign_keys = ON")
+    # ⑨ 프록시 → 본 DB에 직접 (D69: proxy.db 분리 폐기)
+    px = dst  # D69: 프록시가 본 DB에 통합 — 별도 파일 불필요
     if _table_exists(src, "proxy_defs"):
         dcols = [d[1] for d in src.execute("PRAGMA table_info(proxy_defs)")]
         rows = src.execute("SELECT %s FROM proxy_defs" % ",".join(dcols)).fetchall()

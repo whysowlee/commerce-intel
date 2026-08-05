@@ -78,7 +78,7 @@ def migrate(db_path: str, dry_run: bool = False) -> bool:
         pconn.row_factory = sqlite3.Row
 
     print(f"── proxy.db 이관 시작 ──")
-    print(f"  원본: {proxy_path}")
+    print(f"  원본: {proxy_source}")
     print(f"  대상: {db_path}")
 
     # 원본 행 수 확인
