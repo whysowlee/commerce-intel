@@ -151,6 +151,23 @@ insights  (run_stamp, target, context, verdict,   -- strong/weak/rejected
            idx, claim, audience, effect, n, p, ..., PK (run_stamp, target, verdict, idx))
 ```
 
+### 변경 이력 (D68)
+
+정적 속성·AI 속성이 바뀔 때마다 append-only 이력이 남는다. 조회는 뷰로:
+
+```sql
+product_changes (site, product_id, 현재명,        -- 뷰 — product_history를 편 것
+                 field,                           -- name/brand/category/url/image_url
+                 old_value, new_value, changed_at, run_id)
+attr_changes    (site, product_id, attr_name,     -- 뷰 — attr_history를 편 것
+                 old_value, new_value, old_basis, new_basis, changed_at)
+```
+
+- 같은 값 재수집은 이력을 만들지 않는다 — 행 하나가 실제 전이 하나다.
+- category의 old/new_value는 `'대 > 중 > 소'` 경로 문자열이다.
+- "리네이밍이 성과에 영향을 줬나"는 product_changes의 changed_at을 축으로
+  같은 상품 observations를 전/후로 나눠 비교한다.
+
 ### 프록시 판정 (별도 DB — D65-8)
 
 AI 파생 프록시(썸네일 컷 종류, 상품명 언어 등)의 정의·판정 캐시는 정본과 **다른

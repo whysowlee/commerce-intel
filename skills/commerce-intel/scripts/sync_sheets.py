@@ -32,7 +32,8 @@ from schema_v3 import (proxy_connect, proxy_db_exists,  # noqa: E402
 FULL_TABLES = ("products", "variants", "platforms", "runs",
                "brand_aliases", "brand_platforms", "proxy_defs")
 PROXY_TABLES = ("proxy_defs", "proxy_cache")
-INCR_TABLES = ("observations", "variant_observations", "proxy_cache")
+INCR_TABLES = ("observations", "variant_observations", "proxy_cache",
+               "product_changes")  # D68 — append-only 이력이라 증분이 맞다
 # 스토리별 뷰 탭 — 정본이 아니라 파생이다(context 접두사로 걸러 상품별 최신 관측만).
 # 스토리 안의 세부 대상은 context 열(앞쪽)로 구분한다 — 시트 필터로 걸러 본다.
 VIEWS = (("뷰_라인시트", "brand:", "브랜드 라인시트 수집분"),
@@ -52,6 +53,7 @@ TABLE_DESC = {  # 안내 탭에 싣는 원본 탭 설명
     "runs": "수집 실행 이력",
     "proxy_defs": "AI 파생 프록시 정의 (proxy.db). 프록시 사용 시 생성",
     "proxy_cache": "프록시 판정 캐시 (proxy.db). 프록시 사용 시 생성",
+    "product_changes": "상품 정적 속성 변경 이력(이름·브랜드·카테고리·이미지). append only",
 }
 NOTICE = ("이 스프레드시트는 로컬 정본 DB(data/intel.db)의 단방향 미러입니다. "
           "여기서 고친 값은 정본에 반영되지 않고 다음 동기화 때 덮일 수 있습니다.")

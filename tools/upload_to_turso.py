@@ -39,8 +39,10 @@ INTEL_ORDER = [
     ("obs_base", "id"), ("obs_attr", "id"),
     ("variant_base", "vk"), ("variant_obs_base", "id"),
     ("attr_base", "rowid"), ("insights", "rowid"), ("sync_state", "rowid"),
+    ("product_history", "id"), ("attr_history", "id"),
 ]
-PROXY_ORDER = [("proxy_defs", "rowid"), ("proxy_cache", "rowid")]
+PROXY_ORDER = [("proxy_defs", "rowid"), ("proxy_cache", "rowid"),
+               ("proxy_history", "id")]
 
 
 def upload(src_path, url, token, proxy=False, force=False):
