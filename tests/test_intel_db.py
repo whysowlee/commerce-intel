@@ -1084,6 +1084,23 @@ def history_tests():
                                       "NEW NAME", "영문", "2026-08-05 13:00:00")
     check("E-DB-38d 같은 값·지문 재판정은 이력 무변화",
           pconn.execute("SELECT COUNT(*) FROM proxy_history").fetchone()[0] == 1)
+    # 같은 지문·다른 값(정정 재판정) — 이력이 남고 캐시도 새 값을 서빙해야 한다.
+    # 옛 지문만 지우면 옛 값 행이 PK 충돌로 살아남아 캐시가 옛 값에 고정된다
+    # (PR #14 리뷰 Blocker — 호출부 둘 다 INSERT OR IGNORE/IntegrityError 무시).
+    schema_v3.record_proxy_transition(pconn, "name_lang", "musinsa", "P1",
+                                      "NEW NAME", "한국어", "2026-08-05 14:00:00")
+    pconn.execute("INSERT OR IGNORE INTO proxy_cache VALUES "
+                  "('name_lang','musinsa','P1','NEW NAME','한국어','rule',"
+                  "'2026-08-05 14:00:00')")
+    pconn.commit()
+    cur = pconn.execute("SELECT value FROM proxy_cache WHERE proxy_name='name_lang' "
+                        "AND site='musinsa' AND product_id='P1'").fetchall()
+    ph2 = pconn.execute("SELECT old_value, new_value FROM proxy_history "
+                        "ORDER BY id DESC LIMIT 1").fetchone()
+    check("E-DB-38e 같은 지문·다른 값 정정 — 캐시가 새 값 하나만 서빙한다",
+          len(cur) == 1 and cur[0][0] == "한국어", [tuple(r) for r in cur])
+    check("E-DB-38f 정정 전이가 이력에 남는다 (영문→한국어)",
+          ph2 and tuple(ph2) == ("영문", "한국어"), tuple(ph2 or ()))
     pconn.close()
 
     # 카테고리 재분류 — 기존 platform 매핑이 있는 상품에 처음 보는 리프

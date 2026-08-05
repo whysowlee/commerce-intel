@@ -447,7 +447,7 @@ platform-cafe24가 아니라 platform-ownmall이다). 신규 7건:
 | E-DB-36 | Turso 연결 (D67) | 모든 DB 열기는 `open_db()` 경유 — `libsql://`이면 호환 래퍼(행 이름 접근·IntegrityError 번역·lastrowid 대행)가 씌워진다. 환경변수 없으면 로컬 SQLite(하위호환), 명시적 `--db`가 환경변수를 이긴다. v3 뷰·트리거가 libsql 위에서 왕복하는 것까지 고정 | [자동 — tests/test_turso_connect.py A·B층. C층(실연결·읽기 전용 거부)은 테스트 전용 DB(TURSO_TEST_URL) 설정 시만 — 공유 정본에는 쓰지 않는다] |
 | E-DB-35 | proxy.db 분리 (D65-8) | 프록시 표는 정본 옆 `proxy.db`다. 정의 삭제 시 캐시가 CASCADE로 함께 사라진다(FK는 커넥션마다 PRAGMA로 켜야 돈다). rule 카드는 lazy 판정 — collect가 캐시 miss를 defs.rules로 즉석 판정·적재한다 | [자동 — E-PXS·증분 키 회귀가 proxy.db 경로로 돈다] |
 | E-DB-37 | 정적 속성 변경 이력 (D68) | 같은 상품을 다른 이름으로 두 번 적재하면 `product_history`에 name 전이 1행(run_id 연결). 같은 값 재적재는 이력을 만들지 않는다. 기존 platform 매핑이 있는 상품에 처음 보는 카테고리 리프가 오면 category 전이가 기록된다. 조회는 `product_changes` 뷰. `attr` 변경(set-attrs 등 어떤 쓰기 경로든)은 트리거가 `attr_history`에 남긴다. 기존 v3 DB는 connect()가 마커 표(attr_history) 부재를 보고 **1회만** SCHEMA_V3를 보충한다 — 표가 갖춰지면 다시 안 보낸다(매 connect DDL 왕복 방지) | [자동 — history_tests] |
-| E-DB-38 | 프록시 재판정 체인 (D68) | 이름/이미지가 바뀌면 그 재료의 proxy_cache 판정이 **재판정 대기 이력**(proxy_history, new_value NULL)으로 옮겨지고 캐시에서 사라진다. 다음 lazy 판정·proxy-load가 대기 행을 완성한다(new_value 채움). 같은 값·같은 지문 재판정은 이력을 만들지 않는다. proxy.db가 없으면(URL 미설정 등) product_history만 남고 죽지 않는다 | [자동 — history_tests] |
+| E-DB-38 | 프록시 재판정 체인 (D68) | 이름/이미지가 바뀌면 그 재료의 proxy_cache 판정이 **재판정 대기 이력**(proxy_history, new_value NULL)으로 옮겨지고 캐시에서 사라진다. 다음 lazy 판정·proxy-load가 대기 행을 완성한다(new_value 채움). 같은 값·같은 지문 재판정은 이력을 만들지 않고, **같은 지문·다른 값(정정 재판정)은 이력을 남기며 캐시를 전부 비워 새 값이 들어가게 한다**(옛 지문만 지우면 옛 값 행이 PK 충돌로 살아남아 캐시가 옛 값에 고정된다 — 호출부가 INSERT OR IGNORE라 조용히 썩는다). proxy.db가 없으면(URL 미설정 등) product_history만 남고 죽지 않는다 | [자동 — history_tests] |
 
 ### 3-9. E-CH — 카테고리 계층 (2026-08-04 신설 · D42)
 

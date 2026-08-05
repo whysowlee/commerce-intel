@@ -972,9 +972,13 @@ def record_proxy_transition(pconn, proxy_name, site, product_id, new_fp, new_val
         "VALUES (?,?,?,?,?,?,?,?)",
         (proxy_name, site, str(product_id), old["value"], new_val,
          old["fingerprint"], str(new_fp), now))
+    # 이 키의 캐시를 **전부** 비운다 — 호출부가 바로 새 판정을 넣는다. 지문이
+    # 같고 값만 정정된 경우(rule 수정 후 재판정)에 옛 지문만 지우면 옛 값 행이
+    # PK 충돌로 살아남아, 이력은 "바뀌었다"는데 캐시는 옛 값을 서빙한다
+    # (PR #14 리뷰 Blocker).
     pconn.execute(
-        "DELETE FROM proxy_cache WHERE proxy_name=? AND site=? AND product_id=? "
-        "AND fingerprint != ?", (proxy_name, site, str(product_id), str(new_fp)))
+        "DELETE FROM proxy_cache WHERE proxy_name=? AND site=? AND product_id=?",
+        (proxy_name, site, str(product_id)))
 
 
 # ── 증분 키 (`_rowid`) — v2와 같은 규약 ────────────────────────────────────
