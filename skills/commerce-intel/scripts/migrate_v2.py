@@ -46,7 +46,10 @@ def _copy_plain(src, dst, table):
     ddl = src.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
     dst.execute(ddl[0])
-    rows = src.execute("SELECT %s FROM %s" % (",".join(cols), table)).fetchall()
+    # rowid 순서를 보존해야 한다 — 새 파일은 1..N으로 다시 매겨지는데, 순서가
+    # 다르면 아래 sync_state 진행점 번역(행 수 = 새 번호)이 성립하지 않는다.
+    rows = src.execute(
+        "SELECT %s FROM %s ORDER BY rowid" % (",".join(cols), table)).fetchall()
     dst.executemany("INSERT INTO %s (%s) VALUES (%s)"
                     % (table, ",".join(cols), ",".join("?" * len(cols))), rows)
     return len(rows)
@@ -79,6 +82,27 @@ def migrate(src_path, dst_path):
         except sqlite3.Error as e:
             report[t] = 0
             report.setdefault("_errors", []).append("%s: %s" % (t, e))
+
+    # sync_state 진행점을 새 번호 체계로 번역한다 (D64). 증분 미러 키는 rowid인데
+    # 삭제로 구멍 난 표(proxy_cache)는 이관에서 1..N으로 다시 매겨진다. 옛 키를
+    # 그대로 들고 가면 구멍 크기만큼의 새 행이 "이미 미러됨"으로 읽혀 조용히
+    # 건너뛰어진다 — 2026-08-05 실측: 500,835를 들고 가면 새 판정 14,818행이 빠진다.
+    # 순서 보존 재번호이므로 새 키 = 옛 키 이하의 행 수다.
+    if "sync_state" not in report.get("_missing", []):
+        for tname, key in dst.execute(
+                "SELECT table_name, last_synced_key FROM sync_state").fetchall():
+            if not key or not str(key).isdigit():
+                continue
+            if not src.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                               "AND name=?", (tname,)).fetchone():
+                continue
+            new_key = src.execute("SELECT COUNT(*) FROM %s WHERE rowid <= ?" % tname,
+                                  (int(key),)).fetchone()[0]
+            if new_key != int(key):
+                dst.execute("UPDATE sync_state SET last_synced_key=? "
+                            "WHERE table_name=?", (str(new_key), tname))
+                print("  sync_state.%s: 진행점 %s → %s (rowid 재번호 번역)"
+                      % (tname, key, new_key))
     # runs가 없으면 아래 조회가 `no such table`로 이관 전체를 죽인다. 빈 매핑으로
     # 진행하고 그 사실을 남긴다 — 관측의 run_ref만 NULL이 될 뿐 나머지는 온전하다.
     run_ref = ({r[0]: r[1] for r in dst.execute("SELECT run_id, rowid FROM runs")}
