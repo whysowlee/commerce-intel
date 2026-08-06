@@ -876,7 +876,6 @@ def blocker3r_tests():
     import importlib
     intel_db = importlib.import_module("intel_db")
     migrate_v3 = importlib.import_module("migrate_v3")
-    schema_v3 = importlib.import_module("schema_v3")
     schema_v2 = importlib.import_module("schema_v2")
     work = Path(tempfile.mkdtemp(prefix="b3r-"))
 
@@ -903,14 +902,20 @@ def blocker3r_tests():
                 " last_synced_key TEXT, updated_at TEXT)")
     src.execute("INSERT INTO sync_state VALUES ('observations', '0', 'x')")
     src.commit(); src.close()
-    # D69: proxy.db 분리 폐기 — 아래 테스트는 본 DB proxy 테이블 존재를 확인
+    # D69: proxy.db 분리 폐기 — 프록시 표는 이관된 본 DB 안에 생긴다
     live_proxy = work / "proxy.db"  # 레거시 경로, 테스트용
     live_proxy.write_text("살아있는 프록시 — 이관이 건드리면 안 된다")
     staging = str(work / "proxy.db.staging")
     migrate_v3.migrate(v2db, str(work / "v2-out.db"), staging)
+    out = sqlite3.connect(str(work / "v2-out.db"))
+    out_tables = {r[0] for r in out.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    out.close()
     check("E-MG-2 D69: proxy 테이블이 본 DB에 존재한다",
+          {"proxy_defs", "proxy_cache", "proxy_history"} <= out_tables,
+          sorted(t for t in out_tables if t.startswith("proxy")))
+    check("E-MG-2b 레거시 proxy.db 파일은 이관이 건드리지 않는다",
           live_proxy.read_text() == "살아있는 프록시 — 이관이 건드리면 안 된다")
-    check("E-MG-2b 프록시 스테이징 파일이 별도로 만들어진다", os.path.exists(staging))
 
     # ── B3: 이관에서 행이 떨어지면 그 표의 미러 진행점을 리셋한다
     g = sqlite3.connect(str(work / "g.db"))
@@ -936,8 +941,10 @@ def blocker3r_tests():
                         "--db", "libsql://fake.turso.io", "--cards", str(cards_f),
                         "--out", str(work / "o.json")],
                        capture_output=True, text=True, env=env)
-    check("E-PA-13 Turso 정본 + 프록시 URL 미설정이면 임시 DB로 새지 않고 죽는다 (Blocker 4)",
-          r.returncode != 0 and "PROXY_DB_URL" in (r.stdout + r.stderr),
+    # D69: PROXY_DB_URL 가드 폐기 — 프록시는 정본 안이다. 남는 계약은
+    # "닿지 않는 Turso 정본이면 조용히 성공(임시 DB 판정)하지 않고 죽는다"다.
+    check("E-PA-13 닿지 않는 Turso 정본이면 임시 DB로 새지 않고 죽는다 (Blocker 4·D69 개정)",
+          r.returncode != 0 and not (work / "o.json").exists(),
           "exit=%d %s" % (r.returncode, (r.stdout + r.stderr)[:80]))
 
     # ── B5: 깨진 카드 규칙이 collect()를 죽이지 않는다 (lazy 판정 격리)
@@ -946,12 +953,12 @@ def blocker3r_tests():
     conn.execute("INSERT INTO products (site, product_id, name) VALUES ('s','1','상품')")
     conn.execute("INSERT INTO observations (site, product_id, observed_at, context,"
                  " price_sale) VALUES ('s','1','2026-08-05 10:00:00','brand:t',100)")
-    conn.commit()  # D69: close 제거
-    pcon = con  # D69: proxy가 본 DB에 통합
-    pcon.execute("INSERT INTO proxy_defs (proxy_name, material, value_space, method,"
+    conn.commit()
+    # D69: proxy가 본 DB에 통합 — 별칭 없이 같은 커넥션에 직접 넣는다
+    conn.execute("INSERT INTO proxy_defs (proxy_name, material, value_space, method,"
                  " rules) VALUES ('bad_rule','name','[\"a\"]','rule',?)",
                  (json.dumps({"rules": [{"any": ["[unclosed"], "value": "a"}]}),))
-    pcon.commit(); pcon.close()
+    conn.commit(); conn.close()
     import importlib as _il
     intel_data = _il.import_module("intel_data")
     # D69: INTEL_PROXY_DB 환경변수 폐기 — proxy가 본 DB에 통합
@@ -1120,17 +1127,22 @@ def history_tests():
           len(ah) == 1 and ah[0]["old_value"] == "와이드"
           and ah[0]["new_value"] == "스트레이트", [dict(r) for r in ah])
 
-    # 멱등 업그레이드 — 이력 표를 지우고 다시 connect하면 되살아난다 (라이브 v3 경로)
+    # 멱등 업그레이드 — 이력 표를 지우고 다시 connect하면 되살아난다 (라이브 v3 경로).
+    # D69: 스키마 마커가 proxy_history로 옮겨졌다 — 구 v3 DB(프록시 표 이전)를
+    # 흉내내려면 프록시 표까지 같이 지워야 마커 부재 업그레이드가 발동한다
     conn.executescript("DROP VIEW product_changes; DROP VIEW attr_changes;"
-                       "DROP TABLE product_history; DROP TABLE attr_history;")
+                       "DROP TABLE product_history; DROP TABLE attr_history;"
+                       "DROP TABLE proxy_history; DROP TABLE proxy_cache;"
+                       "DROP TABLE proxy_defs;")
     conn.commit()
     conn.close()
     conn = intel_db.connect(db)
     tabs = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE name IN "
-        "('product_history','attr_history','product_changes','attr_changes')")}
+        "('product_history','attr_history','product_changes','attr_changes',"
+        "'proxy_defs','proxy_cache','proxy_history')")}
     check("E-DB-37f 기존 v3 DB도 connect()가 이력 표·뷰를 멱등 생성한다",
-          len(tabs) == 4, sorted(tabs))
+          len(tabs) == 7, sorted(tabs))
     # 업그레이드는 1회다 — 표가 갖춰진 뒤에는 connect가 SCHEMA_V3를 다시 보내지
     # 않는다 (PR #14 리뷰: 매 connect마다 DDL 27줄을 Turso로 왕복시키면 안 된다)
     check("E-DB-37g 표가 갖춰지면 스키마 업그레이드가 더는 필요 없다",
@@ -1306,15 +1318,14 @@ def proxy_space_tests():
     import tempfile
     import importlib
     sys.path.insert(0, str(SCRIPTS))
-    schema_v3 = importlib.import_module("schema_v3")
     work = Path(tempfile.mkdtemp())
     db = str(work / "px.db")
     run([SCRIPTS / "intel_db.py", "--db", db, "init"], work, db)
     con = sqlite3.connect(db)
     con.execute("INSERT INTO products (site, product_id, name) VALUES ('musinsa','1','상품 A')")
     con.commit(); con.close()
-    # D69: 프록시 표는 본 DB에 통합
-    pcon = conn
+    # D69: 프록시 표는 본 DB에 통합 — 새 커넥션으로 넣는다
+    pcon = sqlite3.connect(db)
     pcon.execute("INSERT INTO proxy_defs (proxy_name, question, material, value_space, method, created_at) "
                  "VALUES ('name_lang','q','name','[\"영문\",\"한국어\"]','rule','2026-08-05')")
     pcon.execute("INSERT INTO proxy_cache VALUES ('name_lang','musinsa','1','상품 A','화성어','b','2026-08-05')")
@@ -1330,7 +1341,7 @@ def proxy_space_tests():
     check("E-PXS-2c 청소 후 exit 0", r.returncode == 0, r.returncode)
 
     # E-PXS-1 — 순서만 바뀐 재적재는 캐시를 안 지우고, 실질 변경은 지운다
-    pcon = con  # D69: 본 DB 통합
+    pcon = sqlite3.connect(db)  # D69: 본 DB 통합
     pcon.execute("INSERT INTO proxy_cache VALUES ('name_lang','musinsa','1','상품 A','영문','b','2026-08-05')")
     pcon.commit(); pcon.close()
     reorder = work / "reorder.json"
@@ -1339,9 +1350,9 @@ def proxy_space_tests():
                   "value_space": ["한국어", "영문"], "method": "rule"},
         "judgments": []}, ensure_ascii=False), encoding="utf-8")
     run([SCRIPTS / "intel_db.py", "--db", db, "proxy-load", reorder], work, db)
-    pcon = con  # D69: 본 DB 통합
+    pcon = sqlite3.connect(db)  # D69: 본 DB 통합
     n = pcon.execute("SELECT COUNT(*) FROM proxy_cache").fetchone()[0]
-    # D69: pcon=con — 별도 close 불필요
+    pcon.close()
     check("E-PXS-1 원소 순서만 바뀐 값 공간은 캐시를 지우지 않는다", n == 1, n)
     real = work / "real.json"
     real.write_text(json.dumps({
@@ -1349,14 +1360,14 @@ def proxy_space_tests():
                   "value_space": ["한국어", "영문", "혼합"], "method": "rule"},
         "judgments": []}, ensure_ascii=False), encoding="utf-8")
     r = run([SCRIPTS / "intel_db.py", "--db", db, "proxy-load", real], work, db)
-    pcon = con  # D69: 본 DB 통합
+    pcon = sqlite3.connect(db)  # D69: 본 DB 통합
     n = pcon.execute("SELECT COUNT(*) FROM proxy_cache").fetchone()[0]
-    # D69: pcon=con — 별도 close 불필요
+    pcon.close()
     check("E-PXS-1b 실질 변경은 옛 캐시를 버리고 그 사실을 찍는다",
           n == 0 and "버린다" in r.stdout, "n=%d stdout=%s" % (n, r.stdout.strip()[:60]))
 
     # E-PXS-3 — 오염이 남은 채 분석에 들어가면 그 축을 통째로 뺀다 (읽기 안전망)
-    pcon = con  # D69: 본 DB 통합
+    pcon = sqlite3.connect(db)  # D69: 본 DB 통합
     pcon.execute("INSERT INTO proxy_cache VALUES "
                  "('name_lang','musinsa','1','상품 A','금성어','b','2026-08-05')")
     pcon.commit(); pcon.close()
