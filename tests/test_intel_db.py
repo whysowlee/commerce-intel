@@ -845,7 +845,7 @@ def incremental_key_tests():
         check("E-DB-21 %s 증분 조회가 실제로 돈다 (since=2 → 3행)" % table, ok, detail)
         check("E-DB-22 %s 헤더에 _rowid가 안 섞인다" % table,
               "_rowid" not in h, h[-2:] if h else h)
-    pconn.close()
+    # D69: pconn=conn — 별도 close 불필요
     shutil.rmtree(work, ignore_errors=True)
 
 
@@ -931,7 +931,7 @@ def blocker3r_tests():
                                     "rules": [{"any": ["."], "value": "a"}]}]),
                        encoding="utf-8")
     env = {k: v for k, v in os.environ.items()
-           if k not in ("PROXY_DB_URL", "INTEL_PROXY_DB")}  # D69: 이 변수들은 폐기 예정
+           if k not in ("PROXY_DB_URL", "INTEL_PROXY_DB")}  # D69: 이 변수들은 폐기됨
     r = subprocess.run([sys.executable, str(SCRIPTS / "proxy_auto.py"),
                         "--db", "libsql://fake.turso.io", "--cards", str(cards_f),
                         "--out", str(work / "o.json")],
@@ -946,8 +946,8 @@ def blocker3r_tests():
     conn.execute("INSERT INTO products (site, product_id, name) VALUES ('s','1','상품')")
     conn.execute("INSERT INTO observations (site, product_id, observed_at, context,"
                  " price_sale) VALUES ('s','1','2026-08-05 10:00:00','brand:t',100)")
-    conn.commit(); conn.close()
-    pcon = conn  # D69: proxy가 본 DB에 통합
+    conn.commit()  # D69: close 제거
+    pcon = con  # D69: proxy가 본 DB에 통합
     pcon.execute("INSERT INTO proxy_defs (proxy_name, material, value_space, method,"
                  " rules) VALUES ('bad_rule','name','[\"a\"]','rule',?)",
                  (json.dumps({"rules": [{"any": ["[unclosed"], "value": "a"}]}),))
@@ -964,10 +964,8 @@ def blocker3r_tests():
         check("E-LZ-1 깨진 정규식 카드가 리포트 파이프라인을 죽이지 않는다 (Blocker 5)",
               False, "%s: %s" % (type(e).__name__, e))
     finally:
-        if old_env is None:
-            pass  # D69: INTEL_PROXY_DB 폐기
+            # D69: INTEL_PROXY_DB 정리 코드 제거
         else:
-            pass  # D69: INTEL_PROXY_DB 폐기
     shutil.rmtree(work, ignore_errors=True)
 
 
@@ -1024,7 +1022,7 @@ def history_tests():
                   "('name_lang','musinsa','P1','OLD NAME','영문','rule',"
                   "'2026-08-05 09:00:00')")
     pconn.commit()
-    pconn.close()
+    # D69: pconn=conn — 별도 close 불필요
 
     def load(name, cat, ts):
         raw = {"meta": {"schema_version": "1.0", "site": "musinsa",
@@ -1101,7 +1099,7 @@ def history_tests():
           len(cur) == 1 and cur[0][0] == "한국어", [tuple(r) for r in cur])
     check("E-DB-38f 정정 전이가 이력에 남는다 (영문→한국어)",
           ph2 and tuple(ph2) == ("영문", "한국어"), tuple(ph2 or ()))
-    pconn.close()
+    # D69: pconn=conn — 별도 close 불필요
 
     # 카테고리 재분류 — 기존 platform 매핑이 있는 상품에 처음 보는 리프
     load("NEW NAME", "상의 > 셔츠", "2026-08-05 14:00:00")
@@ -1335,7 +1333,7 @@ def proxy_space_tests():
     check("E-PXS-2c 청소 후 exit 0", r.returncode == 0, r.returncode)
 
     # E-PXS-1 — 순서만 바뀐 재적재는 캐시를 안 지우고, 실질 변경은 지운다
-    pcon = conn  # D69: 본 DB 통합
+    pcon = con  # D69: 본 DB 통합
     pcon.execute("INSERT INTO proxy_cache VALUES ('name_lang','musinsa','1','상품 A','영문','b','2026-08-05')")
     pcon.commit(); pcon.close()
     reorder = work / "reorder.json"
@@ -1344,9 +1342,9 @@ def proxy_space_tests():
                   "value_space": ["한국어", "영문"], "method": "rule"},
         "judgments": []}, ensure_ascii=False), encoding="utf-8")
     run([SCRIPTS / "intel_db.py", "--db", db, "proxy-load", reorder], work, db)
-    pcon = conn  # D69: 본 DB 통합
+    pcon = con  # D69: 본 DB 통합
     n = pcon.execute("SELECT COUNT(*) FROM proxy_cache").fetchone()[0]
-    pcon.close()
+    # D69: pcon=con — 별도 close 불필요
     check("E-PXS-1 원소 순서만 바뀐 값 공간은 캐시를 지우지 않는다", n == 1, n)
     real = work / "real.json"
     real.write_text(json.dumps({
@@ -1354,14 +1352,14 @@ def proxy_space_tests():
                   "value_space": ["한국어", "영문", "혼합"], "method": "rule"},
         "judgments": []}, ensure_ascii=False), encoding="utf-8")
     r = run([SCRIPTS / "intel_db.py", "--db", db, "proxy-load", real], work, db)
-    pcon = conn  # D69: 본 DB 통합
+    pcon = con  # D69: 본 DB 통합
     n = pcon.execute("SELECT COUNT(*) FROM proxy_cache").fetchone()[0]
-    pcon.close()
+    # D69: pcon=con — 별도 close 불필요
     check("E-PXS-1b 실질 변경은 옛 캐시를 버리고 그 사실을 찍는다",
           n == 0 and "버린다" in r.stdout, "n=%d stdout=%s" % (n, r.stdout.strip()[:60]))
 
     # E-PXS-3 — 오염이 남은 채 분석에 들어가면 그 축을 통째로 뺀다 (읽기 안전망)
-    pcon = conn  # D69: 본 DB 통합
+    pcon = con  # D69: 본 DB 통합
     pcon.execute("INSERT INTO proxy_cache VALUES "
                  "('name_lang','musinsa','1','상품 A','금성어','b','2026-08-05')")
     pcon.commit(); pcon.close()
@@ -1594,7 +1592,7 @@ def main():
     check("proxy-load 멱등(중복 스킵)", "판정 0건 적재" in r.stdout, r.stdout)
 
     # [6b] 새 파이프라인(eda/analyze)에서도 프록시가 축이 되는지 — D39 회귀 방어.
-    # 위 [6]은 폐기 예정 HTML(build_analysis_report)만 봐서, D27 리팩터링 때 새
+    # 위 [6]은 폐기됨 HTML(build_analysis_report)만 봐서, D27 리팩터링 때 새
     # 파이프라인의 프록시 소비가 끊긴 것을 111건 회귀가 아무것도 못 잡았다. 그 구멍을 막는다.
     sys.path.insert(0, str(SCRIPTS))
     import intel_data
