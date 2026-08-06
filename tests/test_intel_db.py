@@ -486,8 +486,9 @@ def schema_v3_tests():
           r["url"] == "https://a.test/goods/1"
           and r["image_url"] == "https://img.a.test/x.jpg"
           and r["static_verified_at"] == now, tuple(r))
-    check("E-DB-11 호스트가 사전으로 접혔다",
-          conn.execute("SELECT COUNT(*) FROM hosts").fetchone()[0] == 2)
+    check("E-DB-11 URL이 product_base에 직접 저장된다 (D70: hosts 폐기)",
+          conn.execute("SELECT url, image_url FROM product_base WHERE product_id='P1'"
+                       ).fetchone()[0] == "https://a.test/goods/1")
 
     # E-DB-30 카테고리 계층 왕복 (D65-3) — 경로가 계층 행으로 접혔다 도로 펴진다
     schema_v3.assign_category(conn, "29cm", "P1", "여성의류 > 스커트 > 미니")
@@ -589,20 +590,14 @@ def schema_v3_tests():
           conn.execute("SELECT value FROM obs_attr WHERE obs_id=?",
                        (obs_rowid,)).fetchone()[0] == "37")
 
-    # E-DB-17 URL 접기 규칙이 파이썬과 트리거 SQL에서 **같아야** 한다 (PR #9 리뷰).
-    # 경로 없는 URL이 갈리면 같은 호스트가 사전에 두 항목으로 쪼개진다.
-    from schema_v3 import split_url, _HOST, _PATH
-    for url in ("https://cdn.example.com", "https://a.test/x/y", "노프로토콜경로",
-                "", None):        # 빈 문자열·NULL도 같은 결과여야 한다 (PR #9 리뷰)
-        hid, path = split_url(conn, url, {})
-        pref = conn.execute("SELECT prefix FROM hosts WHERE host_id=?", (hid,)).fetchone()
-        pref = pref[0] if pref else None
-        sql = conn.execute("SELECT %s, %s" % (_HOST.format(u="?1"), _PATH.format(u="?1")),
-                           (url,)).fetchone()
-        check("E-DB-17 URL 접기가 파이썬·SQL에서 같다 (%r)" % url,
-              (pref, path) == tuple(sql)
-              and (pref or "") + (path or "") == (url or ""),
-              ((pref, path), tuple(sql)))
+    # E-DB-17 D70: hosts 폐기 — URL이 product_base에 직접 저장된다
+    for url in ("https://cdn.example.com", "https://a.test/x/y", None):
+        conn.execute("INSERT INTO products (site, product_id, name, url)"
+                     " VALUES ('29cm','URL-T','test',?)", (url,))
+        got = conn.execute("SELECT url FROM products WHERE product_id='URL-T'"
+                           ).fetchone()[0]
+        check("E-DB-17 URL 직접 저장 왕복 (%r)" % url, got == url, got)
+        conn.execute("DELETE FROM product_base WHERE product_id='URL-T'")
 
     # E-DB-10 증분 키는 뷰의 마지막 컬럼 _rowid다
     cols = [d[0] for d in conn.execute("SELECT * FROM observations LIMIT 1").description]
@@ -1711,6 +1706,40 @@ def main():
     nums = [f for f, _ in intel_data.num_axes(data)]
     check("num_axes는 범주 프록시를 수치축에 넣지 않는다 (name_lang은 범주형)",
           "px_name_lang" not in nums)
+
+    # [6c] D70: judge_and_store — lazy 판정이 product_attributes에도 저장되는지.
+    # proxy-load 경로는 위 [6]에서 이미 적재했다 — 여기서는 lazy 판정 경로를
+    # 별도로 확인한다. rules가 있는 카드를 새로 등록해 collect() 때 lazy 판정이
+    # 발동하게 한다.
+    conn6 = sqlite3.connect(db)
+    conn6.row_factory = sqlite3.Row
+    # 기존 name_lang의 rules를 채워 lazy 판정이 가능한 카드로 만든다
+    conn6.execute(
+        "UPDATE proxy_defs SET rules=? WHERE proxy_name='name_lang'",
+        (json.dumps({"rules": [
+            {"any": ["[가-힣]"], "value": "한국어"},
+            {"any": ["."], "value": "영문"}]}),))
+    # proxy_cache와 attr_base의 name_lang 판정을 지워 lazy가 다시 돌게 한다
+    conn6.execute("DELETE FROM proxy_cache WHERE proxy_name='name_lang'")
+    conn6.execute("DELETE FROM attr_base WHERE attr_name='px_name_lang'")
+    conn6.commit(); conn6.close()
+    # collect()가 lazy 판정을 발동시킨다
+    data2 = intel_data.collect(db, None)
+    conn6 = sqlite3.connect(db)
+    conn6.row_factory = sqlite3.Row
+    pa_lazy = conn6.execute(
+        "SELECT value FROM product_attributes WHERE attr_name='px_name_lang'"
+        " AND site='musinsa' LIMIT 1").fetchone()
+    # proxy-load 경로도 확인 (위 [6]에서 적재된 것)
+    pa_load = conn6.execute(
+        "SELECT COUNT(*) FROM product_attributes WHERE attr_name LIKE 'px_%'"
+        ).fetchone()[0]
+    conn6.close()
+    check("E-JS-1 lazy 판정이 product_attributes에도 저장된다 (D70 judge_and_store)",
+          pa_lazy is not None and pa_lazy[0] is not None,
+          pa_lazy[0] if pa_lazy else None)
+    check("E-JS-2 proxy-load도 product_attributes에 저장된다 (D70)",
+          pa_load >= 1, pa_load)
 
     print("[8] 표본 계획 (plan_sample)")
     plan_f = work / "plan.json"

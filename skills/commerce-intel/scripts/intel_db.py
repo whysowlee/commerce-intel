@@ -79,6 +79,29 @@ def _needs_schema_upgrade(conn):
         (_SCHEMA_MARKER,)).fetchone() is None
 
 
+def _needs_url_upgrade(conn):
+    """D70: hosts 테이블 제거 — product_base에 url/image_url 직접 저장."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(product_base)")}
+    return "url_host" in cols and "url" not in cols
+
+
+def _upgrade_urls(conn):
+    """기존 DB의 url_host+url_path → url TEXT 전환 (D70)."""
+    conn.execute("ALTER TABLE product_base ADD COLUMN url TEXT")
+    conn.execute("ALTER TABLE product_base ADD COLUMN image_url TEXT")
+    conn.execute("""
+        UPDATE product_base SET
+            url = CASE WHEN url_host IS NULL AND url_path IS NULL THEN NULL
+                       ELSE COALESCE((SELECT prefix FROM hosts WHERE host_id = url_host), '')
+                            || COALESCE(url_path, '') END,
+            image_url = CASE WHEN img_host IS NULL AND img_path IS NULL THEN NULL
+                             ELSE COALESCE((SELECT prefix FROM hosts WHERE host_id = img_host), '')
+                                  || COALESCE(img_path, '') END
+    """)
+    conn.commit()
+    print("D70: hosts 테이블 폐기 — URL 직접 저장으로 전환")
+
+
 def _is_view(conn, name):
     """그 이름이 뷰인가. **뷰에는 업서트를 못 쓴다**(옛 이름이 뷰가 됐다 — D45)."""
     row = conn.execute(
@@ -116,6 +139,9 @@ def connect(db_path):
                if ver == 2 else
                "  python3 skills/commerce-intel/scripts/migrate_v2.py --src %s --dst <v2>\n"
                "  python3 skills/commerce-intel/scripts/migrate_v3.py --src <v2>" % db_path))
+    # D70: hosts 테이블 폐기 — 기존 DB는 url_host+url_path를 url TEXT로 전환
+    if _needs_url_upgrade(conn):
+        _upgrade_urls(conn)
     # FK는 open_db()가 모든 커넥션에 켠다(B2·B7) — 여기서 또 켜지 않는다.
     # 뷰·트리거는 매번 다시 만든다(멱등) — 스크립트가 갱신되면 곧바로 반영된다.
     conn.executescript(VIEWS_V3)
@@ -860,6 +886,17 @@ def _proxy_load_one(conn, data):
                 "INSERT INTO proxy_cache VALUES (?,?,?,?,?,?,?)",
                 (d["proxy_name"], j.get("site"), str(j.get("product_id")),
                  j.get("fingerprint"), val, j.get("basis"), now_str()))
+            # D70: proxy_cache와 동시에 product_attributes에도 저장
+            try:
+                conn.execute(
+                    "INSERT INTO product_attributes (site, product_id, "
+                    "attr_name, value, basis, decided_at) VALUES (?,?,?,?,?,?)",
+                    (j.get("site"), str(j.get("product_id")),
+                     "px_" + d["proxy_name"],
+                     val if val is None else str(val),
+                     j.get("basis"), now_str()))
+            except (sqlite3.IntegrityError, sqlite3.OperationalError):
+                pass  # pk 미등록 — proxy_cache만 남는다
             new += 1
         except sqlite3.IntegrityError:
             dup += 1
