@@ -931,7 +931,7 @@ def blocker3r_tests():
           "defs=%d cache=%d %s" % (n_defs, n_cache,
                                    sorted(t for t in out_tables
                                           if t.startswith("proxy"))))
-    check("E-MG-2b 레거시 proxy.db 파일은 이관이 건드리지 않는다",
+    check("E-MG-2b 프록시 경로 인자를 넘겨도 무시되고 레거시 파일은 안 건드린다 (D69)",
           live_proxy.read_text() == "살아있는 프록시 — 이관이 건드리면 안 된다")
 
     # ── B3: 이관에서 행이 떨어지면 그 표의 미러 진행점을 리셋한다
