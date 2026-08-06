@@ -8,9 +8,11 @@
     # 검산만
     python3 tools/upload_to_turso.py --src data/intel.db --url ... --token ... --verify-only
 
-절차: 스키마 생성(정본 DDL은 schema_v3.py가 정본) → FK 순서대로 5,000행 배치
-INSERT → 테이블별 행 수 검산. **비어 있지 않은 원격에는 올리지 않는다**(--force로
-무시) — 재실행이 중복 위에 쌓이면 검산이 영영 안 맞는다.
+절차: 표 스키마 생성(정본 DDL은 schema_v3.py) → FK 순서대로 5,000행 배치
+INSERT → **뷰·트리거는 데이터 뒤에** (INSTEAD OF 트리거가 미리 있으면 INSERT를
+가로챈다) → 테이블별 행 수 검산. **비어 있지 않은 원격에는 올리지 않는다.**
+`--force`는 원격 표를 전부 DROP하고 이 로컬본으로 **교체**한다 — 이어 붙이기가
+아니다(중복 위에 쌓이면 검산이 영영 안 맞는다).
 
 migrate_v3와 같은 원칙: 검산이 통과 조건이다. 행 수가 하나라도 어긋나면 exit 1.
 """
@@ -22,7 +24,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "skills" / "commerce-intel" / "scripts"))
-from schema_v3 import SCHEMA_V3, VIEWS_V3, open_db  # noqa: E402
+from schema_v3 import SCHEMA_V3, TRIGGERS_V3, VIEWS_V3, open_db  # noqa: E402
 
 BATCH = 5000
 
@@ -57,10 +59,23 @@ def upload(src_path, url, token, force=False):
     dst = open_db(url, token=token)
     order = INTEL_ORDER
 
-    # 스키마 — 정본 DDL로 짓는다(로컬에서 추출하지 않는다: schema_v3.py가 정본이고,
-    # 로컬 파일과 어긋났다면 그건 로컬이 낡은 것이다)
+    if force:
+        # --force = **원격을 이 로컬본으로 교체한다.** 이어 붙이기가 아니다 —
+        # 이어 붙이면 중복 위에 쌓여 검산이 영영 안 맞는다(원 --force의 버그).
+        # 뷰가 표를 참조하므로 뷰 먼저, 표는 FK 역순으로 지운다.
+        for v in ("products", "observations", "variants", "variant_observations",
+                  "product_attributes", "product_changes", "attr_changes"):
+            dst.execute(f"DROP VIEW IF EXISTS {v}")
+        for t, _ in reversed(order):
+            dst.execute(f"DROP TABLE IF EXISTS {t}")
+        dst.commit()
+        print("  --force: 원격 표를 전부 비웠다 (재생성 후 다시 올린다)")
+
+    # 스키마(표·인덱스만) — 정본 DDL로 짓는다(로컬에서 추출하지 않는다:
+    # schema_v3.py가 정본이고, 로컬 파일과 어긋났다면 그건 로컬이 낡은 것이다).
+    # **뷰·트리거는 데이터를 다 넣은 뒤에 얹는다** — INSTEAD OF 트리거가 미리
+    # 있으면 이름이 같은 경로로 들어오는 INSERT를 가로채 UNIQUE 충돌을 낸다.
     dst.executescript(SCHEMA_V3)
-    dst.executescript(VIEWS_V3)
     dst.execute("PRAGMA foreign_keys = ON")
 
     # 비어 있지 않은 원격 방어 — 이중 업로드는 검산 불능 상태를 만든다
@@ -72,7 +87,7 @@ def upload(src_path, url, token, force=False):
             if n:
                 raise SystemExit(
                     f"원격 {t}에 이미 {n:,}행이 있다 — 빈 DB에만 올린다. "
-                    f"덮어쓰려면 원격을 비우고 다시, 정말 이어 올리려면 --force")
+                    f"원격을 이 로컬본으로 교체하려면 --force")
 
     report = {}
     for table, order_col in order:
@@ -95,6 +110,11 @@ def upload(src_path, url, token, force=False):
             n += len(batch)
         report[table] = n
         print(f"  {table:22} {n:>9,}행 업로드")
+    # 데이터가 다 들어간 뒤에 뷰·트리거 — 조회 계약(intel-query 등)과 이후
+    # connect() 없이 쓰는 클라이언트를 위해 원격에도 얹는다
+    dst.executescript(VIEWS_V3)
+    dst.executescript(TRIGGERS_V3)
+    dst.commit()
     src.close()
     return dst, report
 
@@ -129,7 +149,7 @@ def main():
     ap.add_argument("--token", default=os.environ.get("INTEL_DB_TOKEN"),
                     help="쓰기 토큰 (기본 $INTEL_DB_TOKEN)")
     ap.add_argument("--force", action="store_true",
-                    help="원격이 비어 있지 않아도 이어서 INSERT (권장하지 않음)")
+                    help="원격 표를 전부 DROP하고 이 로컬본으로 교체한다")
     ap.add_argument("--verify-only", action="store_true")
     a = ap.parse_args()
     if not a.url or not a.url.startswith("libsql://"):

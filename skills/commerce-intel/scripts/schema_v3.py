@@ -838,6 +838,12 @@ def invalidate_material_proxies(pconn, site, product_id, material, new_fp, now):
     남으면 "언제 어떤 값에서 바뀌었나"를 물을 수 없다. 옛 판정을 **재판정 대기
     이력**(new_value NULL)으로 옮기고 캐시에서 지운다 — 다음 판정이
     record_proxy_transition()으로 그 행을 완성한다.
+
+    같은 재료에서 나온 **AI 속성 판정(attr_base)** 도 함께 무효화한다 (D71) —
+    이름에서 뽑은 핏(basis='name')은 이름이 바뀌면 근거가 사라진 판정이다.
+    attr_history에 무효화 행(new_value NULL)을 남기고 지운다. 뷰에는 DELETE
+    트리거가 없으므로 attr_base를 직접 지운다. D69로 프록시가 본 DB에 있어
+    전부 **같은 커넥션·같은 트랜잭션**이다.
     """
     rows = pconn.execute(
         "SELECT c.proxy_name, c.fingerprint, c.value FROM proxy_cache c "
@@ -855,7 +861,19 @@ def invalidate_material_proxies(pconn, site, product_id, material, new_fp, now):
             "DELETE FROM proxy_cache WHERE proxy_name=? AND site=? AND product_id=? "
             "AND fingerprint=?",
             (r["proxy_name"], site, str(product_id), r["fingerprint"]))
-    return len(rows)
+    arows = pconn.execute(
+        "SELECT a.pk, a.attr_name, a.value, a.basis FROM attr_base a "
+        "JOIN product_base p ON p.pk = a.pk JOIN sites s ON s.site_id = p.site_id "
+        "WHERE s.name=? AND p.product_id=? AND a.basis=?",
+        (site, str(product_id), material)).fetchall()
+    for r in arows:
+        pconn.execute(
+            "INSERT INTO attr_history (pk, attr_name, old_value, new_value, "
+            "old_basis, new_basis, changed_at) VALUES (?,?,?,NULL,?,NULL,?)",
+            (r["pk"], r["attr_name"], r["value"], r["basis"], now))
+        pconn.execute("DELETE FROM attr_base WHERE pk=? AND attr_name=?",
+                      (r["pk"], r["attr_name"]))
+    return len(rows) + len(arows)
 
 
 def record_proxy_transition(pconn, proxy_name, site, product_id, new_fp, new_val, now):

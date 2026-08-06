@@ -114,7 +114,7 @@
 |---|---|---|
 | `proxy_defs` | 정의 카드 — question·material·value_space·method·label + **rules**(rule 카드 본문 JSON — lazy 판정 재료) | proxy_name |
 | `proxy_cache` | 판정 캐시 — value·basis. **재료 지문이 현재 재료와 같을 때만 유효**. `proxy_defs`에 **ON DELETE CASCADE** — 정의를 지우면 그 계약의 판정도 함께 사라진다(proxy-audit --fix는 보조 수단) | (proxy_name, site, product_id, fingerprint) |
-| `proxy_history` | **판정 전이 이력** (D68) — old/new_value·old/new_fingerprint. **new_value NULL = 재판정 대기**: 재료(이름·이미지) 변경 감지가 옛 판정을 여기로 옮기고 캐시에서 지운다 → 다음 lazy/proxy-load 판정이 그 행을 완성한다(`record_proxy_transition`). 강제 즉시 재판정은 없다 — lazy 원칙대로 분석이 요구할 때 판정된다 | id |
+| `proxy_history` | **판정 전이 이력** (D68) — old/new_value·old/new_fingerprint. **new_value NULL = 재판정 대기**: 재료(이름·이미지) 변경 감지가 옛 판정을 여기로 옮기고 캐시에서 지운다 → 다음 lazy/proxy-load 판정이 그 행을 완성한다(`record_proxy_transition`). 강제 즉시 재판정은 없다 — lazy 원칙대로 분석이 요구할 때 판정된다. **같은 재료에서 나온 AI 속성 판정(attr_base, basis=재료명)도 함께 무효화된다**(D71 — attr_history에 new_value NULL 행을 남기고 삭제, 같은 트랜잭션) | id |
 
 - **판정은 method 불문 lazy가 기본이다**(D65-8·D66): 정의는 즉시 등록하되(image
   카드는 실물 샘플 1~2장 접지 — D66) 판정은 미룬다. rule은 분석(`intel_data.collect`)이

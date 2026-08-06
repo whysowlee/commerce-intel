@@ -12,6 +12,14 @@ import os
 import re
 import shutil
 import subprocess
+
+# 공유 정본 납치 방지 — 셸의 INTEL_DB_URL이 서브프로세스에 상속되면 D67
+# 우선순위(URL > INTEL_DB)로 테스트가 Turso 프로덕션을 볼 수 있다 (실사고,
+# tests/test_intel_db.py와 같은 방어)
+import os as _os
+for _k in ("INTEL_DB_URL", "INTEL_DB_TOKEN", "PROXY_DB_URL", "PROXY_DB_TOKEN",
+           "INTEL_PROXY_DB"):
+    _os.environ.pop(_k, None)
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

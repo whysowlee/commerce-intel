@@ -18,6 +18,15 @@ import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 
+# ── 공유 정본 납치 방지 (2026-08-06 실사고) ────────────────────────────────
+# 셸에 INTEL_DB_URL이 있으면 D67 우선순위(URL > INTEL_DB)에 따라, run()이
+# INTEL_DB=임시파일을 넣어도 CLI 서브프로세스가 **Turso 프로덕션에 픽스처를
+# 적재한다.** 실제로 일어났다 — 테스트는 어떤 경우에도 공유 정본을 봐선 안
+# 되므로, import 시점에 이 프로세스와 모든 자식에서 제거한다.
+for _k in ("INTEL_DB_URL", "INTEL_DB_TOKEN", "PROXY_DB_URL", "PROXY_DB_TOKEN",
+           "INTEL_PROXY_DB"):
+    os.environ.pop(_k, None)
+
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "skills" / "commerce-intel" / "scripts"
 FIX = ROOT / "tests" / ".work" / "fixtures"
@@ -997,6 +1006,127 @@ def blocker3r_tests():
     shutil.rmtree(work, ignore_errors=True)
 
 
+def d71_tests():
+    """미완 항목 일괄 처리 (D71) — attr 무효화·prune 전 지표·upload --force.
+
+    E-DB-39: 이름 변경 → basis='name' AI 속성이 무효화 이력을 남기고 지워진다
+    E-DB-40: prune이 후기수·obs_attr 변화도 사건으로 보존한다
+    E-DB-41: upload --force는 이어 붙이지 않고 교체한다 (로컬 파일 dst)
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    intel_db = importlib.import_module("intel_db")
+    prune = importlib.import_module("prune")
+    work = Path(tempfile.mkdtemp(prefix="d71-"))
+
+    # ── E-DB-39: 재료 변경 → attr_base 판정 무효화 ─────────────────────────
+    db = str(work / "a.db")
+    conn = intel_db.connect(db)
+
+    def load(name, ts):
+        raw = {"meta": {"schema_version": "1.0", "site": "musinsa",
+                        "story": "brand-linesheet", "target": "T",
+                        "collected_at": ts, "item_count": 1},
+               "items": [{"product_id": "P1", "name": name, "brand": "브랜드",
+                          "url": "https://a.test/1",
+                          "image_url": "https://img.a.test/1.jpg",
+                          "price_sale": 10000}]}
+        f = work / f"{ts[-8:].replace(':', '')}.json"
+        f.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+        intel_db.load_file(conn, f, quiet=True, db_path=db)
+
+    load("OLD NAME", "2026-08-06 10:00:00")
+    # 이름에서 뽑은 판정(basis='name')과 이미지에서 뽑은 판정(basis='image')
+    conn.execute("INSERT INTO product_attributes (site, product_id, attr_name, "
+                 "value, basis, decided_at) VALUES "
+                 "('musinsa','P1','핏','와이드','name','2026-08-06 10:00:00')")
+    conn.execute("INSERT INTO product_attributes (site, product_id, attr_name, "
+                 "value, basis, decided_at) VALUES "
+                 "('musinsa','P1','thumb_cut','단독컷','image','2026-08-06 10:00:00')")
+    conn.commit()
+    load("NEW NAME", "2026-08-06 11:00:00")     # 이름 변경 → basis='name' 무효화
+    left = {r["attr_name"]: r["basis"] for r in conn.execute(
+        "SELECT attr_name, basis FROM product_attributes "
+        "WHERE site='musinsa' AND product_id='P1'")}
+    check("E-DB-39 이름 변경 시 basis='name' 판정이 지워진다 (image는 남는다)",
+          "핏" not in left and left.get("thumb_cut") == "image", left)
+    inval = conn.execute(
+        "SELECT old_value, new_value FROM attr_history "
+        "WHERE attr_name='핏' ORDER BY id DESC LIMIT 1").fetchone()
+    check("E-DB-39b 무효화가 attr_history에 남는다 (old='와이드', new NULL)",
+          inval and inval["old_value"] == "와이드" and inval["new_value"] is None,
+          tuple(inval or ()))
+    conn.close()
+
+    # ── E-DB-40: prune 전 지표 + obs_attr 감시 ────────────────────────────
+    db2 = str(work / "p.db")
+    conn = intel_db.connect(db2)
+    conn.execute("INSERT INTO products (site, product_id, name, static_verified_at)"
+                 " VALUES ('29cm','P1','상품','2020-01-01 00:00:00')")
+    # 가격·순위·품절은 고정 — 구 규칙이면 버킷 대표 빼고 다 지워진다.
+    # 후기수가 6번째에, obs_attr가 9번째에 바뀐다 — 새 규칙은 그 순간을 남긴다.
+    reviews = [10, 10, 10, 10, 10, 25, 25, 25, 25, 25]
+    for i, rv in enumerate(reviews):
+        conn.execute("INSERT INTO observations (site, product_id, observed_at, context,"
+                     " price_sale, rank, review_count) VALUES ('29cm','P1',?,'brand:t',"
+                     "1000,5,?)", ("2020-01-01 00:%02d:00" % (i * 5), rv))
+    conn.commit()
+    ids = [r[0] for r in conn.execute("SELECT id FROM obs_base ORDER BY observed_at")]
+    for oid in ids[:8]:      # 앞 8개는 같은 비정형 값, 9번째부터 다른 값
+        conn.execute("INSERT INTO obs_attr (obs_id, attr_name, value, basis) "
+                     "VALUES (?,'sns_mentions','5','api')", (oid,))
+    for oid in ids[8:]:
+        conn.execute("INSERT INTO obs_attr (obs_id, attr_name, value, basis) "
+                     "VALUES (?,'sns_mentions','90','api')", (oid,))
+    conn.commit()
+    counts, total = prune.plan(conn, keep_days=0, bucket=3600)
+    n = prune.apply_prune(conn)
+    kept_rv = [tuple(r) for r in conn.execute(
+        "SELECT o.review_count, (SELECT value FROM obs_attr a WHERE a.obs_id=o.id "
+        "AND a.attr_name='sns_mentions') FROM obs_base o ORDER BY o.observed_at")]
+    import itertools
+    rv_seq = [k for k, _ in itertools.groupby(r[0] for r in kept_rv)]
+    oa_seq = [k for k, _ in itertools.groupby(r[1] for r in kept_rv)]
+    check("E-DB-40 후기수 변화 순간이 솎기에서 살아남는다",
+          rv_seq == [10, 25], (n, rv_seq))
+    check("E-DB-40b obs_attr(비정형) 변화 순간도 살아남는다",
+          oa_seq == ["5", "90"], oa_seq)
+    check("E-DB-40c 아무것도 안 변한 중복은 지워졌다", n > 0, n)
+    conn.close()
+
+    # ── E-DB-41: upload --force = 교체 ────────────────────────────────────
+    sys.path.insert(0, str(SCRIPTS.parent.parent.parent / "tools"))
+    upload_mod = importlib.import_module("upload_to_turso")
+    src_db = str(work / "u.db")
+    conn = intel_db.connect(src_db)
+    conn.execute("INSERT INTO products (site, product_id, name, static_verified_at)"
+                 " VALUES ('29cm','U1','업로드','2026-08-06 10:00:00')")
+    conn.commit(); conn.close()
+    dst_db = str(work / "remote.db")
+    import contextlib, io
+    with contextlib.redirect_stdout(io.StringIO()):
+        dst, _ = upload_mod.upload(src_db, dst_db, token=None)
+        dst.close()
+        # 재실행: --force 없으면 거부, --force면 교체(행 수가 로컬과 같아야 한다)
+        refused = False
+        try:
+            upload_mod.upload(src_db, dst_db, token=None)
+        except SystemExit:
+            refused = True
+        dst, _ = upload_mod.upload(src_db, dst_db, token=None, force=True)
+    check("E-DB-41 비어 있지 않은 원격은 --force 없이 거부된다", refused)
+    a = sqlite3.connect(src_db).execute("SELECT COUNT(*) FROM product_base").fetchone()[0]
+    b = dst.execute("SELECT COUNT(*) FROM product_base").fetchone()[0]
+    check("E-DB-41b --force 재실행 후에도 행 수가 로컬과 같다 (이어 붙이지 않는다)",
+          a == b == 1, (a, b))
+    views = {r[0] for r in dst.execute(
+        "SELECT name FROM sqlite_master WHERE type='view'")}
+    check("E-DB-41c 뷰가 데이터 뒤에 얹혀 원격에도 존재한다", "products" in views,
+          sorted(views)[:3])
+    dst.close()
+    shutil.rmtree(work, ignore_errors=True)
+
+
 def check_run_tests():
     """팀 중복 수집 방지 (D67) — **시간대 회귀 포함** (PR #13 리뷰 Blocker).
 
@@ -1812,6 +1942,9 @@ def main():
 
     print("[21e] 상품 이력 + 프록시 재판정 체인 (D68 · E-DB-37·38)")
     history_tests()
+
+    print("[21g] 미완 항목 일괄 처리 (D71 · E-DB-39·40·41)")
+    d71_tests()
 
     print("[21f] 레거시 proxy.db 병합 — 재이관 가드 (D69 · E-PM)")
     proxy_merge_tests()
