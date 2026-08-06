@@ -27,6 +27,7 @@ git 이력에 있다. `docs/TEST-CASES.md`는 v11(2026-07-31, 사용자 지시 �
 |---|---|---|
 | v1 | 2026-07-31 | 최초 작성. 인터뷰 3라운드 결정 반영 |
 | v2 | 2026-08-03 | 스펙 동결 해제(구현에 맞춰 갱신). 리포트 모듈화 D25 · 공통 UI 규약 D26 · §4 개정 · §6에 사이즈별 재고 분석 반영 |
+| v28 | 2026-08-06 | **proxy.db 본 DB 통합 D69** — D65-8에서 분리했던 proxy_defs·proxy_cache·proxy_history를 본 DB(intel.db)의 SCHEMA_V3에 통합. lazy 판정 전환 이후 캐시가 천천히 쌓여 분리의 이점이 약해졌고, FK/트리거/자동동기화를 못 하는 대가가 더 커졌다. proxy_connect/proxy_db_path/proxy_db_exists/PROXY_SCHEMA 삭제, 모든 호출부 conn 직접 사용으로 통일. _SCHEMA_MARKER를 proxy_history로 갱신해 기존 v3 DB가 프록시 표를 자동 수령. migrate_proxy_merge.py 신규(로컬+Turso). upload_to_turso --proxy 폐기, 프록시 표를 INTEL_ORDER에 포함 |
 | v27 | 2026-08-05 | **상품 정적 속성 이력 + 프록시 재판정 체인 D68** — product_history·attr_history(intel.db)·proxy_history(proxy.db), 조회 뷰 product_changes·attr_changes, 재료(이름·이미지) 변경 시 프록시 캐시 무효화→재판정 대기 이력→다음 판정이 완성. connect()가 기존 v3에 빠진 표를 마커(최신 추가 표) 확인으로 1회 보충(라이브·Turso 무이관 업그레이드 — 매 connect DDL 왕복은 PR #14 리뷰로 기각) |
 | v25 | 2026-08-05 | **vision 프록시 lazy·정의 샘플 접지 D66** — 정의는 실물 썸네일 1~2장 열람 후 즉시, 판정은 분석 요구 시 협의 후 배치. 절차 명문화(proxy-extraction·SKILL·db-contract) |
 | v26 | 2026-08-05 | **Turso 클라우드 이전 D67** — open_db() 연결 추상화(INTEL_DB_URL), libsql 드라이버 호환 래퍼(row 셈·예외 번역), 프록시 별도 DB, upload_to_turso 이관·검산, check-run 중복 방지. 회귀 61+222+10 통과 |

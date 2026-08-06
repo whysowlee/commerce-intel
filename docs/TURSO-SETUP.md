@@ -21,15 +21,13 @@
 brew install tursodatabase/tap/turso
 turso auth login                                  # 브라우저 로그인
 turso db create commerce-intel
-turso db create commerce-intel-proxy              # 프록시 캐시는 별도 DB (D65-8)
+# D69: commerce-intel-proxy 별도 DB 폐기 — 프록시 테이블이 본 DB에 통합됨
 
 # 토큰 — 용도별로 가른다
 turso db tokens create commerce-intel             # 쓰기+읽기 → 수집·적재·시트 미러용
 turso db tokens create commerce-intel --read-only # 읽기 전용 → 챗 인터페이스(intel-query)용
-turso db tokens create commerce-intel-proxy       # 프록시 쓰기 (lazy 판정이 캐시를 쓴다)
 
 turso db show commerce-intel --url                # libsql://commerce-intel-xxx.turso.io
-turso db show commerce-intel-proxy --url
 
 # (선택) 실연결 테스트 전용 DB — tests/test_turso_connect.py C층이 여기에만 쓴다.
 # 공유 정본에 테스트가 표를 만들었다 지우게 하지 않는다
@@ -47,9 +45,7 @@ turso db create commerce-intel-test
 ~/.venvs/intel/bin/python tools/upload_to_turso.py --src data/intel.db \
     --url libsql://commerce-intel-xxx.turso.io --token <쓰기토큰>
 
-# 프록시
-~/.venvs/intel/bin/python tools/upload_to_turso.py --src data/proxy.db --proxy \
-    --url libsql://commerce-intel-proxy-xxx.turso.io --token <프록시토큰>
+# D69: 프록시 테이블은 본 DB에 포함 — 별도 업로드 불필요
 ```
 
 행 수 검산까지 통과해야 이관 완료다. 원격이 비어 있지 않으면 스크립트가 거부한다
@@ -63,8 +59,7 @@ turso db create commerce-intel-test
 # ~/.config/intel/env — 수집·적재를 하는 사람 (쓰기 토큰)
 export INTEL_DB_URL=libsql://commerce-intel-xxx.turso.io
 export INTEL_DB_TOKEN=eyJ...
-export PROXY_DB_URL=libsql://commerce-intel-proxy-xxx.turso.io
-export PROXY_DB_TOKEN=eyJ...
+# D69: PROXY_DB_URL/PROXY_DB_TOKEN 폐기 — 프록시가 본 DB에 통합됨
 ```
 
 셸 rc에 `source ~/.config/intel/env`를 넣거나, 작업 전에 수동으로 source 한다.
@@ -91,7 +86,7 @@ python3 skills/commerce-intel/scripts/intel_db.py check-run \
 ## 5. 로컬 SQLite 모드로 전환 (개발·테스트)
 
 ```bash
-unset INTEL_DB_URL INTEL_DB_TOKEN PROXY_DB_URL PROXY_DB_TOKEN
+unset INTEL_DB_URL INTEL_DB_TOKEN  # D69: PROXY_DB_* 폐기
 # 또는 한 번만: python3 ... --db data/intel.db
 ```
 
@@ -100,12 +95,12 @@ unset INTEL_DB_URL INTEL_DB_TOKEN PROXY_DB_URL PROXY_DB_TOKEN
 
 ## 알려진 제약 (실측 포함)
 
-- **Turso는 ATTACH DATABASE 미지원** — 정본↔프록시 조인은 별도 커넥션으로 각각
-  읽어 파이썬에서 매칭한다(코드가 이미 그렇게 돼 있다 — sanity_check 포함).
+- **Turso는 ATTACH DATABASE 미지원** — D69에서 프록시가 본 DB에 통합돼
+  별도 커넥션이 불필요해졌다.
 - **드라이버(libsql-experimental)는 sqlite3과 다르다** — row_factory 없음(튜플만),
   제약 위반이 IntegrityError가 아니라 ValueError, total_changes 없음, lastrowid
   불안정. `schema_v3.open_db()`의 호환 래퍼가 전부 흡수하므로 **DB는 반드시
   open_db()/intel_db.connect()로 열어라.** `libsql.connect()`를 직접 부르면
   이 지뢰들을 그대로 밟는다.
-- PRAGMA foreign_keys는 커넥션마다 켠다 (connect()·proxy_connect()가 한다).
+- PRAGMA foreign_keys는 커넥션마다 켠다 (connect()가 한다 — D69에서 proxy_connect() 폐기).
 - 쓰기는 직렬화된다(서버 단일 라이터) — 대량 적재는 배치 커밋(5,000행)으로.

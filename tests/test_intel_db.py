@@ -814,8 +814,8 @@ def incremental_key_tests():
                  "VALUES ('R','29cm','brand-linesheet','T','2026-08-04 10:00:00')")
     conn.execute("INSERT INTO products (site, product_id, name, static_verified_at)"
                  " VALUES ('29cm','P','n','2026-08-04 10:00:00')")
-    # proxy_cache는 별도 proxy.db다 (D65-8) — 증분 미러도 그쪽 커넥션을 탄다
-    pconn = schema_v3.proxy_connect(schema_v3.proxy_db_path(db))
+    # D69: proxy_cache는 본 DB에 통합 — 같은 커넥션을 쓴다
+    pconn = conn
     pconn.execute("INSERT INTO proxy_defs (proxy_name, value_space, method) "
                   "VALUES ('px','[\"v\"]','rule')")
     for i in range(5):
@@ -845,7 +845,7 @@ def incremental_key_tests():
         check("E-DB-21 %s 증분 조회가 실제로 돈다 (since=2 → 3행)" % table, ok, detail)
         check("E-DB-22 %s 헤더에 _rowid가 안 섞인다" % table,
               "_rowid" not in h, h[-2:] if h else h)
-    pconn.close()
+    # D69: pconn=conn — 별도 close 불필요
     shutil.rmtree(work, ignore_errors=True)
 
 
@@ -876,7 +876,6 @@ def blocker3r_tests():
     import importlib
     intel_db = importlib.import_module("intel_db")
     migrate_v3 = importlib.import_module("migrate_v3")
-    schema_v3 = importlib.import_module("schema_v3")
     schema_v2 = importlib.import_module("schema_v2")
     work = Path(tempfile.mkdtemp(prefix="b3r-"))
 
@@ -891,7 +890,7 @@ def blocker3r_tests():
         guarded = "이미 v3" in str(e)
     check("E-MG-1 v3 정본 재실행은 가드가 막는다 (Blocker 2)", guarded)
 
-    # ── B1: 이관은 스테이징에만 쓴다 — 라이브 proxy.db는 건드리지 않는다
+    # ── B1: D69에서 proxy.db 분리가 폐기됨 — 이 테스트는 본 DB 내 proxy 테이블로 대체
     v2db = str(work / "v2.db")
     src = sqlite3.connect(v2db)
     src.executescript(schema_v2.SCHEMA_V2)
@@ -902,14 +901,38 @@ def blocker3r_tests():
     src.execute("CREATE TABLE sync_state (table_name TEXT PRIMARY KEY,"
                 " last_synced_key TEXT, updated_at TEXT)")
     src.execute("INSERT INTO sync_state VALUES ('observations', '0', 'x')")
+    # D69: v2 정본 안의 프록시 표 — 이관이 데이터까지 본 DB(dst)로 옮기는지 본다
+    src.execute("CREATE TABLE proxy_defs (proxy_name TEXT PRIMARY KEY, question TEXT,"
+                " material TEXT, value_space TEXT, method TEXT, rules TEXT,"
+                " created_at TEXT)")
+    src.execute("CREATE TABLE proxy_cache (proxy_name TEXT, site TEXT,"
+                " product_id TEXT, fingerprint TEXT, value TEXT, basis TEXT,"
+                " judged_at TEXT)")
+    src.execute("INSERT INTO proxy_defs (proxy_name, question, material, value_space,"
+                " method, created_at) VALUES ('name_lang','언어?','name',"
+                "'[\"한국어\",\"영문\"]','rule','2026-08-05')")
+    src.execute("INSERT INTO proxy_cache VALUES ('name_lang','musinsa','P1','OLD',"
+                "'영문','rule','2026-08-05 09:00:00')")
     src.commit(); src.close()
-    live_proxy = work / "proxy.db"
+    # D69: proxy.db 분리 폐기 — 프록시 표는 이관된 본 DB 안에 생긴다
+    live_proxy = work / "proxy.db"  # 레거시 경로, 테스트용
     live_proxy.write_text("살아있는 프록시 — 이관이 건드리면 안 된다")
     staging = str(work / "proxy.db.staging")
     migrate_v3.migrate(v2db, str(work / "v2-out.db"), staging)
-    check("E-MG-2 라이브 proxy.db가 이관 중 보존된다 (Blocker 1 — 스테이징에만 쓴다)",
+    out = sqlite3.connect(str(work / "v2-out.db"))
+    out_tables = {r[0] for r in out.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    n_defs = out.execute("SELECT COUNT(*) FROM proxy_defs").fetchone()[0]
+    n_cache = out.execute("SELECT COUNT(*) FROM proxy_cache").fetchone()[0]
+    out.close()
+    check("E-MG-2 D69: proxy 표와 데이터가 본 DB로 이관된다",
+          {"proxy_defs", "proxy_cache", "proxy_history"} <= out_tables
+          and n_defs == 1 and n_cache == 1,
+          "defs=%d cache=%d %s" % (n_defs, n_cache,
+                                   sorted(t for t in out_tables
+                                          if t.startswith("proxy"))))
+    check("E-MG-2b 프록시 경로 인자를 넘겨도 무시되고 레거시 파일은 안 건드린다 (D69)",
           live_proxy.read_text() == "살아있는 프록시 — 이관이 건드리면 안 된다")
-    check("E-MG-2b 프록시 스테이징 파일이 별도로 만들어진다", os.path.exists(staging))
 
     # ── B3: 이관에서 행이 떨어지면 그 표의 미러 진행점을 리셋한다
     g = sqlite3.connect(str(work / "g.db"))
@@ -923,21 +946,35 @@ def blocker3r_tests():
     check("E-MG-3b 드롭이 있으면 진행점 리셋 — 다음 미러가 전량 재동기화 (Blocker 3)",
           g.execute("SELECT last_synced_key FROM sync_state").fetchone()[0] is None)
 
-    # ── B4: 정본이 Turso인데 프록시 URL이 없으면 proxy_auto가 명시적으로 죽는다
+    # ── B4(D69 개정): 닿지 않는 Turso 정본이면 proxy_auto가 조용히 성공하지 않고 죽는다
     cards_f = work / "cards.json"
     cards_f.write_text(json.dumps([{"proxy_name": "t", "material": "name",
                                     "method": "rule", "value_space": ["a"],
                                     "rules": [{"any": ["."], "value": "a"}]}]),
                        encoding="utf-8")
     env = {k: v for k, v in os.environ.items()
-           if k not in ("PROXY_DB_URL", "INTEL_PROXY_DB")}
-    r = subprocess.run([sys.executable, str(SCRIPTS / "proxy_auto.py"),
-                        "--db", "libsql://fake.turso.io", "--cards", str(cards_f),
-                        "--out", str(work / "o.json")],
-                       capture_output=True, text=True, env=env)
-    check("E-PA-13 Turso 정본 + 프록시 URL 미설정이면 임시 DB로 새지 않고 죽는다 (Blocker 4)",
-          r.returncode != 0 and "PROXY_DB_URL" in (r.stdout + r.stderr),
-          "exit=%d %s" % (r.returncode, (r.stdout + r.stderr)[:80]))
+           if k not in ("PROXY_DB_URL", "INTEL_PROXY_DB")}  # D69: 이 변수들은 폐기됨
+    # D69: PROXY_DB_URL 가드 폐기 — 프록시는 정본 안이다. 남는 계약은
+    # "닿지 않는 Turso 정본이면 조용히 성공(임시 DB 판정)하지 않고 죽는다"다.
+    # 드라이버 미설치 환경은 건너난다 — ModuleNotFoundError로 죽어도 통과하면
+    # 회귀가 무력화된다(리뷰 반영 — 부분 문자열 매칭도 같은 이유로 버렸다).
+    try:
+        import libsql_experimental  # noqa: F401
+        _has_libsql = True
+    except ImportError:
+        _has_libsql = False
+    if _has_libsql:
+        r = subprocess.run([sys.executable, str(SCRIPTS / "proxy_auto.py"),
+                            "--db", "libsql://fake.turso.io", "--cards", str(cards_f),
+                            "--out", str(work / "o.json")],
+                           capture_output=True, text=True, env=env)
+        _pa13_out = (r.stdout + r.stderr)
+        check("E-PA-13 닿지 않는 Turso 정본이면 임시 DB로 새지 않고 죽는다 (Blocker 4·D69 개정)",
+              r.returncode != 0 and not (work / "o.json").exists()
+              and "ModuleNotFoundError" not in _pa13_out,
+              "exit=%d %s" % (r.returncode, _pa13_out[:80]))
+    else:
+        print("  SKIP  E-PA-13 (libsql_experimental 미설치 — Turso 경로 검증 불가)")
 
     # ── B5: 깨진 카드 규칙이 collect()를 죽이지 않는다 (lazy 판정 격리)
     lzdb = str(work / "lz.db")
@@ -945,16 +982,15 @@ def blocker3r_tests():
     conn.execute("INSERT INTO products (site, product_id, name) VALUES ('s','1','상품')")
     conn.execute("INSERT INTO observations (site, product_id, observed_at, context,"
                  " price_sale) VALUES ('s','1','2026-08-05 10:00:00','brand:t',100)")
-    conn.commit(); conn.close()
-    pcon = schema_v3.proxy_connect(str(work / "proxy2.db"))
-    pcon.execute("INSERT INTO proxy_defs (proxy_name, material, value_space, method,"
+    conn.commit()
+    # D69: proxy가 본 DB에 통합 — 별칭 없이 같은 커넥션에 직접 넣는다
+    conn.execute("INSERT INTO proxy_defs (proxy_name, material, value_space, method,"
                  " rules) VALUES ('bad_rule','name','[\"a\"]','rule',?)",
                  (json.dumps({"rules": [{"any": ["[unclosed"], "value": "a"}]}),))
-    pcon.commit(); pcon.close()
+    conn.commit(); conn.close()
     import importlib as _il
     intel_data = _il.import_module("intel_data")
-    old_env = os.environ.get("INTEL_PROXY_DB")
-    os.environ["INTEL_PROXY_DB"] = str(work / "proxy2.db")
+    # D69: INTEL_PROXY_DB 환경변수 폐기 — proxy가 본 DB에 통합
     try:
         data = intel_data.collect(lzdb, None)
         ok_lz = all(it.get("px_bad_rule") is None for it in data["items"])
@@ -963,11 +999,6 @@ def blocker3r_tests():
     except Exception as e:
         check("E-LZ-1 깨진 정규식 카드가 리포트 파이프라인을 죽이지 않는다 (Blocker 5)",
               False, "%s: %s" % (type(e).__name__, e))
-    finally:
-        if old_env is None:
-            os.environ.pop("INTEL_PROXY_DB", None)
-        else:
-            os.environ["INTEL_PROXY_DB"] = old_env
     shutil.rmtree(work, ignore_errors=True)
 
 
@@ -1014,8 +1045,8 @@ def history_tests():
     conn = intel_db.connect(db)
 
     # name 재료 프록시: 정의 + 첫 이름 기준 판정 1건
-    pp = schema_v3.proxy_db_path(db)
-    pconn = schema_v3.proxy_connect(pp)
+    # D69: proxy가 본 DB에 통합
+    pconn = conn
     pconn.execute(
         "INSERT INTO proxy_defs (proxy_name, question, material, value_space, "
         "method, created_at) VALUES ('name_lang','언어?','name',"
@@ -1024,7 +1055,7 @@ def history_tests():
                   "('name_lang','musinsa','P1','OLD NAME','영문','rule',"
                   "'2026-08-05 09:00:00')")
     pconn.commit()
-    pconn.close()
+    # D69: pconn=conn — 별도 close 불필요
 
     def load(name, cat, ts):
         raw = {"meta": {"schema_version": "1.0", "site": "musinsa",
@@ -1058,7 +1089,7 @@ def history_tests():
           v and v["field"] == "name" and v["old_value"] == "OLD NAME", tuple(v or ()))
 
     # 프록시 무효화: 캐시가 비고 대기 이력(new_value NULL)이 남았다
-    pconn = schema_v3.proxy_connect(pp)
+    pconn = conn  # D69: 본 DB 통합
     left = pconn.execute("SELECT COUNT(*) FROM proxy_cache").fetchone()[0]
     ph = pconn.execute("SELECT old_value, new_value, old_fingerprint, "
                        "new_fingerprint FROM proxy_history").fetchall()
@@ -1101,7 +1132,7 @@ def history_tests():
           len(cur) == 1 and cur[0][0] == "한국어", [tuple(r) for r in cur])
     check("E-DB-38f 정정 전이가 이력에 남는다 (영문→한국어)",
           ph2 and tuple(ph2) == ("영문", "한국어"), tuple(ph2 or ()))
-    pconn.close()
+    # D69: pconn=conn — 별도 close 불필요
 
     # 카테고리 재분류 — 기존 platform 매핑이 있는 상품에 처음 보는 리프
     load("NEW NAME", "상의 > 셔츠", "2026-08-05 14:00:00")
@@ -1125,17 +1156,22 @@ def history_tests():
           len(ah) == 1 and ah[0]["old_value"] == "와이드"
           and ah[0]["new_value"] == "스트레이트", [dict(r) for r in ah])
 
-    # 멱등 업그레이드 — 이력 표를 지우고 다시 connect하면 되살아난다 (라이브 v3 경로)
+    # 멱등 업그레이드 — 이력 표를 지우고 다시 connect하면 되살아난다 (라이브 v3 경로).
+    # D69: 스키마 마커가 proxy_history로 옮겨졌다 — 구 v3 DB(프록시 표 이전)를
+    # 흉내내려면 프록시 표까지 같이 지워야 마커 부재 업그레이드가 발동한다
     conn.executescript("DROP VIEW product_changes; DROP VIEW attr_changes;"
-                       "DROP TABLE product_history; DROP TABLE attr_history;")
+                       "DROP TABLE product_history; DROP TABLE attr_history;"
+                       "DROP TABLE proxy_history; DROP TABLE proxy_cache;"
+                       "DROP TABLE proxy_defs;")
     conn.commit()
     conn.close()
     conn = intel_db.connect(db)
     tabs = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE name IN "
-        "('product_history','attr_history','product_changes','attr_changes')")}
+        "('product_history','attr_history','product_changes','attr_changes',"
+        "'proxy_defs','proxy_cache','proxy_history')")}
     check("E-DB-37f 기존 v3 DB도 connect()가 이력 표·뷰를 멱등 생성한다",
-          len(tabs) == 4, sorted(tabs))
+          len(tabs) == 7, sorted(tabs))
     # 업그레이드는 1회다 — 표가 갖춰진 뒤에는 connect가 SCHEMA_V3를 다시 보내지
     # 않는다 (PR #14 리뷰: 매 connect마다 DDL 27줄을 Turso로 왕복시키면 안 된다)
     check("E-DB-37g 표가 갖춰지면 스키마 업그레이드가 더는 필요 없다",
@@ -1311,15 +1347,14 @@ def proxy_space_tests():
     import tempfile
     import importlib
     sys.path.insert(0, str(SCRIPTS))
-    schema_v3 = importlib.import_module("schema_v3")
     work = Path(tempfile.mkdtemp())
     db = str(work / "px.db")
     run([SCRIPTS / "intel_db.py", "--db", db, "init"], work, db)
     con = sqlite3.connect(db)
     con.execute("INSERT INTO products (site, product_id, name) VALUES ('musinsa','1','상품 A')")
     con.commit(); con.close()
-    # 프록시 표는 정본 옆 proxy.db다 (D65-8) — CLI(--db)가 같은 폴더를 본다
-    pcon = schema_v3.proxy_connect(str(work / "proxy.db"))
+    # D69: 프록시 표는 본 DB에 통합 — 새 커넥션으로 넣는다
+    pcon = sqlite3.connect(db)
     pcon.execute("INSERT INTO proxy_defs (proxy_name, question, material, value_space, method, created_at) "
                  "VALUES ('name_lang','q','name','[\"영문\",\"한국어\"]','rule','2026-08-05')")
     pcon.execute("INSERT INTO proxy_cache VALUES ('name_lang','musinsa','1','상품 A','화성어','b','2026-08-05')")
@@ -1335,7 +1370,7 @@ def proxy_space_tests():
     check("E-PXS-2c 청소 후 exit 0", r.returncode == 0, r.returncode)
 
     # E-PXS-1 — 순서만 바뀐 재적재는 캐시를 안 지우고, 실질 변경은 지운다
-    pcon = schema_v3.proxy_connect(str(work / "proxy.db"))
+    pcon = sqlite3.connect(db)  # D69: 본 DB 통합
     pcon.execute("INSERT INTO proxy_cache VALUES ('name_lang','musinsa','1','상품 A','영문','b','2026-08-05')")
     pcon.commit(); pcon.close()
     reorder = work / "reorder.json"
@@ -1344,7 +1379,7 @@ def proxy_space_tests():
                   "value_space": ["한국어", "영문"], "method": "rule"},
         "judgments": []}, ensure_ascii=False), encoding="utf-8")
     run([SCRIPTS / "intel_db.py", "--db", db, "proxy-load", reorder], work, db)
-    pcon = schema_v3.proxy_connect(str(work / "proxy.db"))
+    pcon = sqlite3.connect(db)  # D69: 본 DB 통합
     n = pcon.execute("SELECT COUNT(*) FROM proxy_cache").fetchone()[0]
     pcon.close()
     check("E-PXS-1 원소 순서만 바뀐 값 공간은 캐시를 지우지 않는다", n == 1, n)
@@ -1354,14 +1389,14 @@ def proxy_space_tests():
                   "value_space": ["한국어", "영문", "혼합"], "method": "rule"},
         "judgments": []}, ensure_ascii=False), encoding="utf-8")
     r = run([SCRIPTS / "intel_db.py", "--db", db, "proxy-load", real], work, db)
-    pcon = schema_v3.proxy_connect(str(work / "proxy.db"))
+    pcon = sqlite3.connect(db)  # D69: 본 DB 통합
     n = pcon.execute("SELECT COUNT(*) FROM proxy_cache").fetchone()[0]
     pcon.close()
     check("E-PXS-1b 실질 변경은 옛 캐시를 버리고 그 사실을 찍는다",
           n == 0 and "버린다" in r.stdout, "n=%d stdout=%s" % (n, r.stdout.strip()[:60]))
 
     # E-PXS-3 — 오염이 남은 채 분석에 들어가면 그 축을 통째로 뺀다 (읽기 안전망)
-    pcon = schema_v3.proxy_connect(str(work / "proxy.db"))
+    pcon = sqlite3.connect(db)  # D69: 본 DB 통합
     pcon.execute("INSERT INTO proxy_cache VALUES "
                  "('name_lang','musinsa','1','상품 A','금성어','b','2026-08-05')")
     pcon.commit(); pcon.close()
@@ -1594,7 +1629,7 @@ def main():
     check("proxy-load 멱등(중복 스킵)", "판정 0건 적재" in r.stdout, r.stdout)
 
     # [6b] 새 파이프라인(eda/analyze)에서도 프록시가 축이 되는지 — D39 회귀 방어.
-    # 위 [6]은 폐기 예정 HTML(build_analysis_report)만 봐서, D27 리팩터링 때 새
+    # 위 [6]은 폐기됨 HTML(build_analysis_report)만 봐서, D27 리팩터링 때 새
     # 파이프라인의 프록시 소비가 끊긴 것을 111건 회귀가 아무것도 못 잡았다. 그 구멍을 막는다.
     sys.path.insert(0, str(SCRIPTS))
     import intel_data
