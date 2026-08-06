@@ -374,6 +374,11 @@ class LibsqlConnection:
         self.row_factory = None
 
     def execute(self, sql, params=()):
+        # 드라이버는 list 파라미터를 안 받는다('list' object cannot be converted
+        # to 'PyTuple') — sqlite3처럼 list도 받게 여기서 변환한다 (호출부 전수보다
+        # 래퍼 한 곳이 계약이다)
+        if isinstance(params, list):
+            params = tuple(params)
         try:
             return LibsqlCursor(self, self._raw.execute(sql, params))
         except ValueError as e:
@@ -381,7 +386,8 @@ class LibsqlConnection:
 
     def executemany(self, sql, seq):
         try:
-            return LibsqlCursor(self, self._raw.executemany(sql, list(seq)))
+            return LibsqlCursor(self, self._raw.executemany(
+                sql, [tuple(p) if isinstance(p, list) else p for p in seq]))
         except ValueError as e:
             raise _translate_libsql_error(e) from e
 

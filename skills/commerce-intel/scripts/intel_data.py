@@ -533,8 +533,8 @@ def collect(db_path, contexts):
         prev[key] = dict(r)
 
     # 파생 프록시 주입 (D19) — 재료 지문이 현재 값과 맞는 캐시만 유효하다.
-    # v3: 정의·캐시는 별도 proxy.db다(D65-8). 파일이 없으면 정본 안의 옛 표를
-    # 본다(v2 스냅샷·리허설 DB 하위호환) — 어느 쪽도 없으면 프록시 없음.
+    # D69: 정의·캐시는 본 DB 안이다(D65-8 분리 폐기). 표가 없는 구 DB면
+    # OperationalError를 빈 목록으로 받는다 — 프록시 없음으로 동작.
     proxies = []
     psrc = conn  # D69: 프록시가 본 DB에 통합됐다
     try:
