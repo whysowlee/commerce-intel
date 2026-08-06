@@ -963,9 +963,6 @@ def blocker3r_tests():
     except Exception as e:
         check("E-LZ-1 깨진 정규식 카드가 리포트 파이프라인을 죽이지 않는다 (Blocker 5)",
               False, "%s: %s" % (type(e).__name__, e))
-    finally:
-            # D69: INTEL_PROXY_DB 정리 코드 제거
-        else:
     shutil.rmtree(work, ignore_errors=True)
 
 
