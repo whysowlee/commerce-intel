@@ -960,9 +960,13 @@ def blocker3r_tests():
                        capture_output=True, text=True, env=env)
     # D69: PROXY_DB_URL 가드 폐기 — 프록시는 정본 안이다. 남는 계약은
     # "닿지 않는 Turso 정본이면 조용히 성공(임시 DB 판정)하지 않고 죽는다"다.
+    # 실패 사유가 libsql/Turso 경로인지도 본다 — 무관한 이유(모듈 미설치 등)로
+    # 죽어도 통과하면 회귀가 무력화된다(리뷰 반영).
+    _pa13_out = (r.stdout + r.stderr)
     check("E-PA-13 닿지 않는 Turso 정본이면 임시 DB로 새지 않고 죽는다 (Blocker 4·D69 개정)",
-          r.returncode != 0 and not (work / "o.json").exists(),
-          "exit=%d %s" % (r.returncode, (r.stdout + r.stderr)[:80]))
+          r.returncode != 0 and not (work / "o.json").exists()
+          and ("libsql" in _pa13_out.lower() or "turso" in _pa13_out.lower()),
+          "exit=%d %s" % (r.returncode, _pa13_out[:80]))
 
     # ── B5: 깨진 카드 규칙이 collect()를 죽이지 않는다 (lazy 판정 격리)
     lzdb = str(work / "lz.db")
