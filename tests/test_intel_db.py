@@ -901,6 +901,18 @@ def blocker3r_tests():
     src.execute("CREATE TABLE sync_state (table_name TEXT PRIMARY KEY,"
                 " last_synced_key TEXT, updated_at TEXT)")
     src.execute("INSERT INTO sync_state VALUES ('observations', '0', 'x')")
+    # D69: v2 정본 안의 프록시 표 — 이관이 데이터까지 본 DB(dst)로 옮기는지 본다
+    src.execute("CREATE TABLE proxy_defs (proxy_name TEXT PRIMARY KEY, question TEXT,"
+                " material TEXT, value_space TEXT, method TEXT, rules TEXT,"
+                " created_at TEXT)")
+    src.execute("CREATE TABLE proxy_cache (proxy_name TEXT, site TEXT,"
+                " product_id TEXT, fingerprint TEXT, value TEXT, basis TEXT,"
+                " judged_at TEXT)")
+    src.execute("INSERT INTO proxy_defs (proxy_name, question, material, value_space,"
+                " method, created_at) VALUES ('name_lang','언어?','name',"
+                "'[\"한국어\",\"영문\"]','rule','2026-08-05')")
+    src.execute("INSERT INTO proxy_cache VALUES ('name_lang','musinsa','P1','OLD',"
+                "'영문','rule','2026-08-05 09:00:00')")
     src.commit(); src.close()
     # D69: proxy.db 분리 폐기 — 프록시 표는 이관된 본 DB 안에 생긴다
     live_proxy = work / "proxy.db"  # 레거시 경로, 테스트용
@@ -910,10 +922,15 @@ def blocker3r_tests():
     out = sqlite3.connect(str(work / "v2-out.db"))
     out_tables = {r[0] for r in out.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
+    n_defs = out.execute("SELECT COUNT(*) FROM proxy_defs").fetchone()[0]
+    n_cache = out.execute("SELECT COUNT(*) FROM proxy_cache").fetchone()[0]
     out.close()
-    check("E-MG-2 D69: proxy 테이블이 본 DB에 존재한다",
-          {"proxy_defs", "proxy_cache", "proxy_history"} <= out_tables,
-          sorted(t for t in out_tables if t.startswith("proxy")))
+    check("E-MG-2 D69: proxy 표와 데이터가 본 DB로 이관된다",
+          {"proxy_defs", "proxy_cache", "proxy_history"} <= out_tables
+          and n_defs == 1 and n_cache == 1,
+          "defs=%d cache=%d %s" % (n_defs, n_cache,
+                                   sorted(t for t in out_tables
+                                          if t.startswith("proxy"))))
     check("E-MG-2b 레거시 proxy.db 파일은 이관이 건드리지 않는다",
           live_proxy.read_text() == "살아있는 프록시 — 이관이 건드리면 안 된다")
 
@@ -929,7 +946,7 @@ def blocker3r_tests():
     check("E-MG-3b 드롭이 있으면 진행점 리셋 — 다음 미러가 전량 재동기화 (Blocker 3)",
           g.execute("SELECT last_synced_key FROM sync_state").fetchone()[0] is None)
 
-    # ── B4: 정본이 Turso인데 프록시 URL이 없으면 proxy_auto가 명시적으로 죽는다
+    # ── B4(D69 개정): 닿지 않는 Turso 정본이면 proxy_auto가 조용히 성공하지 않고 죽는다
     cards_f = work / "cards.json"
     cards_f.write_text(json.dumps([{"proxy_name": "t", "material": "name",
                                     "method": "rule", "value_space": ["a"],
@@ -937,19 +954,27 @@ def blocker3r_tests():
                        encoding="utf-8")
     env = {k: v for k, v in os.environ.items()
            if k not in ("PROXY_DB_URL", "INTEL_PROXY_DB")}  # D69: 이 변수들은 폐기됨
-    r = subprocess.run([sys.executable, str(SCRIPTS / "proxy_auto.py"),
-                        "--db", "libsql://fake.turso.io", "--cards", str(cards_f),
-                        "--out", str(work / "o.json")],
-                       capture_output=True, text=True, env=env)
     # D69: PROXY_DB_URL 가드 폐기 — 프록시는 정본 안이다. 남는 계약은
     # "닿지 않는 Turso 정본이면 조용히 성공(임시 DB 판정)하지 않고 죽는다"다.
-    # 실패 사유가 libsql/Turso 경로인지도 본다 — 무관한 이유(모듈 미설치 등)로
-    # 죽어도 통과하면 회귀가 무력화된다(리뷰 반영).
-    _pa13_out = (r.stdout + r.stderr)
-    check("E-PA-13 닿지 않는 Turso 정본이면 임시 DB로 새지 않고 죽는다 (Blocker 4·D69 개정)",
-          r.returncode != 0 and not (work / "o.json").exists()
-          and ("libsql" in _pa13_out.lower() or "turso" in _pa13_out.lower()),
-          "exit=%d %s" % (r.returncode, _pa13_out[:80]))
+    # 드라이버 미설치 환경은 건너난다 — ModuleNotFoundError로 죽어도 통과하면
+    # 회귀가 무력화된다(리뷰 반영 — 부분 문자열 매칭도 같은 이유로 버렸다).
+    try:
+        import libsql_experimental  # noqa: F401
+        _has_libsql = True
+    except ImportError:
+        _has_libsql = False
+    if _has_libsql:
+        r = subprocess.run([sys.executable, str(SCRIPTS / "proxy_auto.py"),
+                            "--db", "libsql://fake.turso.io", "--cards", str(cards_f),
+                            "--out", str(work / "o.json")],
+                           capture_output=True, text=True, env=env)
+        _pa13_out = (r.stdout + r.stderr)
+        check("E-PA-13 닿지 않는 Turso 정본이면 임시 DB로 새지 않고 죽는다 (Blocker 4·D69 개정)",
+              r.returncode != 0 and not (work / "o.json").exists()
+              and "ModuleNotFoundError" not in _pa13_out,
+              "exit=%d %s" % (r.returncode, _pa13_out[:80]))
+    else:
+        print("  SKIP  E-PA-13 (libsql_experimental 미설치 — Turso 경로 검증 불가)")
 
     # ── B5: 깨진 카드 규칙이 collect()를 죽이지 않는다 (lazy 판정 격리)
     lzdb = str(work / "lz.db")

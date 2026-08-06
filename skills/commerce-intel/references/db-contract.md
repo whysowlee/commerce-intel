@@ -71,14 +71,14 @@
   독립 총계(API totalCount 또는 화면 총계)만 담고, 없으면 `null` + notes에 근거.
   총계를 읽은 시점의 **필터 상태(품절 포함 여부 등)를 notes에 함께 적는다.**
 
-## 2. 정본 DB (SQLite `data/intel.db` + `data/proxy.db` — 스키마 v3, D65)
+## 2. 정본 DB (SQLite `data/intel.db` — 스키마 v3, D65 · 프록시 표 포함 D69)
 
 파이프라인: 수집 → raw JSON → 검증 → **적재(load)** → 시트 미러. 도구는 `scripts/intel_db.py`.
 아래 표 이름은 전부 **뷰**다(D45) — 물리 저장은 정수 사전·대리키(`schema_v3.py`)이고,
 읽고 쓰는 계약은 뷰가 진다. v1·v2 파일은 열리지 않는다 — `migrate_v3.py`로 이관한다.
 
 **클라우드 정본 (Turso — D67).** `INTEL_DB_URL=libsql://...` + `INTEL_DB_TOKEN`이
-있으면 모든 도구가 클라우드 정본을 본다(프록시는 `PROXY_DB_URL`/`PROXY_DB_TOKEN`).
+있으면 모든 도구가 클라우드 정본을 본다(프록시 표도 같은 정본 안이다 — D69).
 환경변수가 없으면 지금처럼 로컬 파일이고, **명시적 `--db` 인자는 항상 환경변수를
 이긴다**(테스트·리허설 격리). DB는 반드시 `schema_v3.open_db()`/`intel_db.connect()`로
 연다 — libsql 드라이버의 비호환(행 튜플·예외 타입 등)을 호환 래퍼가 흡수하는
@@ -103,9 +103,10 @@
 | `product_history` | **정적 속성 변경 이력** (D68) — pk·field(name/brand/category/url/image_url)·old_value·new_value·changed_at·run_id. 적재(`_upsert_product`)가 기존 값과 다른 실질값이 오면 덮기 전에 남긴다. 값→NULL은 안 생긴다(빈 값은 덮지 않으므로). 조회는 `product_changes` 뷰((site, product_id)·현재명·run_id 포함) | id | **append only — 삭제·수정 금지** |
 | `attr_history` | **AI 속성 변경 이력** (D68) — attr_name·old/new_value·old/new_basis. `product_attributes` 뷰 트리거가 캡처하므로 어떤 쓰기 경로든 잡힌다. 조회는 `attr_changes` 뷰 | id | **append only** (트리거 자동) |
 
-**`data/proxy.db` (별도 파일 — D65-8).** 판정 캐시는 정본에서 제일 빨리 자라는 표라
-(실측 48.6만 행, 관측의 7배) 파일을 가른다. 경로는 정본과 같은 폴더의 `proxy.db`
-(`INTEL_PROXY_DB`로 덮을 수 있다). 조인이 필요하면 ATTACH 하거나 별도 커넥션으로 읽는다.
+**프록시 표 (본 DB 통합 — D69).** D65-8에서 별도 `proxy.db`로 갈랐던 프록시
+표는 D69로 본 DB(intel.db)에 재통합됐다 — lazy 판정 전환 이후 캐시가 천천히
+쌓여 분리의 이점이 약해졌고, FK·트리거·자동동기화를 못 하는 대가가 더 커졌다.
+`PROXY_DB_URL`·`PROXY_DB_TOKEN`·`INTEL_PROXY_DB`는 폐기 — 같은 커넥션으로 직접 조인한다.
 
 | 테이블 | 내용 | 키 |
 |---|---|---|
