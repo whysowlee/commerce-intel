@@ -454,6 +454,9 @@ platform-cafe24가 아니라 platform-ownmall이다). 신규 7건:
 | E-DB-35 | 프록시 표 본 DB 통합 (D69, D65-8 분리 폐기) | 프록시 표(proxy_defs·proxy_cache·proxy_history)는 본 DB(intel.db) 안이다. 정의 삭제 시 캐시가 CASCADE로 함께 사라진다(FK는 커넥션마다 PRAGMA로 켜야 돈다 — open_db()가 모든 커넥션에 켠다, B2·B7). rule 카드는 lazy 판정 — collect가 캐시 miss를 defs.rules로 즉석 판정·적재한다 | [자동 — E-PXS·증분 키 회귀가 본 DB 경로로 돈다] |
 | E-DB-37 | 정적 속성 변경 이력 (D68) | 같은 상품을 다른 이름으로 두 번 적재하면 `product_history`에 name 전이 1행(run_id 연결). 같은 값 재적재는 이력을 만들지 않는다. 기존 platform 매핑이 있는 상품에 처음 보는 카테고리 리프가 오면 category 전이가 기록된다. 조회는 `product_changes` 뷰. `attr` 변경(set-attrs 등 어떤 쓰기 경로든)은 트리거가 `attr_history`에 남긴다. 기존 v3 DB는 connect()가 마커 표(proxy_history — D69로 갱신) 부재를 보고 **1회만** SCHEMA_V3를 보충한다 — 표가 갖춰지면 다시 안 보낸다(매 connect DDL 왕복 방지) | [자동 — history_tests] |
 | E-DB-38 | 프록시 재판정 체인 (D68) | 이름/이미지가 바뀌면 그 재료의 proxy_cache 판정이 **재판정 대기 이력**(proxy_history, new_value NULL)으로 옮겨지고 캐시에서 사라진다. 다음 lazy 판정·proxy-load가 대기 행을 완성한다(new_value 채움). 같은 값·같은 지문 재판정은 이력을 만들지 않고, **같은 지문·다른 값(정정 재판정)은 이력을 남기며 캐시를 전부 비워 새 값이 들어가게 한다**(옛 지문만 지우면 옛 값 행이 PK 충돌로 살아남아 캐시가 옛 값에 고정된다 — 호출부가 INSERT OR IGNORE라 조용히 썩는다). D69로 프록시 표는 본 DB 안에 상시 존재한다 — 별도 proxy.db 부재 시나리오 자체가 사라졌다 | [자동 — history_tests] |
+| E-DB-39 | 재료 변경 → attr 판정 무효화 (D71) | 이름이 바뀌면 그 재료에서 나온 AI 속성 판정(attr_base, basis='name')이 attr_history에 무효화 행(new_value NULL)을 남기고 삭제된다. 다른 basis(image·detail 등) 판정은 남는다. 프록시 캐시 무효화(E-DB-38)와 같은 트랜잭션이다 | [자동 — history_tests] |
+| E-DB-40 | prune 전 지표 감시 (D71) | 가격·순위·품절 외에 후기수·평점·조회수·구매수·하트·보는중·구매중, 그리고 obs_attr 묶음이 앞 관측과 다르면 버킷과 무관하게 남는다. 아무 지표도 안 변한 중복만 지워진다. FK pragma가 켜져 있어 삭제 시 obs_attr가 CASCADE로 함께 간다 | [자동 — prune_tests] |
+| E-DB-41 | upload --force = 교체 (D71) | --force는 원격 표를 FK 역순 DROP 후 재생성해 로컬본으로 교체한다 — 이어 붙이지 않는다(재실행해도 행 수가 로컬과 같다). 뷰·트리거는 데이터 INSERT 뒤에 얹는다(INSTEAD OF 트리거 선행 생성이 INSERT를 가로채는 것 방지) | [자동 — upload_tests, 로컬 파일 dst] |
 
 ### 3-9. E-CH — 카테고리 계층 (2026-08-04 신설 · D42)
 
