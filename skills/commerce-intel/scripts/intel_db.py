@@ -235,7 +235,7 @@ def resolve_brand(conn, notation, site=None, cache=None):
 def load_file(conn, path, quiet=False, db_path=None):
     """데이터 계약 JSON 1개를 적재한다. 반환: (신규 관측 수, 스킵된 중복 관측 수).
 
-    db_path는 프록시 무효화(D68)용 — 정본 경로에서 proxy.db 위치를 푼다.
+    db_path는 프록시 무효화(D68)용.
     안 넘기면 DEFAULT_DB 기준(환경변수 규약과 같다).
     """
     data = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -766,7 +766,7 @@ def cmd_export(conn, args):
 def cmd_proxy_load(pconn, args):
     """프록시 정의 + 판정 묶음(JSON)을 등록한다. proxy-extractor 반환 형식과 같다.
 
-    v3부터 프록시는 별도 DB(`proxy.db` — D65-8)에 산다. 정의에 rule 카드 본문
+    프록시 정의에 rule 카드 본문
     (`rules`/`numeric`)이 실려 오면 defs에 함께 저장한다 — 분석이 캐시 miss를
     만났을 때 그 자리에서 판정하는(lazy) 재료다.
     """
@@ -1040,7 +1040,7 @@ def cmd_merge(conn, args):
         after = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         stats[table] = (after - before, len(rows))
 
-    # 프록시 — 소스 파일 안에 있으면(v2 정본·seed) 대상 **proxy.db**로 간다 (D65-8)
+    # 프록시 — 소스에 proxy_defs가 있으면 본 DB로 합친다 (D69: 통합)
     _merge_proxy(conn, src, args, stats)
 
     conn.commit()
@@ -1109,12 +1109,7 @@ def _merge_brand_tables(conn, src, stats):
 
 
 def _merge_proxy(conn, src, args, stats):
-    """소스에 실려 온 proxy_defs·proxy_cache를 대상 proxy.db로 합친다.
-
-    v2 정본과 seed DB는 프록시 표를 한 파일에 담고 있다. v3 정본끼리라면 소스에
-    이 표가 없다 — 그때는 팀원의 proxy.db를 이 명령에 **한 번 더** 주면 된다
-    (proxy.db 자체도 스키마가 같아 소스로 먹힌다).
-    """
+    """소스에 실려 온 proxy_defs·proxy_cache를 본 DB로 합친다 (D69: 통합)."""
     try:
         defs = src.execute("SELECT * FROM proxy_defs").fetchall()
     except sqlite3.OperationalError:
