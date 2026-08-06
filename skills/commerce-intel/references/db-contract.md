@@ -106,7 +106,9 @@
 **프록시 표 (본 DB 통합 — D69).** D65-8에서 별도 `proxy.db`로 갈랐던 프록시
 표는 D69로 본 DB(intel.db)에 재통합됐다 — lazy 판정 전환 이후 캐시가 천천히
 쌓여 분리의 이점이 약해졌고, FK·트리거·자동동기화를 못 하는 대가가 더 커졌다.
-`PROXY_DB_URL`·`PROXY_DB_TOKEN`·`INTEL_PROXY_DB`는 폐기 — 같은 커넥션으로 직접 조인한다.
+`PROXY_DB_URL`·`PROXY_DB_TOKEN`·`INTEL_PROXY_DB`는 평시 런타임에서는 폐기 — 같은
+커넥션으로 직접 조인한다. 단 `migrate_proxy_merge.py`(레거시 proxy.db 1회성 이관)만은
+이 변수들을 레거시 소스 위치 지정용으로 읽는다(PROXY_DB_URL > INTEL_PROXY_DB > 정본 옆 proxy.db).
 
 | 테이블 | 내용 | 키 |
 |---|---|---|

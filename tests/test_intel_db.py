@@ -1029,6 +1029,74 @@ def check_run_tests():
     shutil.rmtree(work, ignore_errors=True)
 
 
+def proxy_merge_tests():
+    """레거시 proxy.db 병합 (D69) — 재이관 가드·--force (PR #18 리뷰 반영).
+
+    가드는 '대상에 행이 있다'가 아니라 '이 소스의 행이 이미 있다'(내용
+    일치, id 제외)로 트리거된다 — 정상 수집이 쓴 proxy_history에 걸려 첫
+    병합부터 --force를 강요하면 안 된다.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    intel_db = importlib.import_module("intel_db")
+    mpm = importlib.import_module("migrate_proxy_merge")
+    work = Path(tempfile.mkdtemp(prefix="pmerge-"))
+    db = str(work / "intel.db")
+    conn = intel_db.connect(db)
+    # 정상 수집이 쓴 이력 — 이것만으로는 가드가 트리거되면 안 된다
+    conn.execute("INSERT INTO proxy_history (proxy_name, site, product_id,"
+                 " old_value, new_value, old_fingerprint, new_fingerprint,"
+                 " changed_at) VALUES ('p','s','1','a','b','f1','f2','2026-08-01')")
+    conn.commit(); conn.close()
+    pdb = work / "proxy.db"
+    p = sqlite3.connect(str(pdb))
+    p.execute("CREATE TABLE proxy_defs (proxy_name TEXT PRIMARY KEY, question TEXT,"
+              " material TEXT, value_space TEXT, method TEXT, rules TEXT,"
+              " label TEXT, created_at TEXT)")
+    p.execute("CREATE TABLE proxy_cache (proxy_name TEXT, site TEXT,"
+              " product_id TEXT, fingerprint TEXT, value TEXT, basis TEXT,"
+              " judged_at TEXT)")
+    p.execute("CREATE TABLE proxy_history (id INTEGER PRIMARY KEY,"
+              " proxy_name TEXT, site TEXT, product_id TEXT, old_value TEXT,"
+              " new_value TEXT, old_fingerprint TEXT, new_fingerprint TEXT,"
+              " changed_at TEXT)")
+    p.execute("INSERT INTO proxy_defs (proxy_name, material, value_space, method)"
+              " VALUES ('p','name','[\"a\",\"b\"]','rule')")
+    p.execute("INSERT INTO proxy_history (proxy_name, site, product_id, old_value,"
+              " new_value, old_fingerprint, new_fingerprint, changed_at) VALUES"
+              " ('p','s','2','x','y','g1','g2','2026-08-02')")
+    p.commit(); p.close()
+    # 환경변수 격리 — 레거시 소스는 정본 옆 proxy.db로 유도한다
+    saved = {k: os.environ.pop(k, None) for k in ("PROXY_DB_URL", "INTEL_PROXY_DB")}
+    try:
+        ok1 = mpm.migrate(db)
+        chk = sqlite3.connect(db)
+        n_hist = chk.execute("SELECT COUNT(*) FROM proxy_history").fetchone()[0]
+        n_defs = chk.execute("SELECT COUNT(*) FROM proxy_defs").fetchone()[0]
+        chk.close()
+        check("E-PM-1 무관한 기존 이력이 있어도 첫 병합은 --force 없이 통과한다",
+              ok1 and n_hist == 2 and n_defs == 1,
+              "ok=%s hist=%d defs=%d" % (ok1, n_hist, n_defs))
+        check("E-PM-1b 성공 시 소스는 .merged-backup으로 이름이 바뀝다",
+              not pdb.exists() and (work / "proxy.db.merged-backup").exists())
+        # 재실행 재현 — 백업을 되돌려 같은 소스로 다시 돌린다
+        shutil.copy(work / "proxy.db.merged-backup", pdb)
+        ok2 = mpm.migrate(db)
+        check("E-PM-2 같은 소스 재실행은 --force 없이 막힌다 (내용 중복 감지)",
+              ok2 is False)
+        ok3 = mpm.migrate(db, force=True)
+        chk = sqlite3.connect(db)
+        n_dup = chk.execute("SELECT COUNT(*) FROM proxy_history").fetchone()[0]
+        chk.close()
+        check("E-PM-3 --force는 중복을 감수하고 통과시킨다 (id 재할당 적재)",
+              ok3 and n_dup == 3, "ok=%s hist=%d" % (ok3, n_dup))
+    finally:
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
+    shutil.rmtree(work, ignore_errors=True)
+
+
 def history_tests():
     """상품 정적 속성 이력 + 프록시 재판정 체인 (D68 · E-DB-37·38).
 
@@ -1715,6 +1783,9 @@ def main():
 
     print("[21e] 상품 이력 + 프록시 재판정 체인 (D68 · E-DB-37·38)")
     history_tests()
+
+    print("[21f] 레거시 proxy.db 병합 — 재이관 가드 (D69 · E-PM)")
+    proxy_merge_tests()
 
     print("[21b] 프록시 값 공간 위생 (D53 · E-PXS)")
     proxy_space_tests()

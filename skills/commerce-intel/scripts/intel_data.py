@@ -533,12 +533,12 @@ def collect(db_path, contexts):
         prev[key] = dict(r)
 
     # 파생 프록시 주입 (D19) — 재료 지문이 현재 값과 맞는 캐시만 유효하다.
-    # v3: 정의·캐시는 별도 proxy.db다(D65-8). 파일이 없으면 정본 안의 옛 표를
-    # 본다(v2 스냅샷·리허설 DB 하위호환) — 어느 쪽도 없으면 프록시 없음.
+    # D69: 정의·캐시는 본 DB 안이다(D65-8 분리 폐기). 표가 없는 구 DB면
+    # OperationalError를 빈 목록으로 받는다 — 프록시 없음으로 동작.
     proxies = []
-    psrc = conn  # D69: 프록시가 본 DB에 통합됐다
+    # D69: 프록시가 본 DB에 통합됐다 — 별칭 없이 conn을 직접 쓴다
     try:
-        defs = psrc.execute("SELECT * FROM proxy_defs").fetchall()
+        defs = conn.execute("SELECT * FROM proxy_defs").fetchall()
     except sqlite3.OperationalError:
         defs = []
     for d in defs:
@@ -549,7 +549,7 @@ def collect(db_path, contexts):
             space = d["value_space"]
         is_numeric = space == "numeric"
         cache = {(r["site"], r["product_id"]): (r["fingerprint"], r["value"])
-                 for r in psrc.execute(
+                 for r in conn.execute(
                      "SELECT site, product_id, fingerprint, value FROM proxy_cache "
                      "WHERE proxy_name=? ORDER BY judged_at", (pn,))}
         fp_field = {"image": "image_url", "name": "name"}.get(mat)
@@ -558,14 +558,11 @@ def collect(db_path, contexts):
         # 여기서 즉석 판정하고 캐시에 남긴다. 전량 선행 판정(proxy_auto --eager)
         # 없이도 분석 시점에 축이 채워진다. vision 카드는 재료가 이미지라 배치
         # 경로(proxy_auto → proxy-extractor)만 가능하다 — 여기선 건드리지 않는다.
-        card = None
-        if True:  # D69: psrc=conn, 항상 유효
-            try:
-                body = json.loads(d["rules"]) if d["rules"] else None
-            except (TypeError, ValueError, KeyError, IndexError):
-                body = None
-            if body:
-                card = dict(body, proxy_name=pn, material=mat)
+        try:
+            body = json.loads(d["rules"]) if d["rules"] else None
+        except (TypeError, ValueError, KeyError, IndexError):
+            body = None
+        card = dict(body, proxy_name=pn, material=mat) if body else None
         if card:
             import proxy_auto                       # 판정 규칙은 한 벌이다 (D43)
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -595,15 +592,15 @@ def collect(db_path, contexts):
                 fp = str(fp_now if fp_now is not None else (it.get("name") or ""))
                 # 전이 이력 (D68) — 재료 변경으로 무효화된 판정의 대기 행을
                 # 완성하거나, 값이 실제로 바뀌었으면 old→new를 남긴다
-                record_proxy_transition(psrc, pn, it["site"],
+                record_proxy_transition(conn, pn, it["site"],
                                         it["product_id"], fp, val, now)
-                psrc.execute(
+                conn.execute(
                     "INSERT OR IGNORE INTO proxy_cache VALUES (?,?,?,?,?,?,?)",
                     (pn, it["site"], str(it["product_id"]), fp, val, basis, now))
                 cache[k] = (fp, val)
                 wrote += 1
             if wrote:
-                psrc.commit()
+                conn.commit()
             if judge_errors:
                 print("경고: 프록시 %s lazy 판정 실패 %d건 — 카드 규칙이 깨졌을 수 "
                       "있다(예: %s). 해당 상품은 미판정으로 남긴다"
