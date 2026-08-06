@@ -91,10 +91,12 @@ def _upgrade_urls(conn):
     conn.execute("ALTER TABLE product_base ADD COLUMN image_url TEXT")
     conn.execute("""
         UPDATE product_base SET
-            url = COALESCE((SELECT prefix FROM hosts WHERE host_id = url_host), '')
-                  || COALESCE(url_path, ''),
-            image_url = COALESCE((SELECT prefix FROM hosts WHERE host_id = img_host), '')
-                  || COALESCE(img_path, '')
+            url = CASE WHEN url_host IS NULL AND url_path IS NULL THEN NULL
+                       ELSE COALESCE((SELECT prefix FROM hosts WHERE host_id = url_host), '')
+                            || COALESCE(url_path, '') END,
+            image_url = CASE WHEN img_host IS NULL AND img_path IS NULL THEN NULL
+                             ELSE COALESCE((SELECT prefix FROM hosts WHERE host_id = img_host), '')
+                                  || COALESCE(img_path, '') END
     """)
     conn.commit()
     print("D70: hosts 테이블 폐기 — URL 직접 저장으로 전환")
@@ -891,9 +893,9 @@ def _proxy_load_one(conn, data):
                     "attr_name, value, basis, decided_at) VALUES (?,?,?,?,?,?)",
                     (j.get("site"), str(j.get("product_id")),
                      "px_" + d["proxy_name"],
-                     str(val) if val is not None else None,
+                     val if val is None else str(val),
                      j.get("basis"), now_str()))
-            except Exception:
+            except (sqlite3.IntegrityError, sqlite3.OperationalError):
                 pass  # pk 미등록 — proxy_cache만 남는다
             new += 1
         except sqlite3.IntegrityError:

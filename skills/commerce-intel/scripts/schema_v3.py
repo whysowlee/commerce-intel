@@ -252,8 +252,6 @@ CREATE INDEX IF NOT EXISTS idx_proxy_history ON proxy_history (proxy_name, site,
 """
 
 
-
-
 # ── Turso(libSQL) 연결 추상화 (D67) ────────────────────────────────────────
 # 목표: 팀원 여러 명이 하나의 클라우드 정본을 쓰되, 환경변수가 없으면 지금처럼
 # 로컬 SQLite 파일로 돈다(테스트·CI·오프라인 개발 하위호환).
@@ -830,8 +828,6 @@ def category_path_map(conn):
     for cid in by_id:
         path_of(cid)
     return out
-
-
 
 
 # ── 프록시 전이 이력·무효화 (D68) ──────────────────────────────────────────

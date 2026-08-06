@@ -606,9 +606,9 @@ def collect(db_path, contexts):
                         "INSERT INTO product_attributes (site, product_id, "
                         "attr_name, value, basis, decided_at) VALUES (?,?,?,?,?,?)",
                         (it["site"], str(it["product_id"]),
-                         "px_" + pn, str(val) if val is not None else None,
+                         "px_" + pn, val if val is None else str(val),
                          basis, now))
-                except Exception:
+                except (sqlite3.IntegrityError, sqlite3.OperationalError):
                     pass  # pk 미등록 — proxy_cache만 남는다
                 cache[k] = (fp, val)
                 wrote += 1

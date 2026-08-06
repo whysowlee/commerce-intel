@@ -1707,16 +1707,39 @@ def main():
     check("num_axes는 범주 프록시를 수치축에 넣지 않는다 (name_lang은 범주형)",
           "px_name_lang" not in nums)
 
-    # [6c] D70: judge_and_store — lazy 판정이 product_attributes에도 저장되는지
+    # [6c] D70: judge_and_store — lazy 판정이 product_attributes에도 저장되는지.
+    # proxy-load 경로는 위 [6]에서 이미 적재했다 — 여기서는 lazy 판정 경로를
+    # 별도로 확인한다. rules가 있는 카드를 새로 등록해 collect() 때 lazy 판정이
+    # 발동하게 한다.
     conn6 = sqlite3.connect(db)
     conn6.row_factory = sqlite3.Row
-    pa = conn6.execute(
+    # 기존 name_lang의 rules를 채워 lazy 판정이 가능한 카드로 만든다
+    conn6.execute(
+        "UPDATE proxy_defs SET rules=? WHERE proxy_name='name_lang'",
+        (json.dumps({"rules": [
+            {"any": ["[가-힣]"], "value": "한국어"},
+            {"any": ["."], "value": "영문"}]}),))
+    # proxy_cache와 attr_base의 name_lang 판정을 지워 lazy가 다시 돌게 한다
+    conn6.execute("DELETE FROM proxy_cache WHERE proxy_name='name_lang'")
+    conn6.execute("DELETE FROM attr_base WHERE attr_name='px_name_lang'")
+    conn6.commit(); conn6.close()
+    # collect()가 lazy 판정을 발동시킨다
+    data2 = intel_data.collect(db, None)
+    conn6 = sqlite3.connect(db)
+    conn6.row_factory = sqlite3.Row
+    pa_lazy = conn6.execute(
         "SELECT value FROM product_attributes WHERE attr_name='px_name_lang'"
         " AND site='musinsa' LIMIT 1").fetchone()
+    # proxy-load 경로도 확인 (위 [6]에서 적재된 것)
+    pa_load = conn6.execute(
+        "SELECT COUNT(*) FROM product_attributes WHERE attr_name LIKE 'px_%'"
+        ).fetchone()[0]
     conn6.close()
     check("E-JS-1 lazy 판정이 product_attributes에도 저장된다 (D70 judge_and_store)",
-          pa is not None and pa[0] is not None,
-          pa[0] if pa else None)
+          pa_lazy is not None and pa_lazy[0] is not None,
+          pa_lazy[0] if pa_lazy else None)
+    check("E-JS-2 proxy-load도 product_attributes에 저장된다 (D70)",
+          pa_load >= 1, pa_load)
 
     print("[8] 표본 계획 (plan_sample)")
     plan_f = work / "plan.json"

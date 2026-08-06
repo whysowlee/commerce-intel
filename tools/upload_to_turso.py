@@ -45,6 +45,13 @@ INTEL_ORDER = [
 
 
 def upload(src_path, url, token, force=False):
+    # D70: intel_db.connect()를 먼저 거쳐 URL 이관을 적용한 뒤 읽기 전용으로 다시 연다.
+    # connect()가 hosts→url 전환을 해야 새 스키마의 dst와 컬럼이 맞는다.
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent
+                          / "skills" / "commerce-intel" / "scripts"))
+    import intel_db as _idb
+    _pre = _idb.connect(str(src_path))
+    _pre.close()
     src = sqlite3.connect(f"file:{src_path}?mode=ro", uri=True)
     src.row_factory = sqlite3.Row
     dst = open_db(url, token=token)
