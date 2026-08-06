@@ -62,9 +62,11 @@ def upload(src_path, url, token, force=False):
     if force:
         # --force = **원격을 이 로컬본으로 교체한다.** 이어 붙이기가 아니다 —
         # 이어 붙이면 중복 위에 쌓여 검산이 영영 안 맞는다(원 --force의 버그).
-        # 뷰가 표를 참조하므로 뷰 먼저, 표는 FK 역순으로 지운다.
-        for v in ("products", "observations", "variants", "variant_observations",
-                  "product_attributes", "product_changes", "attr_changes"):
+        # 뷰가 표를 참조하므로 뷰 먼저, 표는 FK 역순으로 지운다. 뷰 목록은
+        # 원격의 sqlite_master에서 읽는다 — 하드코딩하면 뷰가 늘 때마다 여기가
+        # 낡는다 (1R 리뷰).
+        for (v,) in dst.execute(
+                "SELECT name FROM sqlite_master WHERE type='view'").fetchall():
             dst.execute(f"DROP VIEW IF EXISTS {v}")
         for t, _ in reversed(order):
             dst.execute(f"DROP TABLE IF EXISTS {t}")

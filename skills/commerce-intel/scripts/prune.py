@@ -63,7 +63,13 @@ def plan(conn, keep_days=KEEP_DAYS, bucket=BUCKET_SEC):
     conn.execute("""
         CREATE TEMP TABLE _prune_keep AS
         WITH oa_sig AS (
-            SELECT obs_id, GROUP_CONCAT(attr_name || '=' || COALESCE(value,''), '|') AS sig
+            -- 구분자는 제어문자(RS/US)다 — '|'나 '='를 쓰면 값에 그 문자가 든
+            -- 다른 속성 집합이 같은 서명이 되어 진짜 변화가 지워질 수 있다
+            -- (1R 리뷰 실증: {a:'1|b=2'} == {a:'1', b:'2'}). 서브쿼리 정렬이
+            -- GROUP_CONCAT 순서를 보장하진 않지만, 순서가 어긋나면 서명이
+            -- 달라져 **더 남길 뿐**이다 — 안전한 방향이라 그대로 둔다.
+            SELECT obs_id, GROUP_CONCAT(attr_name || char(31) || COALESCE(value,''),
+                                        char(30)) AS sig
             FROM (SELECT obs_id, attr_name, value FROM obs_attr
                   ORDER BY obs_id, attr_name)
             GROUP BY obs_id

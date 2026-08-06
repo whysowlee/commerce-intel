@@ -1092,6 +1092,29 @@ def d71_tests():
     check("E-DB-40b obs_attr(비정형) 변화 순간도 살아남는다",
           oa_seq == ["5", "90"], oa_seq)
     check("E-DB-40c 아무것도 안 변한 중복은 지워졌다", n > 0, n)
+    # 서명 구분자 충돌 (1R 리뷰) — 값에 '|'/'='가 들어 있으면 옛 구분자로는
+    # {a:'1|b=2'}와 {a:'1', b:'2'}가 같은 서명이 되어 실제 변화가 지워졌다
+    conn.execute("INSERT INTO products (site, product_id, name, static_verified_at)"
+                 " VALUES ('29cm','P2','상품2','2020-01-01 00:00:00')")
+    for i in range(3):
+        conn.execute("INSERT INTO observations (site, product_id, observed_at, context,"
+                     " price_sale) VALUES ('29cm','P2',?,'brand:t',1000)",
+                     ("2020-01-01 01:%02d:00" % (i * 5),))
+    ids2 = [r[0] for r in conn.execute(
+        "SELECT o.id FROM obs_base o JOIN product_base p ON p.pk=o.pk "
+        "WHERE p.product_id='P2' ORDER BY o.observed_at")]
+    conn.execute("INSERT INTO obs_attr (obs_id, attr_name, value) VALUES (?,'a','1|b=2')",
+                 (ids2[0],))
+    for oid in ids2[1:]:
+        conn.execute("INSERT INTO obs_attr (obs_id, attr_name, value) VALUES (?,'a','1')", (oid,))
+        conn.execute("INSERT INTO obs_attr (obs_id, attr_name, value) VALUES (?,'b','2')", (oid,))
+    conn.commit()
+    prune.plan(conn, keep_days=0, bucket=3600)
+    prune.apply_prune(conn)
+    left = conn.execute("SELECT COUNT(*) FROM obs_base o JOIN product_base p "
+                        "ON p.pk=o.pk WHERE p.product_id='P2'").fetchone()[0]
+    check("E-DB-40d 값에 구분자가 든 속성 집합 변화도 서명이 갈린다 (3건 전부 보존)",
+          left == 3, left)
     conn.close()
 
     # ── E-DB-41: upload --force = 교체 ────────────────────────────────────
