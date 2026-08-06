@@ -102,5 +102,6 @@ unset INTEL_DB_URL INTEL_DB_TOKEN  # D69: PROXY_DB_* 폐기
   불안정. `schema_v3.open_db()`의 호환 래퍼가 전부 흡수하므로 **DB는 반드시
   open_db()/intel_db.connect()로 열어라.** `libsql.connect()`를 직접 부르면
   이 지뢰들을 그대로 밟는다.
-- PRAGMA foreign_keys는 커넥션마다 켠다 (connect()가 한다 — D69에서 proxy_connect() 폐기).
+- PRAGMA foreign_keys는 커넥션마다 켠다 — open_db()가 모든 커넥션(로컬·libsql)에
+  켠다(B2·B7). connect()는 open_db()를 거치므로 따로 켜지 않는다.
 - 쓰기는 직렬화된다(서버 단일 라이터) — 대량 적재는 배치 커밋(5,000행)으로.

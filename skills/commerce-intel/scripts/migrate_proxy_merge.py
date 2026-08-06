@@ -113,12 +113,12 @@ def migrate(db_path: str, dry_run: bool = False, force: bool = False) -> bool:
 
     if all(v == 0 for v in src_counts.values()):
         print("proxy.db에 데이터가 없다 — 할 일 없음.")
-        pconn.close()
+        pconn.close(); conn.close()
         return True
 
     if dry_run:
         print("\n[dry-run] 실제 이관하지 않음.")
-        pconn.close()
+        pconn.close(); conn.close()
         return True
 
     # 재이관 판별 — proxy_history는 id 재할당 복사라 재실행 시 같은 이력이
@@ -137,13 +137,15 @@ def migrate(db_path: str, dry_run: bool = False, force: bool = False) -> bool:
                         f"SELECT 1 FROM proxy_history WHERE {where} LIMIT 1",
                         tuple(row)).fetchone():
                     dup += 1
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as e:
+            # 판별 실패를 조용히 무력화하지 않는다 — 사용자에게 알린다(리뷰 반영)
+            print(f"  ※ 경고: 재이관 판별 쿼리 실패({e}) — 내용 중복 검사를 건너뛴다")
             dup = 0
     if dup and not force:
         print(f"  ✖ 중단: 이 소스의 proxy_history {dup:,}행이 본 DB에 이미 있다 — "
               "재실행으로 보인다(id 재할당 복사라 중복을 OR IGNORE가 못 거른다).\n"
               "    중복을 감수하고 그래도 이관하려면 --force를 붙여라.")
-        pconn.close()
+        pconn.close(); conn.close()
         return False
     for table, _ in PROXY_TABLES:
         try:
@@ -193,6 +195,7 @@ def migrate(db_path: str, dry_run: bool = False, force: bool = False) -> bool:
 
     if not ok:
         print("\n검산 실패 — proxy.db를 보존한다.")
+        conn.close()
         return False
 
     # 성공 시 백업
@@ -203,6 +206,7 @@ def migrate(db_path: str, dry_run: bool = False, force: bool = False) -> bool:
     else:
         print(f"\n성공! Turso 프록시 DB에서 데이터를 본 DB로 복사했다.")
         print(f"Turso의 commerce-intel-proxy DB는 수동으로 삭제하라: {proxy_source}")
+    conn.close()
     return True
 
 

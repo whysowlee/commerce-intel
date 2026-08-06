@@ -1,8 +1,10 @@
 # commerce-intel 테스트 케이스
 
-- 상태: **v27 (2026-08-06)** — **E-DB-35 개정**(D69 — proxy.db 분리 폐기:
-  프록시 표는 본 DB(intel.db) 안이다. E-MG-2는 이관된 본 DB의 proxy 표 존재를
-  확인하는 검증으로 교체)
+- 상태: **v27 (2026-08-06)** — **E-DB-35 개정 · E-PM-1~3 신설**(D69 — proxy.db
+  분리 폐기: 프록시 표는 본 DB(intel.db) 안이다. E-MG-2는 이관된 본 DB의 proxy
+  표 존재를 확인하는 검증으로 교체. E-PM은 migrate_proxy_merge의 재이관 가드 —
+  무관한 기존 이력은 통과, 같은 소스 재실행은 내용 중복 감지로 차단, --force로
+  재정의 — [자동 — proxy_merge_tests])
 - v26 (2026-08-05) — **E-DB-30~34 신설·E-DB-12 개정**(D65 — 스키마 v3:
   컨텍스트 CHECK·카테고리 계층 왕복·브랜드 별명·runs FK·obs_attr·proxy.db 분리(D69로 폐기).
   기존 E-DB 자동 케이스는 v3 위에서 그대로 돈다 — 뷰 계약이 유지된다는 증거)
