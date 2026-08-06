@@ -558,14 +558,11 @@ def collect(db_path, contexts):
         # 여기서 즉석 판정하고 캐시에 남긴다. 전량 선행 판정(proxy_auto --eager)
         # 없이도 분석 시점에 축이 채워진다. vision 카드는 재료가 이미지라 배치
         # 경로(proxy_auto → proxy-extractor)만 가능하다 — 여기선 건드리지 않는다.
-        card = None
-        if True:  # D69: psrc=conn, 항상 유효
-            try:
-                body = json.loads(d["rules"]) if d["rules"] else None
-            except (TypeError, ValueError, KeyError, IndexError):
-                body = None
-            if body:
-                card = dict(body, proxy_name=pn, material=mat)
+        try:
+            body = json.loads(d["rules"]) if d["rules"] else None
+        except (TypeError, ValueError, KeyError, IndexError):
+            body = None
+        card = dict(body, proxy_name=pn, material=mat) if body else None
         if card:
             import proxy_auto                       # 판정 규칙은 한 벌이다 (D43)
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

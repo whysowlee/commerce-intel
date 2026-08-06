@@ -766,9 +766,9 @@ def cmd_export(conn, args):
 def cmd_proxy_load(pconn, args):
     """프록시 정의 + 판정 묶음(JSON)을 등록한다. proxy-extractor 반환 형식과 같다.
 
-    프록시 정의에 rule 카드 본문
-    (`rules`/`numeric`)이 실려 오면 defs에 함께 저장한다 — 분석이 캐시 miss를
-    만났을 때 그 자리에서 판정하는(lazy) 재료다.
+    프록시 표는 본 DB에 있다(D69 — D65-8의 별도 proxy.db는 폐기). 정의에 rule
+    카드 본문(`rules`/`numeric`)이 실려 오면 defs에 함께 저장한다 — 분석이 캐시
+    miss를 만났을 때 그 자리에서 판정하는(lazy) 재료다.
     """
     data = json.loads(Path(args.file).read_text(encoding="utf-8"))
     # proxy-extractor가 다중 카드를 배열로 반환한다 — 배열이면 각 원소를 순차 적재
@@ -929,8 +929,8 @@ def cmd_stats(conn, args):
         try:
             n = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
             print(f"{t:20} {n:>8}")
-        except Exception:
-            pass
+        except sqlite3.OperationalError:
+            pass    # 표가 없는 구버전 DB — 그 외 예외(손상·연결 끊김)는 삼키지 않는다
     ctxs = conn.execute(
         "SELECT context, COUNT(*) n, MIN(observed_at) a, MAX(observed_at) b "
         "FROM observations GROUP BY context ORDER BY n DESC LIMIT 20").fetchall()
@@ -1109,7 +1109,12 @@ def _merge_brand_tables(conn, src, stats):
 
 
 def _merge_proxy(conn, src, args, stats):
-    """소스에 실려 온 proxy_defs·proxy_cache를 본 DB로 합친다 (D69: 통합)."""
+    """소스에 실려 온 proxy_defs·proxy_cache를 대상 본 DB로 합친다 (D69 통합).
+
+    v2 정본·seed DB·구 proxy.db 전부 소스로 먹힌다 — 스키마가 같아서다.
+    D65-8 시절 팀원의 별도 proxy.db가 남아 있으면 그 파일을 이 명령에 한 번 더
+    주면 된다.
+    """
     try:
         defs = src.execute("SELECT * FROM proxy_defs").fetchall()
     except sqlite3.OperationalError:

@@ -46,9 +46,8 @@ SEED_RUN_TARGET_LIKE = "%브랜드랭킹 상위30%"
 SEED_INSIGHT_CONTEXTS_LIKE = ("brand:2000아카이브스%", "market:데님팬츠(여성%")
 
 # 상품 키에 매달린 것들 — 범위 상품에 걸린 행만 간다.
-# proxy_cache는 v3부터 별도 proxy.db에 살지만(D65-8) seed는 **한 파일**로 나간다 —
-# copy_proxy()가 proxy.db에서 떼어 seed 안에 담고, 팀원 쪽 merge가 도로
-# 자기 proxy.db로 돌려 넣는다.
+# 프록시 표도 본 DB에 있다(D69 통합) — seed도 자연히 한 파일이고, copy_rows가
+# 다른 표와 똑같이 담는다. D65-8 시절의 별도 copy_proxy 경로는 사라졌다.
 PRODUCT_SCOPED = ("observations", "variants", "variant_observations",
                   "product_attributes", "proxy_cache")
 # 전량 간다 — 데이터가 아니라 해석에 필요한 계약·정의다

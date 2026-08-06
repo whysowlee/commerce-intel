@@ -415,12 +415,18 @@ def open_db(target, token=None):
         import libsql_experimental as libsql   # Turso 모드에서만 필요 (조건부 의존)
         raw = libsql.connect(
             target, auth_token=token or os.environ.get("INTEL_DB_TOKEN", ""))
-        return LibsqlConnection(raw)
-    path = str(target)
-    if path.startswith("file:") and "?" not in path:
-        path = path[len("file:"):]
-    conn = sqlite3.connect(path, uri=path.startswith("file:"))
-    conn.row_factory = sqlite3.Row
+        conn = LibsqlConnection(raw)
+    else:
+        path = str(target)
+        if path.startswith("file:") and "?" not in path:
+            path = path[len("file:"):]
+        conn = sqlite3.connect(path, uri=path.startswith("file:"))
+        conn.row_factory = sqlite3.Row
+    # FK는 커넥션 설정이라 파일이 아니라 **여기서** 켜야 한다 — 안 켠 커넥션에서는
+    # ON DELETE CASCADE가 조용히 안 돈다. 예전엔 proxy_connect()가 강제로 켰는데
+    # D69로 그 통로가 사라지면서 open_db()만 거치는 호출부(proxy_auto·intel_data)가
+    # FK 없이 열렸다 (PR #16 리뷰 Blocker 2·7). 모든 열기 통로인 여기서 켠다.
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 

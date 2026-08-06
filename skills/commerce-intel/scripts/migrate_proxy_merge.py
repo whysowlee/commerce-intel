@@ -24,7 +24,7 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
 
-from schema_v3 import open_db  # noqa: E402
+from schema_v3 import default_db_target, is_libsql_url, open_db  # noqa: E402
 
 
 PROXY_TABLES = [
@@ -32,8 +32,10 @@ PROXY_TABLES = [
      "proxy_name, question, material, value_space, method, created_at, label, rules"),
     ("proxy_cache",
      "proxy_name, site, product_id, fingerprint, value, basis, judged_at"),
+    # id는 옮기지 않는다 — 본 DB에 이미 이력이 있으면 id가 충돌하고, OR IGNORE는
+    # 그 충돌을 **조용히 스킵**해 이력이 사라진다. AUTOINCREMENT에 재할당을 맡긴다.
     ("proxy_history",
-     "id, proxy_name, site, product_id, old_value, new_value, "
+     "proxy_name, site, product_id, old_value, new_value, "
      "old_fingerprint, new_fingerprint, changed_at"),
 ]
 
@@ -43,12 +45,16 @@ def _resolve_proxy_source(db_path_str: str):
 
     우선순위: PROXY_DB_URL(터소) > INTEL_PROXY_DB(로컬 격리) > 정본 옆 proxy.db.
     터소 URL이면 open_db로 연결하고, 로컬이면 파일 존재 확인.
+    본 DB가 Turso URL인데 프록시 환경변수가 없으면 유도할 로컬 경로가 없다 —
+    None을 돌려 호출부가 안내하고 끝내게 한다.
     """
     env = os.environ.get("PROXY_DB_URL") or os.environ.get("INTEL_PROXY_DB")
     if env:
-        if env.startswith("libsql://"):
+        if is_libsql_url(env):
             return env, "turso"
         return Path(env), "local"
+    if is_libsql_url(db_path_str):
+        return None, "unknown"
     db_path = Path(db_path_str).resolve()
     return db_path.parent / "proxy.db", "local"
 
@@ -56,6 +62,11 @@ def _resolve_proxy_source(db_path_str: str):
 def migrate(db_path: str, dry_run: bool = False) -> bool:
     proxy_source, source_type = _resolve_proxy_source(db_path)
 
+    if source_type == "unknown":
+        print("본 DB가 Turso URL인데 프록시 소스를 모른다 — 로컬 경로를 유도할 수 "
+              "없다.\nPROXY_DB_URL(구 Turso 프록시) 또는 INTEL_PROXY_DB(로컬 "
+              "proxy.db 경로)를 설정하고 다시 실행하라.")
+        return False
     if source_type == "local":
         proxy_path = Path(proxy_source)
         if not proxy_path.exists():
@@ -63,18 +74,19 @@ def migrate(db_path: str, dry_run: bool = False) -> bool:
             print("이미 이관됐거나 프록시를 사용한 적이 없다 — 할 일 없음.")
             return True
 
-    db_path_resolved = Path(db_path).resolve()
+    # 본 DB 열기 — Turso URL은 Path로 만지면 깨진다(B13). open_db가 둘 다 안다
+    db_target = db_path if is_libsql_url(db_path) else str(Path(db_path).resolve())
+    conn = open_db(db_target)
 
-    # 본 DB 열기
-    conn = open_db(str(db_path_resolved))
-    conn.execute("PRAGMA foreign_keys = ON")
-
-    # proxy 테이블이 없으면 생성 (D69 이전 스키마의 DB 지원)
-    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
-                    "AND name='proxy_defs'").fetchone() is None:
+    # proxy 표 3종 중 하나라도 없으면 생성 (D69 이전 스키마의 DB 지원 —
+    # SCHEMA_V3는 전부 IF NOT EXISTS라 있는 표는 안 건드린다)
+    missing = [t for t, _ in PROXY_TABLES if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (t,)).fetchone() is None]
+    if missing:
         from schema_v3 import SCHEMA_V3
         conn.executescript(SCHEMA_V3)
-        print("  본 DB에 proxy 테이블 생성 완료")
+        print(f"  본 DB에 없던 표 생성: {', '.join(missing)}")
 
     # 프록시 DB 열기
     if source_type == "turso":
@@ -109,6 +121,17 @@ def migrate(db_path: str, dry_run: bool = False) -> bool:
         pconn.close()
         return True
 
+    # 대상이 비어 있지 않으면 경고 — proxy_history는 id 재할당이라 재실행 시
+    # 같은 이력이 **중복 행**으로 또 들어간다(OR IGNORE로 못 거른다).
+    for table, _ in PROXY_TABLES:
+        try:
+            n = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        except sqlite3.OperationalError:
+            n = 0
+        if n:
+            print(f"  ※ 경고: 본 DB {table}에 이미 {n:,}행이 있다 — 이관을 이미 "
+                  "했다면 재실행은 중복(특히 proxy_history)을 만든다")
+
     # 데이터 복사
     print("\n── 데이터 복사 ──")
     for table, cols in PROXY_TABLES:
@@ -123,7 +146,9 @@ def migrate(db_path: str, dry_run: bool = False) -> bool:
                     f"INSERT OR IGNORE INTO {table} ({cols}) VALUES ({placeholders})",
                     tuple(row))
                 inserted += 1
-            except Exception as e:
+            except sqlite3.Error as e:
+                # OperationalError만이 아니라 제약 위반류도 보고한다 — 단,
+                # 그 외 예외(연결 끊김 등)는 삼키지 않고 위로 올린다
                 print(f"  경고: {table} 행 삽입 실패 — {e}")
         conn.commit()
         print(f"  {table:20} {inserted:>8} 행 삽입 시도")
@@ -162,7 +187,9 @@ def migrate(db_path: str, dry_run: bool = False) -> bool:
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--db", default="data/intel.db", help="본 DB 경로")
+    # 기본값은 환경변수 규약을 따른다 (INTEL_DB_URL > INTEL_DB > data/intel.db —
+    # 다른 도구와 같은 규칙. 명시적 --db가 항상 이긴다)
+    ap.add_argument("--db", default=str(default_db_target()), help="본 DB 경로 또는 libsql:// URL")
     ap.add_argument("--dry-run", action="store_true", help="실제 이관 없이 행 수만 확인")
     a = ap.parse_args()
 

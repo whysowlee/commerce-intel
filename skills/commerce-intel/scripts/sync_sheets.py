@@ -26,8 +26,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from intel_db import connect  # noqa: E402
 from schema_v3 import rowid_parts  # noqa: E402
 
-# 프록시 표 2종은 별도 DB(proxy.db — D65-8)에서 읽는다. 탭 구성은 그대로 —
-# 팀원이 보는 창구가 파일 분리 때문에 달라질 이유는 없다.
+# 프록시 표 2종도 본 DB에서 읽는다(D69 통합 — D65-8의 별도 proxy.db는 폐기).
+# 탭 구성은 분리 시절 그대로다 — 팀원이 보는 창구는 저장 위치와 무관하다.
 FULL_TABLES = ("products", "variants", "platforms", "runs",
                "brand_aliases", "brand_platforms", "proxy_defs")
 PROXY_TABLES = ("proxy_defs", "proxy_cache")
@@ -50,8 +50,8 @@ TABLE_DESC = {  # 안내 탭에 싣는 원본 탭 설명
     "brand_aliases": "브랜드 표기 별명(플랫폼별 변형). 수집이 자동 등록(candidate)",
     "brand_platforms": "브랜드-입점처 매핑. channel-scout·수집이 채운다",
     "runs": "수집 실행 이력",
-    "proxy_defs": "AI 파생 프록시 정의 (proxy.db). 프록시 사용 시 생성",
-    "proxy_cache": "프록시 판정 캐시 (proxy.db). 프록시 사용 시 생성",
+    "proxy_defs": "AI 파생 프록시 정의. 프록시 사용 시 생성",
+    "proxy_cache": "프록시 판정 캐시. 프록시 사용 시 생성",
     "product_changes": "상품 정적 속성 변경 이력(이름·브랜드·카테고리·이미지). append only",
 }
 NOTICE = ("이 스프레드시트는 로컬 정본 DB(data/intel.db)의 단방향 미러입니다. "
@@ -96,10 +96,11 @@ def fetch_tab(sh, title):
     미러가 단방향이라는 원칙은 그대로다 — 여기서 읽은 값은 정본에 쓰지 않고
     "이미 수집됐나" 판정에만 쓴다(D32).
     """
+    import gspread       # sh가 있다는 건 이미 import에 성공했다는 뜻이다
     try:
         ws = sh.worksheet(title)
-    except Exception:
-        return None
+    except gspread.exceptions.WorksheetNotFound:
+        return None      # 탭이 없는 것만 "없음"이다 — API 오류는 위로 올린다
     values = ws.get_all_values()
     if len(values) < 2:
         return []
@@ -227,9 +228,11 @@ def rebuild_tab(ws, headers, data, chunk=5000):
 
 
 def ensure_ws(sh, title, cols=26):
+    import gspread       # sh가 있다는 건 이미 import에 성공했다는 뜻이다
     try:
         return sh.worksheet(title)
-    except Exception:
+    except gspread.exceptions.WorksheetNotFound:
+        # 없을 때만 만든다 — 네트워크 오류까지 "없다"로 읽고 만들면 탭이 는다
         return sh.add_worksheet(title=title, rows=1000, cols=cols)
 
 

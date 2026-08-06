@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""v2 스키마 DB → v3 (D65). 프록시는 별도 `proxy.db`로 갈라져 나간다.
+"""v2 스키마 DB → v3 (D65). 프록시 표도 본 DB에 함께 짓는다 (D69 통합).
 
     python3 migrate_v3.py --src data/intel.db                # 이관→검산→백업→교체
     python3 migrate_v3.py --src data/intel.db --no-swap      # 새 파일만 만들고 교체 안 함
@@ -22,7 +22,7 @@
 - **attributes JSON → attr_base**: 아직 표에 없는 (pk, attr_name)만 옮긴다.
   판정 실패(null 값)는 옮기지 않는다(D35 규칙 — 재판정을 막지 않는다).
 - **discovered_for_brand → brand_platforms**: 쉼표 텍스트를 행으로 편다.
-- **proxy_defs·proxy_cache → proxy.db**: rowid 순서를 보존해 옮기고,
+- **proxy_defs·proxy_cache → 본 DB** (D69): rowid 순서를 보존해 옮기고,
   sync_state의 proxy_cache 진행점을 새 번호로 번역한다(D64와 같은 규칙 —
   새 키 = 옛 키 이하의 행 수).
 - 이관 후 PRAGMA integrity_check + foreign_key_check + ANALYZE.
@@ -32,7 +32,6 @@ import json
 import os
 import shutil
 import sqlite3
-from pathlib import Path
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -69,10 +68,12 @@ def _guard_sync_progress(dst, table, src_n, new_n):
           "다음 시트 미러가 전량 재동기화한다" % (table, src_n - new_n, src_n, new_n))
 
 
-def migrate(src_path, dst_path, proxy_path):
-    """v2 → v3 이관. **dst_path·proxy_path는 둘 다 스테이징 경로다** — 라이브
-    파일에 직접 짓지 않는다(PR #13 3R Blocker 1). 교체는 main()이 검산 통과
-    후에만 한다.
+def migrate(src_path, dst_path, proxy_path=None):
+    """v2 → v3 이관. **dst_path는 스테이징 경로다** — 라이브 파일에 직접 짓지
+    않는다(PR #13 3R Blocker 1). 교체는 main()이 검산 통과 후에만 한다.
+
+    proxy_path는 D69(프록시 본 DB 통합)로 무의미해졌다 — 프록시 표도 dst 안에
+    짓는다. 파라미터는 옛 호출부 호환으로만 남아 있고 무시된다.
     """
     src = sqlite3.connect(src_path)
     src.row_factory = sqlite3.Row
@@ -83,9 +84,8 @@ def migrate(src_path, dst_path, proxy_path):
     # 스테이징을 다시 짓고, 교체 단계가 멀쩡한 파일들을 갈아엎는다.
     if _table_exists(src, "product_categories"):
         raise SystemExit(f"{src_path}: 이미 v3다 — 이관할 것이 없다")
-    for p in (dst_path, proxy_path):
-        if os.path.exists(p):
-            os.remove(p)          # 스테이징 잔여물만 지운다 — 라이브 경로가 아니다
+    if os.path.exists(dst_path):
+        os.remove(dst_path)       # 스테이징 잔여물만 지운다 — 라이브 경로가 아니다
     dst = sqlite3.connect(dst_path)
     dst.executescript(SCHEMA_V3)
     dst.execute("PRAGMA foreign_keys = ON")
@@ -329,7 +329,7 @@ def _canon_cat(v):
     return tuple(split_category(v)) if v else v
 
 
-def verify(src_path, dst_path, proxy_path, sample=400):
+def verify(src_path, dst_path, sample=400):
     """행 수 + 값 대조. 계층으로 접은 카테고리가 그대로 도로 펴지는지가 핵심이다."""
     src = sqlite3.connect(src_path); src.row_factory = sqlite3.Row
     dst = sqlite3.connect(dst_path); dst.row_factory = sqlite3.Row
@@ -376,17 +376,19 @@ def verify(src_path, dst_path, proxy_path, sample=400):
     else:
         print("  %-22s 표본 전 컬럼 값 일치 (run_id 연결 포함)" % "observations")
 
-    if _table_exists(src, "proxy_cache") and os.path.exists(proxy_path):
-        px = sqlite3.connect(proxy_path)
+    # 프록시도 본 DB 안이다 (D69) — dst에서 바로 센다
+    if _table_exists(src, "proxy_cache"):
         a = src.execute("SELECT COUNT(*) FROM proxy_cache WHERE proxy_name IN "
                         "(SELECT proxy_name FROM proxy_defs)").fetchone()[0]
-        b = px.execute("SELECT COUNT(*) FROM proxy_cache").fetchone()[0]
-        print("  %-22s v2 %8s → proxy.db %8s  %s"
+        b = dst.execute("SELECT COUNT(*) FROM proxy_cache").fetchone()[0]
+        print("  %-22s v2 %8s → v3 %8s  %s"
               % ("proxy_cache", "{:,}".format(a), "{:,}".format(b),
                  "OK" if a == b else "!! 불일치"))
         if a != b:
             ok = False
-        src.close(); dst.close()
+    # close는 조건과 무관하다 — if 안에 두면 대부분의 실행에서 안 닫힌다 (PR #16 B11)
+    src.close()
+    dst.close()
     return ok
 
 
@@ -394,20 +396,16 @@ def main():
     ap = argparse.ArgumentParser(description="v2 → v3 이관 (D65)")
     ap.add_argument("--src", default="data/intel.db")
     ap.add_argument("--dst", default=None, help="기본 <src 폴더>/intel-v3.db")
-    ap.add_argument("--proxy", default=None, help="기본 <src 폴더>/proxy.db")
     ap.add_argument("--no-swap", action="store_true",
                     help="검산이 통과해도 교체하지 않고 새 파일만 남긴다")
     ap.add_argument("--verify-only", action="store_true")
     a = ap.parse_args()
     dst = a.dst or os.path.join(os.path.dirname(a.src) or ".", "intel-v3.db")
-    # 프록시도 메인과 같은 패턴이다 (3R Blocker 1): **스테이징에 짓고** 검산
-    # 통과 시에만 교체한다. 라이브 proxy.db에 직접 쓰면 중간 실패가 원본을 지운다.
-    # D69: proxy.db 분리 폐기 — 기존 proxy.db가 있으면 migrate_proxy_merge.py로 이관
-    proxy_final = a.proxy or str(Path(a.src).parent / "proxy.db")
-    proxy_staging = proxy_final + ".staging"
+    # D69: 프록시 표는 본 DB(dst) 안에 함께 지어진다 — 별도 스테이징·교체 없음.
+    # D65-8 시절의 기존 proxy.db가 남아 있으면 migrate_proxy_merge.py로 합친다.
 
     if not a.verify_only:
-        rep = migrate(a.src, dst, proxy_staging)
+        rep = migrate(a.src, dst)
         print("── 이관 ──")
         for k, v in rep.items():
             print("  %-22s %s" % (k, "{:,}".format(v)))
@@ -415,26 +413,20 @@ def main():
             print("  ※ 정의 없는 판정 %d건은 옮기지 않았다 (proxy_defs에 카드가 없다)"
                   % rep["proxy_cache_orphan"])
     print("── 검산 ──")
-    # --verify-only는 교체 후 재검산 용도다 — 스테이징이 남아 있으면 그걸,
-    # 없으면(이미 교체됨) 최종 경로를 본다
-    proxy_check = proxy_staging if os.path.exists(proxy_staging) else proxy_final
-    ok = verify(a.src, dst, proxy_check)
-    for p, label in ((a.src, "v2"), (dst, "v3"), (proxy_check, "px")):
+    ok = verify(a.src, dst)
+    for p, label in ((a.src, "v2"), (dst, "v3")):
         if os.path.exists(p):
             print("  %s %8.2f MB" % (label, os.path.getsize(p) / 1048576))
     if not ok:
-        print("검산 실패 — 교체하지 않는다 (스테이징: %s, %s)" % (dst, proxy_staging))
+        print("검산 실패 — 교체하지 않는다 (스테이징: %s)" % dst)
         return 1
     if a.verify_only or a.no_swap:
-        print("검산 통과 (교체 안 함 — 스테이징: %s, %s)" % (dst, proxy_staging))
+        print("검산 통과 (교체 안 함 — 스테이징: %s)" % dst)
         return 0
     backup = a.src + ".v2-backup"
     shutil.copy2(a.src, backup)                     # 자동 백업 (D65-10)
     os.replace(dst, a.src)
-    if os.path.exists(proxy_final):                 # 재실행 등으로 이미 있으면 보존
-        shutil.copy2(proxy_final, proxy_final + ".pre-v3-backup")
-    os.replace(proxy_staging, proxy_final)
-    print("검산 통과 — 백업 %s, 교체 완료: %s (+ %s)" % (backup, a.src, proxy_final))
+    print("검산 통과 — 백업 %s, 교체 완료: %s" % (backup, a.src))
     return 0
 
 
