@@ -94,8 +94,6 @@ def migrate(src_path, dst_path, proxy_path=None):
     # ① 사전 — id를 그대로 보존한다 (참조가 번역 없이 성립하게)
     dst.executemany("INSERT INTO sites (site_id, name) VALUES (?,?)",
                     src.execute("SELECT site_id, name FROM sites").fetchall())
-    dst.executemany("INSERT INTO hosts (host_id, prefix) VALUES (?,?)",
-                    src.execute("SELECT host_id, prefix FROM hosts").fetchall())
     dst.executemany("INSERT INTO brands (brand_id, representative_name) VALUES (?,?)",
                     src.execute("SELECT brand_id, name FROM brands").fetchall())
     # contexts는 CHECK(접두사 4종)를 새로 통과해야 한다 — 위반은 **조용히 못 넘어간다**
@@ -132,14 +130,18 @@ def migrate(src_path, dst_path, proxy_path=None):
     #    그래야 "JSON에서 새로 온 것" 건수가 부풀지 않는다
     n_prod = n_map = 0
     json_attrs = []
+    # v2 product_base에서 URL 복원 — hosts 테이블의 prefix + url_path (D70)
+    host_map = {r["host_id"]: r["prefix"] for r in src.execute(
+        "SELECT host_id, prefix FROM hosts")}
     for r in src.execute("SELECT * FROM product_base ORDER BY pk"):
+        url = (host_map.get(r["url_host"], '') + (r["url_path"] or '')) or None
+        img = (host_map.get(r["img_host"], '') + (r["img_path"] or '')) or None
         dst.execute(
-            "INSERT INTO product_base (pk, site_id, product_id, name, url_host,"
-            " url_path, img_host, img_path, brand_id, static_verified_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (r["pk"], r["site_id"], r["product_id"], r["name"], r["url_host"],
-             r["url_path"], r["img_host"], r["img_path"], r["brand_id"],
-             r["static_verified_at"]))
+            "INSERT INTO product_base (pk, site_id, product_id, name, url,"
+            " image_url, brand_id, static_verified_at)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            (r["pk"], r["site_id"], r["product_id"], r["name"], url,
+             img, r["brand_id"], r["static_verified_at"]))
         n_prod += 1
         leaf = leaf_of.get(r["category_id"])
         if leaf is not None:

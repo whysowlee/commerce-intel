@@ -597,6 +597,19 @@ def collect(db_path, contexts):
                 conn.execute(
                     "INSERT OR IGNORE INTO proxy_cache VALUES (?,?,?,?,?,?,?)",
                     (pn, it["site"], str(it["product_id"]), fp, val, basis, now))
+                # D70: 판정과 동시에 product_attributes에도 저장 — proxy_cache만
+                # 읽는 collect() 경로와 product_attributes를 읽는 intel-query·
+                # reuse-attrs·시트 경로가 같은 값을 본다. 뷰 트리거가 pk 조회와
+                # attr_history 기록을 처리한다.
+                try:
+                    conn.execute(
+                        "INSERT INTO product_attributes (site, product_id, "
+                        "attr_name, value, basis, decided_at) VALUES (?,?,?,?,?,?)",
+                        (it["site"], str(it["product_id"]),
+                         "px_" + pn, str(val) if val is not None else None,
+                         basis, now))
+                except Exception:
+                    pass  # pk 미등록 — proxy_cache만 남는다
                 cache[k] = (fp, val)
                 wrote += 1
             if wrote:

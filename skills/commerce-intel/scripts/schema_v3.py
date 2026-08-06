@@ -87,10 +87,6 @@ CREATE TABLE IF NOT EXISTS categories (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_cat_root ON categories (name)
     WHERE parent_category_id IS NULL;
 
--- URL 앞부분(스킴+호스트)만 접는다. 뒤 경로는 상품마다 달라 접을 게 없다.
-CREATE TABLE IF NOT EXISTS hosts (
-    host_id INTEGER PRIMARY KEY, prefix TEXT NOT NULL UNIQUE);
-
 -- 수집 이력 (D65-7). v2는 run_id TEXT가 PK였고 관측이 rowid를 비공식 참조했다
 -- (선언된 PK/UNIQUE만 FK 대상이라 제약을 못 걸었다). 정수 id를 선언해 정식 FK로.
 CREATE TABLE IF NOT EXISTS runs (
@@ -121,8 +117,8 @@ CREATE TABLE IF NOT EXISTS product_base (
     site_id INTEGER NOT NULL REFERENCES sites(site_id),
     product_id TEXT NOT NULL,
     name TEXT,
-    url_host INTEGER REFERENCES hosts(host_id), url_path TEXT,
-    img_host INTEGER REFERENCES hosts(host_id), img_path TEXT,
+    url TEXT,
+    image_url TEXT,
     brand_id INTEGER REFERENCES brands(brand_id),
     static_verified_at INTEGER,
     UNIQUE (site_id, product_id));
@@ -460,10 +456,8 @@ VIEWS_V3 = """
 DROP VIEW IF EXISTS products;
 CREATE VIEW products AS
 SELECT s.name AS site, p.product_id, p.name AS name,
-       CASE WHEN p.url_path IS NULL THEN NULL
-            ELSE COALESCE(hu.prefix,'') || p.url_path END AS url,
-       CASE WHEN p.img_path IS NULL THEN NULL
-            ELSE COALESCE(hi.prefix,'') || p.img_path END AS image_url,
+       p.url,
+       p.image_url,
        b.representative_name AS brand,
        CASE WHEN c0.category_id IS NULL THEN NULL ELSE
             COALESCE(c4.name || ' > ','') || COALESCE(c3.name || ' > ','') ||
@@ -483,8 +477,7 @@ LEFT JOIN categories c1 ON c1.category_id = c0.parent_category_id
 LEFT JOIN categories c2 ON c2.category_id = c1.parent_category_id
 LEFT JOIN categories c3 ON c3.category_id = c2.parent_category_id
 LEFT JOIN categories c4 ON c4.category_id = c3.parent_category_id
-LEFT JOIN hosts hu ON hu.host_id = p.url_host
-LEFT JOIN hosts hi ON hi.host_id = p.img_host;
+;
 
 DROP VIEW IF EXISTS observations;
 CREATE VIEW observations AS
@@ -570,37 +563,23 @@ JOIN sites s ON s.site_id = p.site_id;
 #     경로에서 대표명으로 바꿔 온다
 #   - first_seen_at·last_seen_at·raw_extras·attributes는 컬럼 자체가 없다
 
-# URL을 스킴+호스트 / 경로로 자르는 식 — 파이썬 split_url()과 같은 규칙 (E-DB-17)
-_EMPTY = "COALESCE({u},'')=''"
-_I = "instr({u},'//')"
-_K = "instr(substr({u},instr({u},'//')+2),'/')"
-_HOST = ("CASE WHEN %s THEN NULL WHEN %s=0 THEN '' WHEN %s=0 THEN {u} "
-         "ELSE substr({u},1,%s+%s) END" % (_EMPTY, _I, _K, _I, _K))
-_PATH = ("CASE WHEN %s THEN NULL WHEN %s=0 THEN {u} WHEN %s=0 THEN '' "
-         "ELSE substr({u},%s+%s+1) END" % (_EMPTY, _I, _K, _I, _K))
-
 TRIGGERS_V3 = """
 DROP TRIGGER IF EXISTS trg_products_ins;
 CREATE TRIGGER trg_products_ins INSTEAD OF INSERT ON products BEGIN
   INSERT OR IGNORE INTO sites(name) VALUES (NEW.site);
   INSERT OR IGNORE INTO brands(representative_name)
     SELECT NEW.brand WHERE NEW.brand IS NOT NULL;
-  INSERT OR IGNORE INTO hosts(prefix) SELECT %(uh)s WHERE COALESCE(NEW.url,'')<>'';
-  INSERT OR IGNORE INTO hosts(prefix) SELECT %(ih)s WHERE COALESCE(NEW.image_url,'')<>'';
-  INSERT INTO product_base (site_id, product_id, name, url_host, url_path,
-      img_host, img_path, brand_id, static_verified_at)
+  INSERT INTO product_base (site_id, product_id, name, url, image_url,
+      brand_id, static_verified_at)
   VALUES (
     (SELECT site_id FROM sites WHERE name=NEW.site), NEW.product_id, NEW.name,
-    (SELECT host_id FROM hosts WHERE prefix=%(uh)s), %(up)s,
-    (SELECT host_id FROM hosts WHERE prefix=%(ih)s), %(ip)s,
+    NEW.url, NEW.image_url,
     (SELECT brand_id FROM brands WHERE representative_name=NEW.brand),
-    CAST(strftime('%%s',NEW.static_verified_at) AS INTEGER))
+    CAST(strftime('%s',NEW.static_verified_at) AS INTEGER))
   ON CONFLICT(site_id, product_id) DO UPDATE SET
     name=COALESCE(excluded.name, name),
-    url_host=COALESCE(excluded.url_host, url_host),
-    url_path=COALESCE(excluded.url_path, url_path),
-    img_host=COALESCE(excluded.img_host, img_host),
-    img_path=COALESCE(excluded.img_path, img_path),
+    url=COALESCE(excluded.url, url),
+    image_url=COALESCE(excluded.image_url, image_url),
     brand_id=COALESCE(excluded.brand_id, brand_id),
     static_verified_at=COALESCE(excluded.static_verified_at, static_verified_at);
 END;
@@ -609,14 +588,11 @@ DROP TRIGGER IF EXISTS trg_products_upd;
 CREATE TRIGGER trg_products_upd INSTEAD OF UPDATE ON products BEGIN
   INSERT OR IGNORE INTO brands(representative_name)
     SELECT NEW.brand WHERE NEW.brand IS NOT NULL;
-  INSERT OR IGNORE INTO hosts(prefix) SELECT %(uh)s WHERE COALESCE(NEW.url,'')<>'';
-  INSERT OR IGNORE INTO hosts(prefix) SELECT %(ih)s WHERE COALESCE(NEW.image_url,'')<>'';
   UPDATE product_base SET
     name=NEW.name,
-    url_host=(SELECT host_id FROM hosts WHERE prefix=%(uh)s), url_path=%(up)s,
-    img_host=(SELECT host_id FROM hosts WHERE prefix=%(ih)s), img_path=%(ip)s,
+    url=NEW.url, image_url=NEW.image_url,
     brand_id=(SELECT brand_id FROM brands WHERE representative_name=NEW.brand),
-    static_verified_at=CAST(strftime('%%s',NEW.static_verified_at) AS INTEGER)
+    static_verified_at=CAST(strftime('%s',NEW.static_verified_at) AS INTEGER)
   WHERE pk = (SELECT p.pk FROM product_base p JOIN sites s ON s.site_id=p.site_id
               WHERE s.name=OLD.site AND p.product_id=OLD.product_id);
 END;
@@ -637,7 +613,7 @@ CREATE TRIGGER trg_obs_ins INSTEAD OF INSERT ON observations BEGIN
   VALUES (
     (SELECT p.pk FROM product_base p JOIN sites s ON s.site_id=p.site_id
      WHERE s.name=NEW.site AND p.product_id=NEW.product_id),
-    CAST(strftime('%%s',NEW.observed_at) AS INTEGER),
+    CAST(strftime('%s',NEW.observed_at) AS INTEGER),
     (SELECT context_id FROM contexts WHERE name=NEW.context),
     (SELECT id FROM runs WHERE run_id=NEW.run_id),
     NEW.price_original, NEW.price_sale, NEW.discount_rate, NEW.review_count, NEW.rating,
@@ -670,7 +646,7 @@ CREATE TRIGGER trg_vobs_ins INSTEAD OF INSERT ON variant_observations BEGIN
     (SELECT v.vk FROM variant_base v JOIN product_base p ON p.pk=v.pk
      JOIN sites s ON s.site_id=p.site_id
      WHERE s.name=NEW.site AND p.product_id=NEW.product_id AND v.option_id=NEW.option_id),
-    CAST(strftime('%%s',NEW.observed_at) AS INTEGER),
+    CAST(strftime('%s',NEW.observed_at) AS INTEGER),
     NEW.sold_out, NEW.stock_qty, NEW.stock_display, NEW.stock_basis,
     (SELECT id FROM runs WHERE run_id=NEW.run_id));
 END;
@@ -694,7 +670,7 @@ CREATE TRIGGER trg_attr_ins INSTEAD OF INSERT ON product_attributes BEGIN
     (SELECT p.pk FROM product_base p JOIN sites s ON s.site_id=p.site_id
      WHERE s.name=NEW.site AND p.product_id=NEW.product_id),
     NEW.attr_name, NEW.value, NEW.basis,
-    CAST(strftime('%%s',NEW.decided_at) AS INTEGER), NEW.ttl_days)
+    CAST(strftime('%s',NEW.decided_at) AS INTEGER), NEW.ttl_days)
   -- COALESCE를 쓰지 않는다: set-attrs는 `ttl_days=NULL`을 **의도적으로** 넣어
   -- 전역 --ttl-days가 먹게 한다(E-DB-8).
   ON CONFLICT(pk, attr_name) DO UPDATE SET
@@ -714,13 +690,12 @@ CREATE TRIGGER trg_attr_upd INSTEAD OF UPDATE ON product_attributes BEGIN
                 WHERE s.name=OLD.site AND p.product_id=OLD.product_id)
     AND a.value IS NOT NEW.value;
   UPDATE attr_base SET value=NEW.value, basis=NEW.basis,
-    decided_at=CAST(strftime('%%s',NEW.decided_at) AS INTEGER), ttl_days=NEW.ttl_days
+    decided_at=CAST(strftime('%s',NEW.decided_at) AS INTEGER), ttl_days=NEW.ttl_days
   WHERE attr_name=OLD.attr_name AND pk=(
     SELECT p.pk FROM product_base p JOIN sites s ON s.site_id=p.site_id
     WHERE s.name=OLD.site AND p.product_id=OLD.product_id);
 END;
-""" % {"uh": _HOST.format(u="NEW.url"), "up": _PATH.format(u="NEW.url"),
-       "ih": _HOST.format(u="NEW.image_url"), "ip": _PATH.format(u="NEW.image_url")}
+"""
 
 
 # ── 사전 조회 (적재 경로가 쓴다) ────────────────────────────────────────────
@@ -857,19 +832,6 @@ def category_path_map(conn):
     return out
 
 
-def split_url(conn, url, cache):
-    """URL을 (호스트 id, 나머지 경로)로 나눈다. 규칙은 트리거 SQL과 글자 그대로
-    같아야 한다(E-DB-17)."""
-    if not url:
-        return None, None
-    s = str(url)
-    i = s.find("//")
-    if i < 0:                       # 스킴이 없다 — 접을 호스트가 없다
-        return _dim(conn, "hosts", "host_id", "prefix", "", cache), s
-    j = s.find("/", i + 2)
-    if j < 0:                       # `https://cdn.x.com` — 경로가 없다. 전체가 호스트
-        return _dim(conn, "hosts", "host_id", "prefix", s, cache), ""
-    return _dim(conn, "hosts", "host_id", "prefix", s[:j], cache), s[j:]
 
 
 # ── 프록시 전이 이력·무효화 (D68) ──────────────────────────────────────────

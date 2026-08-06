@@ -30,7 +30,7 @@ BATCH = 5000
 # 부모가 먼저 온다(ensure_category_path가 부모부터 만들어 id가 항상 작다).
 INTEL_ORDER = [
     ("sites", "site_id"), ("contexts", "context_id"), ("brands", "brand_id"),
-    ("hosts", "host_id"), ("categories", "category_id"),
+    ("categories", "category_id"),
     ("brand_aliases", "alias_id"), ("runs", "id"), ("platforms", "rowid"),
     ("brand_platforms", "rowid"),
     ("product_base", "pk"), ("product_categories", "rowid"),
