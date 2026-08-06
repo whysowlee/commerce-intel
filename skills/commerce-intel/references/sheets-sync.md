@@ -15,8 +15,8 @@ python3 scripts/sync_sheets.py     # DB 적재(load) 뒤에 호출한다
 - `products`·`variants`·`platforms`·`runs`·`brand_aliases`·`brand_platforms`·
   `proxy_defs` 탭은 전체 다시 쓰기, `observations`·`variant_observations`·
   `proxy_cache` 탭은 rowid 기준 증분 append(`sync_state`가 진행점을 기억 —
-  중복 append 없음). 프록시 2종은 별도 `data/proxy.db`에서 읽는다(D65-8) —
-  탭 구성은 파일 분리와 무관하게 그대로다.
+  중복 append 없음). 프록시 2종도 본 DB에서 읽는다(D69 — proxy.db 분리 폐기).
+  탭 구성은 그대로다.
 - **스토리별 뷰 탭 3개** — `뷰_라인시트`(brand:) · `뷰_전수조사`(market:) ·
   `뷰_랭킹`(ranking:). context 접두사로 걸러 **상품별 최신 관측**을 사람이 읽는 헤더로
   낸다. **context 열이 앞쪽(2열)에 있어** 스토리 안의 세부 대상(랭킹 카테고리·브랜드명)은

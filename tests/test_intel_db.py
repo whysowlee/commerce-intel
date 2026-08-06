@@ -901,6 +901,18 @@ def blocker3r_tests():
     src.execute("CREATE TABLE sync_state (table_name TEXT PRIMARY KEY,"
                 " last_synced_key TEXT, updated_at TEXT)")
     src.execute("INSERT INTO sync_state VALUES ('observations', '0', 'x')")
+    # D69: v2 정본 안의 프록시 표 — 이관이 데이터까지 본 DB(dst)로 옮기는지 본다
+    src.execute("CREATE TABLE proxy_defs (proxy_name TEXT PRIMARY KEY, question TEXT,"
+                " material TEXT, value_space TEXT, method TEXT, rules TEXT,"
+                " created_at TEXT)")
+    src.execute("CREATE TABLE proxy_cache (proxy_name TEXT, site TEXT,"
+                " product_id TEXT, fingerprint TEXT, value TEXT, basis TEXT,"
+                " judged_at TEXT)")
+    src.execute("INSERT INTO proxy_defs (proxy_name, question, material, value_space,"
+                " method, created_at) VALUES ('name_lang','언어?','name',"
+                "'[\"한국어\",\"영문\"]','rule','2026-08-05')")
+    src.execute("INSERT INTO proxy_cache VALUES ('name_lang','musinsa','P1','OLD',"
+                "'영문','rule','2026-08-05 09:00:00')")
     src.commit(); src.close()
     # D69: proxy.db 분리 폐기 — 프록시 표는 이관된 본 DB 안에 생긴다
     live_proxy = work / "proxy.db"  # 레거시 경로, 테스트용
@@ -910,10 +922,15 @@ def blocker3r_tests():
     out = sqlite3.connect(str(work / "v2-out.db"))
     out_tables = {r[0] for r in out.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
+    n_defs = out.execute("SELECT COUNT(*) FROM proxy_defs").fetchone()[0]
+    n_cache = out.execute("SELECT COUNT(*) FROM proxy_cache").fetchone()[0]
     out.close()
-    check("E-MG-2 D69: proxy 테이블이 본 DB에 존재한다",
-          {"proxy_defs", "proxy_cache", "proxy_history"} <= out_tables,
-          sorted(t for t in out_tables if t.startswith("proxy")))
+    check("E-MG-2 D69: proxy 표와 데이터가 본 DB로 이관된다",
+          {"proxy_defs", "proxy_cache", "proxy_history"} <= out_tables
+          and n_defs == 1 and n_cache == 1,
+          "defs=%d cache=%d %s" % (n_defs, n_cache,
+                                   sorted(t for t in out_tables
+                                          if t.startswith("proxy"))))
     check("E-MG-2b 레거시 proxy.db 파일은 이관이 건드리지 않는다",
           live_proxy.read_text() == "살아있는 프록시 — 이관이 건드리면 안 된다")
 
@@ -929,7 +946,7 @@ def blocker3r_tests():
     check("E-MG-3b 드롭이 있으면 진행점 리셋 — 다음 미러가 전량 재동기화 (Blocker 3)",
           g.execute("SELECT last_synced_key FROM sync_state").fetchone()[0] is None)
 
-    # ── B4: 정본이 Turso인데 프록시 URL이 없으면 proxy_auto가 명시적으로 죽는다
+    # ── B4(D69 개정): 닿지 않는 Turso 정본이면 proxy_auto가 조용히 성공하지 않고 죽는다
     cards_f = work / "cards.json"
     cards_f.write_text(json.dumps([{"proxy_name": "t", "material": "name",
                                     "method": "rule", "value_space": ["a"],

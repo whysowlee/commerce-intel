@@ -59,7 +59,7 @@ def _resolve_proxy_source(db_path_str: str):
     return db_path.parent / "proxy.db", "local"
 
 
-def migrate(db_path: str, dry_run: bool = False) -> bool:
+def migrate(db_path: str, dry_run: bool = False, force: bool = False) -> bool:
     proxy_source, source_type = _resolve_proxy_source(db_path)
 
     if source_type == "unknown":
@@ -121,16 +121,23 @@ def migrate(db_path: str, dry_run: bool = False) -> bool:
         pconn.close()
         return True
 
-    # 대상이 비어 있지 않으면 경고 — proxy_history는 id 재할당이라 재실행 시
+    # 대상이 비어 있지 않으면 막는다 — proxy_history는 id 재할당이라 재실행 시
     # 같은 이력이 **중복 행**으로 또 들어간다(OR IGNORE로 못 거른다).
+    # 경고 출력은 잃기 쉽다 — --force 없이는 하드 가드로 종료한다(리뷰 반영).
     for table, _ in PROXY_TABLES:
         try:
             n = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         except sqlite3.OperationalError:
             n = 0
+        if n and table == "proxy_history" and not force:
+            print(f"  ✖ 중단: 본 DB {table}에 이미 {n:,}행이 있다 — 재실행은 같은 "
+                  "이력을 중복 적재한다(id 재할당이라 OR IGNORE가 못 거른다).\n"
+                  "    중복을 감수하고 이관하려면 --force를 붙여라.")
+            pconn.close()
+            return False
         if n:
             print(f"  ※ 경고: 본 DB {table}에 이미 {n:,}행이 있다 — 이관을 이미 "
-                  "했다면 재실행은 중복(특히 proxy_history)을 만든다")
+                  "했다면 재실행은 중복을 만든다")
 
     # 데이터 복사
     print("\n── 데이터 복사 ──")
@@ -191,9 +198,11 @@ def main():
     # 다른 도구와 같은 규칙. 명시적 --db가 항상 이긴다)
     ap.add_argument("--db", default=str(default_db_target()), help="본 DB 경로 또는 libsql:// URL")
     ap.add_argument("--dry-run", action="store_true", help="실제 이관 없이 행 수만 확인")
+    ap.add_argument("--force", action="store_true",
+                    help="본 DB proxy_history에 이미 행이 있어도 이관 (중복 감수)")
     a = ap.parse_args()
 
-    success = migrate(a.db, dry_run=a.dry_run)
+    success = migrate(a.db, dry_run=a.dry_run, force=a.force)
     sys.exit(0 if success else 1)
 
 

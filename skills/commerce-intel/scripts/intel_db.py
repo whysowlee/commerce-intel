@@ -116,9 +116,8 @@ def connect(db_path):
                if ver == 2 else
                "  python3 skills/commerce-intel/scripts/migrate_v2.py --src %s --dst <v2>\n"
                "  python3 skills/commerce-intel/scripts/migrate_v3.py --src <v2>" % db_path))
-    # FK는 커넥션 설정이다 — 매번 켠다. 뷰·트리거도 매번 다시 만든다(멱등) —
-    # 스크립트가 갱신되면 곧바로 반영된다.
-    conn.execute("PRAGMA foreign_keys = ON")
+    # FK는 open_db()가 모든 커넥션에 켠다(B2·B7) — 여기서 또 켜지 않는다.
+    # 뷰·트리거는 매번 다시 만든다(멱등) — 스크립트가 갱신되면 곧바로 반영된다.
     conn.executescript(VIEWS_V3)
     conn.executescript(TRIGGERS_V3)
     conn.commit()
