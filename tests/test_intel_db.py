@@ -931,7 +931,7 @@ def blocker3r_tests():
           "defs=%d cache=%d %s" % (n_defs, n_cache,
                                    sorted(t for t in out_tables
                                           if t.startswith("proxy"))))
-    check("E-MG-2b 레거시 proxy.db 파일은 이관이 건드리지 않는다",
+    check("E-MG-2b 프록시 경로 인자를 넘겨도 무시되고 레거시 파일은 안 건드린다 (D69)",
           live_proxy.read_text() == "살아있는 프록시 — 이관이 건드리면 안 된다")
 
     # ── B3: 이관에서 행이 떨어지면 그 표의 미러 진행점을 리셋한다
@@ -954,19 +954,27 @@ def blocker3r_tests():
                        encoding="utf-8")
     env = {k: v for k, v in os.environ.items()
            if k not in ("PROXY_DB_URL", "INTEL_PROXY_DB")}  # D69: 이 변수들은 폐기됨
-    r = subprocess.run([sys.executable, str(SCRIPTS / "proxy_auto.py"),
-                        "--db", "libsql://fake.turso.io", "--cards", str(cards_f),
-                        "--out", str(work / "o.json")],
-                       capture_output=True, text=True, env=env)
     # D69: PROXY_DB_URL 가드 폐기 — 프록시는 정본 안이다. 남는 계약은
     # "닿지 않는 Turso 정본이면 조용히 성공(임시 DB 판정)하지 않고 죽는다"다.
-    # 실패 사유가 libsql/Turso 경로인지도 본다 — 무관한 이유(모듈 미설치 등)로
-    # 죽어도 통과하면 회귀가 무력화된다(리뷰 반영).
-    _pa13_out = (r.stdout + r.stderr)
-    check("E-PA-13 닿지 않는 Turso 정본이면 임시 DB로 새지 않고 죽는다 (Blocker 4·D69 개정)",
-          r.returncode != 0 and not (work / "o.json").exists()
-          and ("libsql" in _pa13_out.lower() or "turso" in _pa13_out.lower()),
-          "exit=%d %s" % (r.returncode, _pa13_out[:80]))
+    # 드라이버 미설치 환경은 건너난다 — ModuleNotFoundError로 죽어도 통과하면
+    # 회귀가 무력화된다(리뷰 반영 — 부분 문자열 매칭도 같은 이유로 버렸다).
+    try:
+        import libsql_experimental  # noqa: F401
+        _has_libsql = True
+    except ImportError:
+        _has_libsql = False
+    if _has_libsql:
+        r = subprocess.run([sys.executable, str(SCRIPTS / "proxy_auto.py"),
+                            "--db", "libsql://fake.turso.io", "--cards", str(cards_f),
+                            "--out", str(work / "o.json")],
+                           capture_output=True, text=True, env=env)
+        _pa13_out = (r.stdout + r.stderr)
+        check("E-PA-13 닿지 않는 Turso 정본이면 임시 DB로 새지 않고 죽는다 (Blocker 4·D69 개정)",
+              r.returncode != 0 and not (work / "o.json").exists()
+              and "ModuleNotFoundError" not in _pa13_out,
+              "exit=%d %s" % (r.returncode, _pa13_out[:80]))
+    else:
+        print("  SKIP  E-PA-13 (libsql_experimental 미설치 — Turso 경로 검증 불가)")
 
     # ── B5: 깨진 카드 규칙이 collect()를 죽이지 않는다 (lazy 판정 격리)
     lzdb = str(work / "lz.db")
