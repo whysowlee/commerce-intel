@@ -1,12 +1,10 @@
 ---
 name: intel-query
 description: >-
-  commerce-intel 정본 DB(Turso)를 자연어로 조회하고, 커머스 플랫폼에서
-  상품·랭킹 데이터를 수집·적재한다. 조회 예시 — "무신사에서 우리 브랜드 순위
-  변동 보여줘", "할인율 20% 이상인 상품", "품절된 옵션 몇 개야" (자연어를
-  SELECT로 바꿔 Turso HTTP API 읽기 전용 실행, 표·요약·차트로 답한다).
-  수집 예시 — "무신사에서 2000아카이브스 수집해줘", "여성 바지 랭킹 수집"
-  (레포의 플랫폼 어댑터를 따라 수집하고 Python 파이프라인으로 적재한다).
+  commerce-intel 정본 DB(Turso)를 자연어로 조회·편집하고, 커머스 플랫폼에서
+  상품·랭킹 데이터를 수집·적재한다. 조회 — "무신사에서 우리 브랜드 순위
+  변동 보여줘". 편집 — "이 상품 삭제해줘", "브랜드명 수정해줘".
+  수집 — "무신사에서 2000아카이브스 수집해줘".
 metadata:
   version: 1.1.0
   db-schema: v3 (D65)
@@ -28,7 +26,8 @@ commerce-intel DB(Turso)를 자연어 질문으로 조회하는 스킬.
 환경변수 또는 아래 상수 교체로 지정한다:
 
 - `INTEL_DB_URL`: Turso DB URL (예: `libsql://commerce-intel-xxx.turso.io`)
-- `INTEL_DB_TOKEN`: **읽기 전용** 토큰 (발급 시 read-only로 만든 것)
+- `INTEL_DB_TOKEN`: **읽기 전용** 토큰 (조회용, SKILL.md에 포함)
+- `INTEL_DB_WRITE_TOKEN`: **쓰기** 토큰 (편집용, 환경변수에서 가져옴. SKILL.md에 넣지 않는다)
 
 ## 쿼리 실행 방법
 
@@ -36,15 +35,14 @@ REPL에서 Turso HTTP API로 직접 쿼리한다. HTTP 엔드포인트는 `libsq
 `https://`로 바꾼 호스트다:
 
 ```js
-async function queryDB(sql) {
-  const TURSO_URL = "https://commerce-intel-whysowlee.aws-ap-northeast-1.turso.io";
-  const TURSO_TOKEN = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicm8iLCJpYXQiOjE3ODU5MTQ4NDcsImlkIjoiMDE5ZmQwZDEtNTMwMS03NWM1LWE5OTUtNzZiNDk1NjI1ZWQ5Iiwia2lkIjoiXzZ1TjlGNnZkdW1XVVg1SkRUTXZQMV9qZVRpNDJrWTRxWHhNVFRFMm1hUSIsInJpZCI6Ijk4MjRhZDY1LTZhNDctNDQwZC04MmZmLTcxNmYyNzQ0NTg2MiJ9.ASxX32Y4MYVRt_aSTMulxAYENqOQFdvuzZUZ8asF1ZgnAvQr-uj4U53H9CjUXi0Jypw1lk4QiUTiYLiPUS1lCQ";
+const TURSO_URL = "https://commerce-intel-whysowlee.aws-ap-northeast-1.turso.io";
+const READ_TOKEN = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicm8iLCJpYXQiOjE3ODU5Mjk1NDgsImlkIjoiMDE5ZmQxYjItMzcwMS03ZDA0LWIzMzktMWVmNTBiMmI5ZDdjIiwia2lkIjoiXzZ1TjlGNnZkdW1XVVg1SkRUTXZQMV9qZVRpNDJrWTRxWHhNVFRFMm1hUSIsInJpZCI6IjFmYjkwMTc5LTBhMjctNGNiOC1hMmFjLWFiZjVlZWFlY2Y4NCJ9.7FHxK8iyIzf1HRPMi2_HL3WqgDZ_37ks5VfWHERC1GVimaKWyzI2_cEAWl1sXnwkySsW2DspjXVRuPqOI6AZAg";
 
-  const base = TURSO_URL.replace(/^libsql:\/\//, "https://");
-  const res = await fetch(`${base}/v2/pipeline`, {
+async function queryDB(sql) {
+  const res = await fetch(`${TURSO_URL}/v2/pipeline`, {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${TURSO_TOKEN}`,
+      "Authorization": `Bearer ${READ_TOKEN}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
@@ -67,6 +65,28 @@ async function queryDB(sql) {
     return cell.value;
   }));
   return { cols, rows, rowCount: rows.length };
+}
+
+async function writeDB(sql) {
+  const writeToken = process.env.INTEL_DB_WRITE_TOKEN;
+  if (!writeToken) throw new Error('쓰기 토큰이 없습니다. ~/.config/intel/env에 INTEL_DB_WRITE_TOKEN을 설정하세요.');
+  const res = await fetch(`${TURSO_URL}/v2/pipeline`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${writeToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      requests: [
+        { type: "execute", stmt: { sql } },
+        { type: "close" }
+      ]
+    })
+  });
+  const data = await res.json();
+  const r0 = data.results[0];
+  if (r0.type === "error") throw new Error(r0.error.message);
+  return r0.response.result;
 }
 ```
 
@@ -124,11 +144,21 @@ async function queryDB(sql) {
 
 ## 안전 규칙 (필수 준수)
 
-1. **SELECT만 실행한다.** INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, ATTACH, PRAGMA 등 쓰기/변경 구문을 절대 실행하지 않는다. 사용자가 "이 값 고쳐줘"라고 해도 정본 수정은 이 스킬의 일이 아니다 — 수집·적재 파이프라인(commerce-intel)으로 안내한다.
-2. **LIMIT을 반드시 포함한다.** 기본 50행. 사용자가 더 요청하면 최대 200행. LIMIT 없는 쿼리를 실행하지 않는다.
-3. **대량 결과 안내**: 결과가 LIMIT에 걸리면 COUNT 쿼리를 별도 실행해서 "전체 N건 중 M건을 표시합니다" 형태로 안내한다 — 조용히 잘리면 사용자는 "이게 전부"로 읽는다.
-4. **물리 테이블(_base 접미사) 직접 접근 금지.** 반드시 뷰 이름(products, observations, variants, variant_observations, product_attributes)으로 쿼리한다 — 뷰가 시각 변환·URL 조립·카테고리 계층 펴기를 처리한다.
-5. **에러 시 SQL 노출 금지.** 사용자에게 SQL 쿼리나 영문 컬럼명을 직접 보여주지 않는다. 사람이 읽는 표현으로만 응답한다.
+### 조회 (SELECT)
+1. 조회는 **읽기 전용 토큰**으로 `queryDB()`를 사용한다.
+2. **LIMIT을 반드시 포함한다.** 기본 50행. 사용자가 더 요청하면 최대 200행.
+3. **대량 결과 안내**: 결과가 LIMIT에 걸리면 COUNT 쿼리를 별도 실행해서 "전체 N건 중 M건을 표시합니다" 형태로 안내한다.
+
+### 편집 (INSERT/UPDATE/DELETE)
+4. 편집은 **쓰기 토큰**으로 `writeDB()`를 사용한다. 쓰기 토큰이 환경변수에 없으면 "쓰기 권한이 설정되지 않았습니다" 안내.
+5. **실행 전 반드시 사용자에게 확인받는다.** 어떤 데이터가 영향받는지 먼저 SELECT로 보여주고, "이 N건을 삭제/수정할까요?" 물은 후 승인받으면 실행.
+6. **DELETE/UPDATE는 WHERE 절 필수.** WHERE 없는 DELETE/UPDATE는 절대 실행하지 않는다.
+7. **DROP TABLE, ALTER TABLE, ATTACH, PRAGMA는 금지.** 스키마 변경은 이 스킬의 일이 아니다.
+8. 실행 후 영향받은 행 수를 알려준다.
+
+### 공통
+9. **물리 테이블(_base 접미사) 직접 접근 금지.** 반드시 뷰 이름(products, observations, variants, variant_observations, product_attributes)으로 쿼리한다 — 뷰가 시각 변환·URL 조립·카테고리 계층 펴기를 처리한다.
+10. **에러 시 SQL 노출 금지.** 사용자에게 SQL 쿼리나 영문 컬럼명을 직접 보여주지 않는다. 사람이 읽는 표현으로만 응답한다.
 
 ## 응답 포맷
 
