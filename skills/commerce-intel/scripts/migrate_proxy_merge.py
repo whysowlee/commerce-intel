@@ -121,23 +121,38 @@ def migrate(db_path: str, dry_run: bool = False, force: bool = False) -> bool:
         pconn.close()
         return True
 
-    # 대상이 비어 있지 않으면 막는다 — proxy_history는 id 재할당이라 재실행 시
-    # 같은 이력이 **중복 행**으로 또 들어간다(OR IGNORE로 못 거른다).
-    # 경고 출력은 잃기 쉽다 — --force 없이는 하드 가드로 종료한다(리뷰 반영).
+    # 재이관 판별 — proxy_history는 id 재할당 복사라 재실행 시 같은 이력이
+    # **중복 행**으로 또 들어간다(OR IGNORE로 못 거른다). 단, '대상에 행이
+    # 있다'만으로 막으면 D69 이후 정상 수집이 쓴 proxy_history에도 걸려
+    # 첫 병합부터 --force를 강요한다(리뷰 반영) — 이 소스의 행이 이미
+    # 대상에 있는지(내용 일치, id 제외)로 실제 재실행을 식별한다.
+    dup = 0
+    if src_counts.get("proxy_history", 0):
+        hist_cols = dict(PROXY_TABLES)["proxy_history"]
+        col_list = [c.strip() for c in hist_cols.split(",")]
+        where = " AND ".join(f"{c} IS ?" for c in col_list)
+        try:
+            for row in pconn.execute(f"SELECT {hist_cols} FROM proxy_history"):
+                if conn.execute(
+                        f"SELECT 1 FROM proxy_history WHERE {where} LIMIT 1",
+                        tuple(row)).fetchone():
+                    dup += 1
+        except sqlite3.OperationalError:
+            dup = 0
+    if dup and not force:
+        print(f"  ✖ 중단: 이 소스의 proxy_history {dup:,}행이 본 DB에 이미 있다 — "
+              "재실행으로 보인다(id 재할당 복사라 중복을 OR IGNORE가 못 거른다).\n"
+              "    중복을 감수하고 그래도 이관하려면 --force를 붙여라.")
+        pconn.close()
+        return False
     for table, _ in PROXY_TABLES:
         try:
             n = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         except sqlite3.OperationalError:
             n = 0
-        if n and table == "proxy_history" and not force:
-            print(f"  ✖ 중단: 본 DB {table}에 이미 {n:,}행이 있다 — 재실행은 같은 "
-                  "이력을 중복 적재한다(id 재할당이라 OR IGNORE가 못 거른다).\n"
-                  "    중복을 감수하고 이관하려면 --force를 붙여라.")
-            pconn.close()
-            return False
         if n:
-            print(f"  ※ 경고: 본 DB {table}에 이미 {n:,}행이 있다 — 이관을 이미 "
-                  "했다면 재실행은 중복을 만든다")
+            print(f"  ※ 참고: 본 DB {table}에 이미 {n:,}행이 있다 (정상 수집분일 수 "
+                  "있다 — 이 소스와의 내용 중복은 위에서 별도로 검사했다)")
 
     # 데이터 복사
     print("\n── 데이터 복사 ──")
