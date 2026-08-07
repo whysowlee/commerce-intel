@@ -23,8 +23,8 @@ from pathlib import Path
 # INTEL_DB=임시파일을 넣어도 CLI 서브프로세스가 **Turso 프로덕션에 픽스처를
 # 적재한다.** 실제로 일어났다 — 테스트는 어떤 경우에도 공유 정본을 봐선 안
 # 되므로, import 시점에 이 프로세스와 모든 자식에서 제거한다.
-for _k in ("INTEL_DB_URL", "INTEL_DB_TOKEN", "PROXY_DB_URL", "PROXY_DB_TOKEN",
-           "INTEL_PROXY_DB"):
+for _k in ("INTEL_DB_URL", "INTEL_DB_TOKEN", "INTEL_DB_WRITE_TOKEN",
+           "PROXY_DB_URL", "PROXY_DB_TOKEN", "INTEL_PROXY_DB"):
     os.environ.pop(_k, None)
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -1022,6 +1022,69 @@ def sheet_deletion_tests():
     ws.update = real_update
     miss = ss.sync_incr_tab(conn, conn, ws, "observations", total(), now)
     check("E-SH-14 다음 실행이 재구축을 재시도해 성공한다", miss is None, miss)
+    conn.close()
+    shutil.rmtree(work, ignore_errors=True)
+
+
+def clean_orphans_tests():
+    """고아 참조 행 정리 (D73) — 대량 삭제 뒤 runs·contexts·brands 유령 행."""
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    intel_db = importlib.import_module("intel_db")
+
+    work = Path(tempfile.mkdtemp(prefix="orph-"))
+    db = str(work / "o.db")
+    conn = intel_db.connect(db)
+    old = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d %H:%M:%S")
+    fresh = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # 살아있는 세트: 관측이 참조하는 run·context·brand
+    conn.execute("INSERT INTO runs (run_id, site, story, target, collected_at) "
+                 "VALUES ('R-live','29cm','brand-linesheet','T',?)", (old,))
+    conn.execute("INSERT INTO products (site, product_id, name, brand, "
+                 "static_verified_at) VALUES ('29cm','P1','n','살아있는브랜드',?)", (old,))
+    conn.execute("INSERT INTO observations (site, product_id, observed_at, context,"
+                 " price_sale, run_id) VALUES ('29cm','P1',?,'brand:live',1000,'R-live')",
+                 (old,))
+    # 고아 세트: 옛 고아 run·최근 고아 run(중복 스킵 수집 이력)·고아 context·고아 brand
+    conn.execute("INSERT INTO runs (run_id, site, story, target, collected_at) "
+                 "VALUES ('R-old','29cm','brand-linesheet','X',?)", (old,))
+    conn.execute("INSERT INTO runs (run_id, site, story, target, collected_at) "
+                 "VALUES ('R-fresh','29cm','brand-linesheet','Y',?)", (fresh,))
+    conn.execute("INSERT INTO contexts (name) VALUES ('brand:ghost')")
+    conn.execute("INSERT INTO brands (representative_name) VALUES ('유령브랜드')")
+    conn.commit()
+
+    class A:
+        dry_run = True
+    intel_db.cmd_clean_orphans(conn, A())
+    counts = lambda: {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                      for t in ("runs", "contexts", "brands")}
+    check("E-OR-1 dry-run은 지우지 않는다",
+          counts() == {"runs": 3, "contexts": 2, "brands": 2}, counts())
+
+    A.dry_run = False
+    intel_db.cmd_clean_orphans(conn, A())
+    got = counts()
+    check("E-OR-2 옛 고아 run은 지운다", got["runs"] == 2, got)
+    check("E-OR-3 최근 48시간 run은 남긴다 (check-run 중복 방지 보존)",
+          conn.execute("SELECT COUNT(*) FROM runs WHERE run_id='R-fresh'")
+          .fetchone()[0] == 1)
+    check("E-OR-4 고아 context·brand는 지우고 살아있는 것은 남긴다",
+          got["contexts"] == 1 and got["brands"] == 1
+          and conn.execute("SELECT COUNT(*) FROM brands WHERE "
+                           "representative_name='살아있는브랜드'").fetchone()[0] == 1,
+          got)
+    # 별명이 걸린 브랜드는 상품이 없어도 남는다
+    conn.execute("INSERT INTO brands (representative_name) VALUES ('별명만브랜드')")
+    bid = conn.execute("SELECT brand_id FROM brands WHERE "
+                       "representative_name='별명만브랜드'").fetchone()[0]
+    conn.execute("INSERT INTO brand_aliases (brand_id, notation, source, "
+                 "verify_status) VALUES (?, 'ALIAS ONLY', 'manual', 'confirmed')", (bid,))
+    conn.commit()
+    intel_db.cmd_clean_orphans(conn, A())
+    check("E-OR-5 별명이 참조하는 브랜드는 보존",
+          conn.execute("SELECT COUNT(*) FROM brands WHERE brand_id=?", (bid,))
+          .fetchone()[0] == 1)
     conn.close()
     shutil.rmtree(work, ignore_errors=True)
 
@@ -2184,6 +2247,9 @@ def main():
 
     print("[19c] 뷰 편집 트리거 — UPDATE/DELETE 사슬 (D72)")
     view_edit_tests()
+
+    print("[19d] 고아 참조 행 정리 (D73)")
+    clean_orphans_tests()
 
     print("[20] 수집기 — 인코딩·커버리지·카드 매핑 (D48)")
     collector_tests()

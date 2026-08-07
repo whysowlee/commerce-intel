@@ -68,8 +68,12 @@ async function queryDB(sql) {
   return { cols, rows, rowCount: rows.length };
 }
 
-async function writeDB(sql) {
-  const writeToken = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3ODU5Mjk1NDcsImlkIjoiMDE5ZmQxYjItMzcwMS03ZDA0LWIzMzktMWVmNTBiMmI5ZDdjIiwia2lkIjoiXzZ1TjlGNnZkdW1XVVg1SkRUTXZQMV9qZVRpNDJrWTRxWHhNVFRFMm1hUSIsInJpZCI6IjFmYjkwMTc5LTBhMjctNGNiOC1hMmFjLWFiZjVlZWFlY2Y4NCJ9.9oSkU7dyNwFvuOcpluaJ4anX9DgBa3f_2MZ8P-3azpu-HyQKzQOhoo556h-jlaHu_6I6i3dOji-RC8ioQZCUBw";
+// 쓰기 토큰은 이 파일에 없다 (안전 규칙 — 스킬 파일은 팀에 공유된다).
+// 편집 요청이 오면 먼저 Bash로 env에서 읽어 와 REPL에 넘긴다:
+//   source ~/.config/intel/env && echo $INTEL_DB_WRITE_TOKEN
+// env에 없으면 "쓰기 권한이 설정되지 않았습니다"라고 안내하고 멈춘다.
+async function writeDB(sql, writeToken) {
+  if (!writeToken) throw new Error("쓰기 토큰 없음 — ~/.config/intel/env의 INTEL_DB_WRITE_TOKEN 필요");
   const res = await fetch(`${TURSO_URL}/v2/pipeline`, {
     method: "POST",
     headers: {
@@ -126,7 +130,7 @@ async function writeDB(sql) {
 - observations.site + product_id → products (같은 site, product_id로 조인)
 - observations.context → 수집 맥락 (ranking:XX = 랭킹, brand:XX = 브랜드 라인시트, market:XX = 전수조사)
 - products.brand → brands.representative_name
-- brand_aliases.notation → 플랫폼별 표기 변형 (검색 시 양쪽 매칭). **주의: 별명은 공백·대소문자·하이픈 변형만 묶는다** ('2000 Archives' ↔ '2000Archives'). 한글·영문 표기는 서로 다른 브랜드 행이다 — 사용자가 "2000아카이브스"라고 물으면 '2000아카이브스'(무신사·29CM 표기)와 '2000 Archives'(자사몰 표기) **둘 다** 검색해야 전체가 나온다
+- brand_aliases.notation → 플랫폼별 표기 변형 (검색 시 양쪽 매칭). **자동 등록은 공백·대소문자·하이픈 변형만 묶는다** ('2000 Archives' ↔ '2000Archives') — 음차 자동 매칭은 하지 않는다. 한글·영문 표기는 **사람이 확정한 경우에만** 별명으로 묶인다(source='manual', D73). 자사 브랜드는 병합 완료: '2000아카이브스'가 대표명이고 '2000 Archives'·'2000Archives'는 별명이라 `WHERE brand = '2000아카이브스'` 하나로 전 사이트가 나온다. **다른 브랜드**의 한글·영문 표기는 여전히 별개 행일 수 있다 — 안 잡히면 양쪽 표기를 함께 건다
 
 ### 자주 쓰는 쿼리 패턴
 - 특정 브랜드 상품: `WHERE brand = '2000 Archives'` — 안 잡히면 brand_aliases.notation도 brands와 JOIN해 매칭
@@ -178,7 +182,7 @@ async function writeDB(sql) {
 사용자: "무신사에서 2000아카이브스 상품 중 할인율 20% 이상인 것만 보여줘"
 
 → 할 일:
-1. SQL 생성 (무신사의 대표명은 '2000아카이브스' — 한글·영문 표기는 별개 행이니 필요하면 IN ('2000아카이브스','2000 Archives')로 함께 건다):
+1. SQL 생성 (자사 브랜드는 병합 완료 — '2000아카이브스' 하나로 전 사이트가 잡힌다. 미병합 브랜드는 IN ('한글표기','영문표기')로 함께 건다):
    `SELECT p.name AS 상품명, o.price_original AS 정가, o.price_sale AS 판매가, o.discount_rate AS 할인율 FROM observations o JOIN products p ON p.site=o.site AND p.product_id=o.product_id WHERE o.site='musinsa' AND p.brand='2000아카이브스' AND o.discount_rate >= 20 AND o.observed_at = (SELECT MAX(o2.observed_at) FROM observations o2 WHERE o2.site=o.site AND o2.product_id=o.product_id) ORDER BY o.discount_rate DESC LIMIT 50`
 2. queryDB()로 실행
 3. 결과를 표로 정리해서 응답 (몇 건인지, 평균 할인율 같은 한 줄 요약 먼저)
@@ -197,10 +201,12 @@ async function writeDB(sql) {
 
 - 레포: `~/workspace/commerce-intel` (다르면 환경변수 `INTEL_REPO`)
 - Python: 레포 루트에 `.venv`가 있어야 한다 (없으면 `docs/TURSO-SETUP.md`의 venv도 가능)
-- 환경변수: `INTEL_DB_URL`, `INTEL_DB_TOKEN`(**쓰기 토큰**)이 `~/.config/intel/env`
-  또는 `.venv/bin/activate`에 설정돼 있어야 한다
+- 환경변수: `~/.config/intel/env`에 셋이 설정돼 있어야 한다 (D73 — 읽기/쓰기 분리):
+  - `INTEL_DB_URL`: Turso URL
+  - `INTEL_DB_TOKEN`: **읽기 전용** 토큰 (조회·EDA·분석)
+  - `INTEL_DB_WRITE_TOKEN`: **쓰기** 토큰 (수집 적재·insights 저장·편집)
   - 환경변수가 설정돼 있으면 아래 모든 Python 명령에서 `--db` 플래그가 필요 없다 —
-    스크립트가 `INTEL_DB_URL`(Turso)에 직접 붙는다
+    스크립트가 `INTEL_DB_URL`(Turso)에 직접 붙고, 쓰기 토큰이 있으면 그걸 쓴다
 - 분석·리포트에는 추가 패키지가 필요하다: `reportlab`(PDF 생성),
   `libsql-experimental`(Turso 직접 연결). 없으면 설치:
   ```bash
@@ -340,8 +346,8 @@ python3 skills/commerce-intel/scripts/insight.py \
 - 출력 PDF 2개:
   - `output/insight-{target}-{타임스탬프}.pdf` (executive 3-6p): 강한 주장 + 약한 단서
   - `output/detail-{target}-{타임스탬프}.pdf` (상세 20-40p): EDA 프로필 + 가설별 증거
-- 분석 결과는 `insights` 테이블에도 저장된다 — **쓰기 토큰**(`INTEL_DB_TOKEN`)이
-  필요하다 (수집과 같은 전제. 읽기 전용 토큰이면 insights 적재가 실패한다)
+- 분석 결과는 `insights` 테이블에도 저장된다 — **쓰기 토큰**(`INTEL_DB_WRITE_TOKEN`)이
+  필요하다 (수집과 같은 전제. 읽기 토큰만 있으면 insights 적재가 실패한다)
 - 분석 계획만 먼저 검토하고 싶으면:
   `python3 skills/commerce-intel/scripts/analyze.py --context "{context}" --plan-only --out data/plan.json`
 
@@ -419,7 +425,10 @@ cp -r skills/intel-query ~/.aside/u/0/skills/user/intel-query
 1. Aside 브라우저 설치 + Claude 구독 활성화
 2. 위 명령으로 스킬 폴더 복사
 3. SKILL.md의 `TURSO_URL`·읽기전용 토큰을 실제 값으로 교체 (또는 환경변수 `INTEL_DB_URL`/`INTEL_DB_TOKEN`)
-4. "무신사에서 우리 브랜드 순위 보여줘" 입력 — 끝
+4. 수집·분석·편집까지 쓰려면 `~/.config/intel/env` 파일을 만든다 — 레포의
+   `docs/env.example`을 복사해 실제 값을 채운다. **토큰 값은 이 레포에 없다** —
+   관리자에게 따로 받는다 (쓰기 토큰은 파일·대화에 남기지 않는 것이 규칙이다)
+5. "무신사에서 우리 브랜드 순위 보여줘" 입력 — 끝
 
 주의: 토큰을 SKILL.md에 직접 넣으면 스킬 파일 공유 시 노출된다. 팀 내부
 전용이고 **읽기 전용 토큰**이라 실질 위험은 낮지만, 외부 공유 전에는 지운다.
