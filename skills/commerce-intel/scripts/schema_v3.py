@@ -702,6 +702,61 @@ CREATE TRIGGER trg_attr_upd INSTEAD OF UPDATE ON product_attributes BEGIN
     WHERE s.name=OLD.site AND p.product_id=OLD.product_id);
 END;
 
+-- ── 뷰 편집 (D72) — intel-query 편집이 뷰 이름으로 UPDATE·DELETE 하게 한다 ──
+-- "물리 테이블 직접 접근 금지" 규칙이 편집에도 성립하려면 뷰가 편집을 받아야
+-- 한다 (PR #21 2R 리뷰 — 그전엔 INSERT 트리거뿐이라 뷰 UPDATE/DELETE가
+-- "cannot modify" 오류였다). 물리 행 특정은 뷰가 내주는 _rowid로 한다.
+-- 이 트리거들의 base 쓰기가 아래 mirror_dirty 트리거를 태워 시트 재구축으로
+-- 이어진다 — 편집 → 감지 → 반영 사슬이 여기서 완성된다.
+DROP TRIGGER IF EXISTS trg_obs_upd;
+CREATE TRIGGER trg_obs_upd INSTEAD OF UPDATE ON observations BEGIN
+  SELECT RAISE(ABORT, 'observations는 지표 컬럼만 수정할 수 있다 — site·product_id·observed_at·context·run_id는 식별자다')
+  WHERE NEW.site IS NOT OLD.site OR NEW.product_id IS NOT OLD.product_id
+     OR NEW.observed_at IS NOT OLD.observed_at OR NEW.context IS NOT OLD.context
+     OR NEW.run_id IS NOT OLD.run_id;
+  UPDATE obs_base SET
+    price_original=NEW.price_original, price_sale=NEW.price_sale,
+    discount_rate=NEW.discount_rate, review_count=NEW.review_count,
+    rating=NEW.rating, view_count=NEW.view_count,
+    view_count_display=NEW.view_count_display,
+    purchase_count=NEW.purchase_count,
+    purchase_count_display=NEW.purchase_count_display,
+    like_count=NEW.like_count, like_count_display=NEW.like_count_display,
+    viewers_now=NEW.viewers_now, buyers_now=NEW.buyers_now,
+    sold_out=NEW.sold_out, rank=NEW.rank
+  WHERE id = OLD._rowid;
+END;
+DROP TRIGGER IF EXISTS trg_obs_del;
+CREATE TRIGGER trg_obs_del INSTEAD OF DELETE ON observations BEGIN
+  DELETE FROM obs_base WHERE id = OLD._rowid;   -- obs_attr는 FK CASCADE로 함께
+END;
+DROP TRIGGER IF EXISTS trg_vobs_del;
+CREATE TRIGGER trg_vobs_del INSTEAD OF DELETE ON variant_observations BEGIN
+  DELETE FROM variant_obs_base WHERE id = OLD._rowid;
+END;
+DROP TRIGGER IF EXISTS trg_variants_del;
+CREATE TRIGGER trg_variants_del INSTEAD OF DELETE ON variants BEGIN
+  DELETE FROM variant_obs_base WHERE vk = OLD._rowid;
+  DELETE FROM variant_base WHERE vk = OLD._rowid;
+END;
+DROP TRIGGER IF EXISTS trg_products_del;
+CREATE TRIGGER trg_products_del INSTEAD OF DELETE ON products BEGIN
+  -- 상품을 지우면 딸린 것도 같이 진다 — FK(NO ACTION)가 어차피 요구한다.
+  -- 프록시 판정은 (site, product_id) 문자열 키라 이름으로 지운다.
+  -- 수집이력(runs)·브랜드·카테고리 사전은 공유 자원이라 남긴다 — 참조가 다
+  -- 사라진 고아 행 정리는 별도 명령이 맡는다.
+  DELETE FROM obs_base WHERE pk = OLD._rowid;
+  DELETE FROM variant_obs_base
+   WHERE vk IN (SELECT vk FROM variant_base WHERE pk = OLD._rowid);
+  DELETE FROM variant_base WHERE pk = OLD._rowid;
+  DELETE FROM attr_base WHERE pk = OLD._rowid;
+  DELETE FROM product_categories WHERE pk = OLD._rowid;
+  DELETE FROM product_history WHERE pk = OLD._rowid;
+  DELETE FROM attr_history WHERE pk = OLD._rowid;
+  DELETE FROM proxy_cache WHERE site = OLD.site AND product_id = OLD.product_id;
+  DELETE FROM product_base WHERE pk = OLD._rowid;
+END;
+
 -- ── 미러 변경 감지 (D72) — 증분 미러 탭 원본의 UPDATE·DELETE를 센다 ────────
 -- INSERT는 세지 않는다: append는 증분 미러의 정상 경로다. 카운터가 0이 아니면
 -- sync_sheets가 그 탭을 전체 재구축한다. 한계: INSERT OR REPLACE의 내부 삭제는

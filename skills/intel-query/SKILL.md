@@ -160,8 +160,8 @@ async function writeDB(sql) {
    "시트 미러링 해줘"로 수동 동기화를 요청받아 실행한다.
 
 ### 공통
-9. **물리 테이블(_base 접미사) 직접 접근 금지.** 반드시 뷰 이름(products, observations, variants, variant_observations, product_attributes)으로 쿼리한다 — 뷰가 시각 변환·URL 조립·카테고리 계층 펴기를 처리한다.
-10. **에러 시 SQL 노출 금지.** 사용자에게 SQL 쿼리나 영문 컬럼명을 직접 보여주지 않는다. 사람이 읽는 표현으로만 응답한다.
+10. **물리 테이블(_base 접미사) 직접 접근 금지.** 반드시 뷰 이름(products, observations, variants, variant_observations, product_attributes)으로 쿼리한다 — 뷰가 시각 변환·URL 조립·카테고리 계층 펴기를 처리한다. 편집(UPDATE/DELETE)도 뷰 이름으로 한다 — 뷰 트리거가 물리 반영과 시트 미러 감지를 함께 처리한다. observations 수정은 지표 컬럼(가격·품절·순위 등)만 가능하고 식별자(site·product_id·observed_at·context)는 바꿀 수 없다.
+11. **에러 시 SQL 노출 금지.** 사용자에게 SQL 쿼리나 영문 컬럼명을 직접 보여주지 않는다. 사람이 읽는 표현으로만 응답한다.
 
 ## 응답 포맷
 

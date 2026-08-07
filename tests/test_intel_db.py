@@ -967,6 +967,120 @@ def sheet_deletion_tests():
     check("E-SH-9 순증감 0(삭제 1+신규 1)도 재구축 — 지운 행이 시트에 없다",
           miss is None and len(body) == total() == 5 and str(gone) not in flat,
           (len(body), gone))
+
+    # ── 행 수 대조 보조 경로 — 카운터가 못 본 삭제(트리거 이전 상태 가정) ───
+    # MIN 행을 지운다: MAX를 지우면 다음 INSERT가 같은 rowid를 재사용해 증분이
+    # 침묵한다 — 그 조합은 카운터 없이는 어떤 카운트 대조로도 안 잡히는 구멍이고,
+    # 바로 그 구멍 때문에 mirror_dirty 트리거가 1차 감지다.
+    gone2 = conn.execute("SELECT price_sale FROM obs_base "
+                         "WHERE id = (SELECT MIN(id) FROM obs_base)").fetchone()[0]
+    conn.execute("DELETE FROM obs_base WHERE id = (SELECT MIN(id) FROM obs_base)")
+    conn.execute("DELETE FROM mirror_dirty WHERE table_name='observations'")
+    conn.commit()                       # 카운터를 지워 "트리거 이전 삭제"를 흉내
+    add_obs(1, 22)                      # 새 행이 있어야 보조 대조가 돈다
+    miss = ss.sync_incr_tab(conn, conn, ws, "observations", total(), now)
+    body = [r for r in ws.grid[1:] if any(str(c).strip() for c in r)]
+    flat = {str(c) for r in body for c in r}
+    check("E-SH-10 카운터 밖 삭제도 행 수 대조가 잡아 재구축",
+          miss is None and len(body) == total() == 5 and str(gone2) not in flat,
+          (len(body), total(), gone2))
+
+    # ── 대형 탭 보류 임계 (2R 리뷰) — 임계 미만 변경은 재구축을 미룬다 ───────
+    conn.execute("UPDATE obs_base SET price_sale = 1 WHERE id = "
+                 "(SELECT MIN(id) FROM obs_base)")
+    conn.commit()
+    old_defer = ss.REBUILD_DEFER_ROWS
+    ss.REBUILD_DEFER_ROWS = 3           # 이 탭(5행)을 "대형"으로 취급
+    try:
+        miss = ss.sync_incr_tab(conn, conn, ws, "observations", total(), now)
+        dirty = conn.execute("SELECT changes FROM mirror_dirty "
+                             "WHERE table_name='observations'").fetchone()[0]
+        check("E-SH-11 대형 탭은 임계까지 재구축 보류 — 카운터는 남는다",
+              miss is None and dirty == 1, dirty)
+    finally:
+        ss.REBUILD_DEFER_ROWS = old_defer
+    miss = ss.sync_incr_tab(conn, conn, ws, "observations", total(), now)
+    body = [r for r in ws.grid[1:] if any(str(c).strip() for c in r)]
+    check("E-SH-12 임계 해제(소형 취급) 시 보류분이 재구축된다",
+          miss is None and "1" in {str(r[ws.grid[0].index('price_sale')]) for r in body},
+          body and body[0])
+
+    # ── 재구축 안착 검증 (2R 리뷰) — 부분 실패면 진행점·카운터를 안 옮긴다 ──
+    conn.execute("UPDATE obs_base SET price_sale = 2 WHERE id = "
+                 "(SELECT MIN(id) FROM obs_base)")
+    conn.commit()
+    real_update = ws.update
+    def lossy_update(values=None, range_name=None, value_input_option=None):
+        real_update(values=values[:-1] if range_name != "A1" and len(values) > 1
+                    else values, range_name=range_name)
+    ws.update = lossy_update            # 재구축 청크에서 1행을 흘리는 워크시트
+    miss = ss.sync_incr_tab(conn, conn, ws, "observations", total(), now)
+    dirty = conn.execute("SELECT changes FROM mirror_dirty "
+                         "WHERE table_name='observations'").fetchone()[0]
+    check("E-SH-13 재구축 부분 실패 → mismatch 반환 + 카운터 보존(재시도 예약)",
+          miss is not None and dirty == 1, (miss, dirty))
+    ws.update = real_update
+    miss = ss.sync_incr_tab(conn, conn, ws, "observations", total(), now)
+    check("E-SH-14 다음 실행이 재구축을 재시도해 성공한다", miss is None, miss)
+    conn.close()
+    shutil.rmtree(work, ignore_errors=True)
+
+
+def view_edit_tests():
+    """뷰 편집 트리거 (D72 · PR #21 2R) — 편집→감지→미러 사슬의 앞단.
+
+    intel-query는 뷰 이름으로만 쿼리한다(안전 규칙) — 뷰가 UPDATE/DELETE를
+    못 받으면 "편집이 시트에 자동 반영된다"는 약속 자체가 성립하지 않는다.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    intel_db = importlib.import_module("intel_db")
+
+    work = Path(tempfile.mkdtemp(prefix="vedit-"))
+    conn = intel_db.connect(str(work / "v.db"))
+    conn.execute("INSERT INTO runs (run_id, site, story, target, collected_at) "
+                 "VALUES ('R','29cm','brand-linesheet','T','2026-08-07 10:00:00')")
+    conn.execute("INSERT INTO products (site, product_id, name, brand, "
+                 "static_verified_at) VALUES ('29cm','P1','상품','브랜드','2026-08-07 10:00:00')")
+    conn.execute("INSERT INTO observations (site, product_id, observed_at, context,"
+                 " price_sale, sold_out) VALUES ('29cm','P1','2026-08-07 10:00:00',"
+                 "'brand:t',1000,0)")
+    conn.execute("INSERT INTO variants (site, product_id, option_id, option_name,"
+                 " color, size) VALUES ('29cm','P1','O1','블랙/M','블랙','M')")
+    conn.commit()
+
+    # UPDATE — 지표 컬럼은 고쳐지고 base까지 반영된다
+    conn.execute("UPDATE observations SET price_sale=2000, sold_out=1 "
+                 "WHERE site='29cm' AND product_id='P1'")
+    conn.commit()
+    row = conn.execute("SELECT price_sale, sold_out FROM obs_base").fetchone()
+    check("E-VE-1 뷰 UPDATE가 obs_base에 반영된다", tuple(row) == (2000, 1), tuple(row))
+    dirty = conn.execute("SELECT changes FROM mirror_dirty "
+                         "WHERE table_name='observations'").fetchone()
+    check("E-VE-2 뷰 UPDATE가 mirror_dirty 카운터를 올린다 (트리거 연쇄)",
+          dirty and dirty[0] >= 1, dirty and dirty[0])
+
+    # 식별자 변경은 거부된다
+    try:
+        conn.execute("UPDATE observations SET product_id='P2' WHERE product_id='P1'")
+        ok = False
+    except Exception as e:
+        ok = "식별자" in str(e)
+    check("E-VE-3 식별자 컬럼 변경은 RAISE로 거부된다", ok)
+
+    # DELETE — 뷰에서 지우면 base가 진다
+    conn.execute("DELETE FROM observations WHERE site='29cm' AND product_id='P1'")
+    conn.commit()
+    check("E-VE-4 뷰 DELETE가 obs_base를 지운다",
+          conn.execute("SELECT COUNT(*) FROM obs_base").fetchone()[0] == 0)
+
+    # products DELETE — 딸린 것(옵션·속성)까지 함께 진다
+    conn.execute("DELETE FROM products WHERE site='29cm' AND product_id='P1'")
+    conn.commit()
+    left = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+            for t in ("product_base", "variant_base", "attr_base")}
+    check("E-VE-5 products DELETE가 자식 테이블까지 정리한다",
+          all(v == 0 for v in left.values()), left)
     conn.close()
     shutil.rmtree(work, ignore_errors=True)
 
@@ -2065,8 +2179,11 @@ def main():
     print("[19] 증분 키 — 실제 sqlite3 (뷰·물리 테이블)")
     incremental_key_tests()
 
-    print("[19b] 시트 미러 — 삭제 감지·재구축 (D72)")
+    print("[19b] 시트 미러 — 편집·삭제 감지·재구축 (D72)")
     sheet_deletion_tests()
+
+    print("[19c] 뷰 편집 트리거 — UPDATE/DELETE 사슬 (D72)")
+    view_edit_tests()
 
     print("[20] 수집기 — 인코딩·커버리지·카드 매핑 (D48)")
     collector_tests()

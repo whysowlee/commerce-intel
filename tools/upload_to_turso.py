@@ -42,6 +42,9 @@ INTEL_ORDER = [
     ("product_history", "id"), ("attr_history", "id"),
     ("proxy_defs", "rowid"), ("proxy_cache", "rowid"),
     ("proxy_history", "id"),
+    # D72: 시트에 아직 반영 안 된 편집·삭제 신호 — 빼먹으면 이관 시점의 미반영
+    # 변경이 조용히 사라져 시트에 옛 값이 영구히 남는다 (PR #21 2R 리뷰)
+    ("mirror_dirty", "rowid"),
 ]
 # D69: PROXY_ORDER 삭제 — 프록시가 본 DB에 통합됨
 
