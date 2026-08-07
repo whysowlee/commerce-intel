@@ -1089,6 +1089,54 @@ def clean_orphans_tests():
     shutil.rmtree(work, ignore_errors=True)
 
 
+def eda_reuse_tests():
+    """EDA 재사용 (D74) — --signals의 EDA를 분석이 그대로 쓰고, 다른 요청이면 새로 돈다."""
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    intel_db = importlib.import_module("intel_db")
+    eda = importlib.import_module("eda")
+    an = importlib.import_module("analyze")
+
+    work = Path(tempfile.mkdtemp(prefix="sig-"))
+    db = str(work / "s.db")
+    conn = intel_db.connect(db)
+    conn.execute("INSERT INTO runs (run_id, site, story, target, collected_at) "
+                 "VALUES ('R','29cm','brand-linesheet','T','2026-08-07 10:00:00')")
+    for i in range(6):
+        conn.execute("INSERT INTO products (site, product_id, name, brand, "
+                     "static_verified_at) VALUES ('29cm',?,?,'B','2026-08-07 10:00:00')",
+                     ("P%d" % i, "상품%d" % i))
+        conn.execute("INSERT INTO observations (site, product_id, observed_at,"
+                     " context, price_sale, like_count) VALUES ('29cm',?,"
+                     "'2026-08-07 10:00:00','brand:t',?,?)",
+                     ("P%d" % i, 1000 + i * 100, 10 + i))
+    conn.commit()
+    conn.close()
+
+    sig = eda.run(db, ["brand:t"])
+    check("E-SG-1 EDA 산출물에 요청 문맥이 박힌다",
+          sig.get("requested_contexts") == ["brand:t"], sig.get("requested_contexts"))
+
+    loaded = json.loads(json.dumps(sig, default=str))   # 파일 왕복을 흉내
+    loaded["_sentinel"] = "reused"                      # 재사용 여부 추적 마커
+    got = an.reuse_or_run_eda(db, ["brand:t"], loaded)
+    check("E-SG-2 같은 요청이면 EDA를 재수행하지 않는다 (파일 그대로)",
+          got.get("_sentinel") == "reused")
+    got = an.reuse_or_run_eda(db, ["brand:다른것"], loaded)
+    check("E-SG-3 다른 요청의 EDA는 버리고 새로 돈다",
+          "_sentinel" not in got and got.get("ok") is False)   # 없는 문맥 → ok=False
+    res = an.analyze(db, ["brand:t"], plan_only=True, signals=loaded)
+    check("E-SG-4 analyze(plan_only)가 재사용 EDA로 계획을 만든다",
+          res.get("ok") and res["eda"].get("_sentinel") == "reused",
+          res.get("reason"))
+    broken = dict(loaded)
+    del broken["nulls"]                 # 구버전·손상 산출물 흉내 (필수 필드 누락)
+    got = an.reuse_or_run_eda(db, ["brand:t"], broken)
+    check("E-SG-5 필수 필드가 빠진 파일은 버리고 새로 돈다 (KeyError 방지)",
+          "_sentinel" not in got and got.get("ok") and "nulls" in got)
+    shutil.rmtree(work, ignore_errors=True)
+
+
 def view_edit_tests():
     """뷰 편집 트리거 (D72 · PR #21 2R) — 편집→감지→미러 사슬의 앞단.
 
@@ -2250,6 +2298,9 @@ def main():
 
     print("[19d] 고아 참조 행 정리 (D73)")
     clean_orphans_tests()
+
+    print("[19e] EDA 재사용 — --signals (D74)")
+    eda_reuse_tests()
 
     print("[20] 수집기 — 인코딩·커버리지·카드 매핑 (D48)")
     collector_tests()

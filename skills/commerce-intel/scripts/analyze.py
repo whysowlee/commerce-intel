@@ -733,15 +733,53 @@ def strip_payload(h):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-def analyze(db_path, contexts, ai_notes=None, plan_only=False, own_brands=None):
+# 분석이 실제로 인덱싱하는 EDA 필드 — _usable_metrics의 nulls, 러너들의
+# correlations 등. 재사용 전에 있는지 본다 (PR #24 리뷰: 구버전·손상 파일이
+# 문맥만 맞으면 통과해 뒤에서 KeyError로 죽는다)
+REQUIRED_EDA_KEYS = ("grain", "nulls", "distributions", "cardinality",
+                     "correlations", "timeseries", "survivorship", "signals")
+
+
+def reuse_or_run_eda(db_path, contexts, signals=None):
+    """--signals로 받은 EDA 산출물을 재사용하거나, 안 맞으면 새로 돈다 (D74).
+
+    재사용 조건 셋: ok=True · **요청 문맥이 정확히 같음** · 필수 필드가 다 있음.
+    하나라도 어긋나면 조용히 쓰지 않는다 — 다른 요청의 EDA로 분석하면 사용자가
+    본 근거와 분석 근거가 갈라진다(그걸 막자고 재사용을 만든 것이다). 원인별
+    경고를 남기고 새로 돈다. 재사용하면 Turso에서 전체 데이터 fetch 한 번이
+    절약되고, 무엇보다 **사용자에게 보여준 EDA와 분석이 쓴 EDA가 같은 파일**이
+    된다.
+    """
+    want = sorted(str(c) for c in (contexts or []))
+    if signals:
+        missing = [k for k in REQUIRED_EDA_KEYS if k not in signals]
+        if not signals.get("ok"):
+            print("경고: --signals 파일의 EDA가 실패 상태(ok=False)다 "
+                  "— EDA를 새로 수행한다", file=sys.stderr)
+        elif sorted(signals.get("requested_contexts") or []) != want:
+            print("경고: --signals 파일이 이 요청의 EDA가 아니다 "
+                  f"(파일: {signals.get('requested_contexts')} / 요청: {want}) "
+                  "— EDA를 새로 수행한다", file=sys.stderr)
+        elif missing:
+            print(f"경고: --signals 파일에 필수 필드가 없다 ({', '.join(missing)}) "
+                  "— 구버전·손상 산출물로 보고 EDA를 새로 수행한다", file=sys.stderr)
+        else:
+            return signals
+    return run_eda(db_path, contexts)
+
+
+def analyze(db_path, contexts, ai_notes=None, plan_only=False, own_brands=None,
+            signals=None):
     """`own_brands` — 우리 브랜드 이름들. 브랜드 축에서 **제3자끼리의 비교를
     거르는 데만** 쓴다(D56). 안 주면 아무것도 안 거른다.
+    `signals` — eda.py --out 산출물(dict). 요청 문맥이 같으면 EDA를 재수행하지
+    않고 이걸 쓴다 (D74).
     """
     # `brand:X` 문맥은 그 자체로 "X를 보러 왔다"는 선언이다 — 따로 안 알려줘도 쓴다
     own_brands = list(own_brands or []) + [
         str(c).split(":", 1)[1] for c in (contexts or [])
         if str(c).startswith("brand:")]
-    eda_res = run_eda(db_path, contexts)
+    eda_res = reuse_or_run_eda(db_path, contexts, signals)
     if not eda_res["ok"]:
         return {"ok": False, "reason": eda_res.get("reason"), "contexts": contexts}
     data = collect(db_path, contexts)
@@ -810,13 +848,18 @@ def main():
     ap.add_argument("--plan-only", action="store_true",
                     help="계획만 세우고 멈춘다 — AI가 이걸 읽고 예외를 판단한다")
     ap.add_argument("--ai-notes", help="AI 예외 판단 JSON (exclude/warn/add)")
+    ap.add_argument("--signals", help="eda.py --out 산출 JSON — 요청 문맥이 같으면 "
+                                      "EDA를 재수행하지 않고 재사용한다 (D74)")
     ap.add_argument("--out", help="결과 JSON 경로 (생략하면 표준출력)")
     a = ap.parse_args()
 
     notes = None
     if a.ai_notes:
         notes = json.loads(open(a.ai_notes, encoding="utf-8").read())
-    res = analyze(a.db, a.context, notes, a.plan_only)
+    signals = None
+    if a.signals:
+        signals = json.loads(open(a.signals, encoding="utf-8").read())
+    res = analyze(a.db, a.context, notes, a.plan_only, signals=signals)
     if not res["ok"]:
         print("중단: %s" % res.get("reason"))
         return 1

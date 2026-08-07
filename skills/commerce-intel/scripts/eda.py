@@ -455,6 +455,9 @@ def run(db_path, contexts):
     surv = check_survivorship(data)
     return {
         "ok": True,
+        # 요청 문맥 원문 — analyze가 --signals 재사용 시 "같은 요청의 EDA인가"를
+        # 이걸로 검증한다 (D74). grain.contexts는 해석된 실제 문맥이라 다르다.
+        "requested_contexts": [str(c) for c in (contexts or [])],
         "grain": grain, "nulls": nulls, "distributions": dists,
         "cardinality": cards, "correlations": corrs,
         "timeseries": ts, "survivorship": surv,
