@@ -633,10 +633,10 @@ def prune_tests():
                      " price_sale, rank) VALUES ('29cm','P1',?,'brand:t',?,5)",
                      ("2020-01-01 00:%02d:00" % (i * 5), p))
     conn.commit()
-    counts, total = prune.plan(conn, keep_days=0, bucket=3600)
+    counts, total, drop_ids = prune.plan(conn, keep_days=0, bucket=3600)
     check("E-DB-13 예행은 남길 이유를 사유별로 센다",
           counts.get("change", 0) >= 2 and counts.get("edge", 0) == 2, counts)
-    n = prune.apply_prune(conn)
+    n = prune.apply_prune(conn, drop_ids)
     kept = [r[0] for r in conn.execute(
         "SELECT price_sale FROM observations ORDER BY observed_at")]
     import itertools
@@ -1422,8 +1422,8 @@ def d71_tests():
         conn.execute("INSERT INTO obs_attr (obs_id, attr_name, value, basis) "
                      "VALUES (?,'sns_mentions','90','api')", (oid,))
     conn.commit()
-    counts, total = prune.plan(conn, keep_days=0, bucket=3600)
-    n = prune.apply_prune(conn)
+    counts, total, drop_ids = prune.plan(conn, keep_days=0, bucket=3600)
+    n = prune.apply_prune(conn, drop_ids)
     kept_rv = [tuple(r) for r in conn.execute(
         "SELECT o.review_count, (SELECT value FROM obs_attr a WHERE a.obs_id=o.id "
         "AND a.attr_name='sns_mentions') FROM obs_base o ORDER BY o.observed_at")]
@@ -1452,8 +1452,8 @@ def d71_tests():
         conn.execute("INSERT INTO obs_attr (obs_id, attr_name, value) VALUES (?,'a','1')", (oid,))
         conn.execute("INSERT INTO obs_attr (obs_id, attr_name, value) VALUES (?,'b','2')", (oid,))
     conn.commit()
-    prune.plan(conn, keep_days=0, bucket=3600)
-    prune.apply_prune(conn)
+    _, _, drop_ids2 = prune.plan(conn, keep_days=0, bucket=3600)
+    prune.apply_prune(conn, drop_ids2)
     left = conn.execute("SELECT COUNT(*) FROM obs_base o JOIN product_base p "
                         "ON p.pk=o.pk WHERE p.product_id='P2'").fetchone()[0]
     check("E-DB-40d 값에 구분자가 든 속성 집합 변화도 서명이 갈린다 (3건 전부 보존)",

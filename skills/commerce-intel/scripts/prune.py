@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """오래된 관측을 솎는다 — **값이 바뀐 순간은 무조건 남긴다** (D45).
 
-    python3 prune.py --db data/intel.db --dry-run     # 얼마나 줄지 먼저 본다
-    python3 prune.py --db data/intel.db --apply
+    python3 prune.py --dry-run                        # 얼마나 줄지 먼저 본다
+    python3 prune.py --apply                          # 실제로 지운다
+    python3 prune.py --cron                           # 주간 자동 실행 crontab 줄 출력
+
+대상 DB는 INTEL_DB_URL(Turso) > INTEL_DB > data/intel.db 순이다 (D72와 같은
+규칙). Turso 정본에도 직접 돈다 (D75) — 연결은 schema_v3.open_db() 단일 통로,
+삭제는 id 목록을 클라이언트로 가져와 청크 DELETE로 나눠 보낸다(임시 테이블
+없음 — 원격 커넥션의 세션 상태에 기대지 않는다).
 
 ## 규칙 (사용자 결정 2026-08-04)
 
@@ -31,14 +37,20 @@
 `--dry-run`이 기본이고 `--apply`를 명시해야 실제로 지운다. 지우기 전에 몇 건이
 어느 사유로 남는지 찍는다 — 조용히 줄어든 데이터는 나중에 "원래 그만큼이었나"와
 구분되지 않는다.
+
+시트 미러: obs_base 삭제는 mirror_dirty 트리거(D72)에 잡혀 다음 동기화 때
+해당 탭이 전체 재구축된다 — 솎은 결과가 시트에도 따라간다.
 """
 import argparse
 import os
-import sqlite3
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import schema_v3
 
 KEEP_DAYS = 30        # 이보다 최근은 손대지 않는다
 BUCKET_SEC = 3600     # 오래된 구간은 이 간격당 1개만
+DELETE_CHUNK = 400    # 청크당 id 수 — Turso 왕복 한 번의 문장 크기 상한
 
 
 def _has_v2(conn):
@@ -47,10 +59,14 @@ def _has_v2(conn):
 
 
 def plan(conn, keep_days=KEEP_DAYS, bucket=BUCKET_SEC):
-    """지울 id 목록과 사유별 집계. **남길 이유를 먼저 세고, 나머지를 지운다.**
+    """(사유별 집계, 전체 행 수, 지울 id 목록)을 돌려준다.
+    **남길 이유를 먼저 세고, 나머지를 지운다.**
 
     반대로 하면(지울 이유를 세면) 규칙을 하나 빠뜨렸을 때 데이터가 사라진다.
     남길 이유를 세는 쪽이 빠뜨렸을 때 안전하다 — 덜 지울 뿐이다.
+
+    임시 테이블을 쓰지 않는다 — 판정 전체가 SELECT 한 문장이고, 결과(id·사유)를
+    클라이언트에서 접는다. 로컬 파일과 Turso 원격이 같은 경로를 탄다 (D75).
     """
     cutoff = conn.execute(
         "SELECT CAST(strftime('%%s','now','-%d days') AS INTEGER)" % keep_days).fetchone()[0]
@@ -59,9 +75,7 @@ def plan(conn, keep_days=KEEP_DAYS, bucket=BUCKET_SEC):
     # LAG로 앞 관측과 비교하므로 상품×문맥 안에서 시각 순으로 훑어야 한다.
     # obs_attr는 관측당 묶음 서명(이름=값을 이름순으로 이어붙임)으로 접어 비교한다
     # — 행 단위로 비교하면 "지표가 사라진" 변화를 놓친다.
-    conn.execute("DROP TABLE IF EXISTS _prune_keep")
-    conn.execute("""
-        CREATE TEMP TABLE _prune_keep AS
+    rows = conn.execute("""
         WITH oa_sig AS (
             -- 구분자는 제어문자(RS/US)다 — '|'나 '='를 쓰면 값에 그 문자가 든
             -- 다른 속성 집합이 같은 서명이 되어 진짜 변화가 지워질 수 있다
@@ -121,39 +135,68 @@ def plan(conn, keep_days=KEEP_DAYS, bucket=BUCKET_SEC):
                  ELSE NULL
                END AS why
         FROM seq
-    """, (bucket, cutoff))
-    counts = dict(conn.execute(
-        "SELECT COALESCE(why,'(지움)'), COUNT(*) FROM _prune_keep GROUP BY 1").fetchall())
-    total = conn.execute("SELECT COUNT(*) FROM obs_base").fetchone()[0]
-    return counts, total
+    """, (bucket, cutoff)).fetchall()
+
+    counts, drop_ids = {}, []
+    for r in rows:
+        why = r["why"]
+        counts["(지움)" if why is None else why] = \
+            counts.get("(지움)" if why is None else why, 0) + 1
+        if why is None:
+            drop_ids.append(r["id"])
+    return counts, len(rows), drop_ids
 
 
-def apply_prune(conn):
-    cur = conn.execute("DELETE FROM obs_base WHERE id IN "
-                       "(SELECT id FROM _prune_keep WHERE why IS NULL)")
+def apply_prune(conn, drop_ids):
+    """청크로 나눠 지운다. obs_attr를 먼저 명시 삭제한다 — FK CASCADE가 받쳐
+    주지만, 원격 백엔드에서 pragma가 다르게 굴러도 고아 행이 안 남게 양쪽에서
+    지운다 (명시 삭제가 정본, CASCADE는 보험)."""
+    n = 0
+    for i in range(0, len(drop_ids), DELETE_CHUNK):
+        chunk = drop_ids[i:i + DELETE_CHUNK]
+        ph = ",".join("?" * len(chunk))
+        conn.execute("DELETE FROM obs_attr WHERE obs_id IN (%s)" % ph, tuple(chunk))
+        conn.execute("DELETE FROM obs_base WHERE id IN (%s)" % ph, tuple(chunk))
+        n += len(chunk)
     conn.commit()
-    return cur.rowcount
+    return n
+
+
+def cron_line():
+    """주간 자동 솎기 crontab 등록 줄 (D75). 일요일 04:10 — 랭킹 스냅샷(:07·:37)과
+    분 단위가 겹치지 않는다. env를 소싱해 Turso 정본을 대상으로 돈다."""
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))))
+    return ("10 4 * * 0 /bin/zsh -c 'source ~/.config/intel/env && "
+            "cd %s && .venv/bin/python3 skills/commerce-intel/scripts/prune.py --apply' "
+            ">> %s/data/prune-cron.log 2>&1 # commerce-intel-prune-weekly"
+            % (repo, repo))
 
 
 def main():
     ap = argparse.ArgumentParser(description="오래된 관측 솎기 — 변화 순간은 보존 (D45)")
-    ap.add_argument("--db", default=os.environ.get("INTEL_DB", "data/intel.db"))
+    ap.add_argument("--db", default=schema_v3.default_db_target(),
+                    help="경로 또는 libsql:// URL (기본: INTEL_DB_URL > INTEL_DB > data/intel.db)")
     ap.add_argument("--keep-days", type=int, default=KEEP_DAYS)
     ap.add_argument("--bucket-minutes", type=int, default=BUCKET_SEC // 60)
     ap.add_argument("--apply", action="store_true", help="실제로 지운다 (없으면 예행)")
+    ap.add_argument("--cron", action="store_true", help="주간 자동 실행 crontab 줄만 출력")
     a = ap.parse_args()
 
-    conn = sqlite3.connect(a.db)
-    # FK는 커넥션 설정 — 안 켜면 관측 삭제 시 obs_attr CASCADE가 조용히 안 돌아
-    # 고아 행이 남는다 (스키마 obs_attr 주석이 전제하는 그 동작이다)
-    conn.execute("PRAGMA foreign_keys = ON")
+    if a.cron:
+        print(cron_line())
+        return 0
+
+    local = not schema_v3.is_libsql_url(a.db)
+    conn = schema_v3.open_db(a.db)   # FK pragma는 open_db가 켠다 (D69)
     if not _has_v2(conn):
         print("v2 스키마가 아니다 — migrate_v2.py를 먼저 돌려라.", file=sys.stderr)
         return 3
-    before = os.path.getsize(a.db)
-    counts, total = plan(conn, a.keep_days, a.bucket_minutes * 60)
-    drop = counts.get("(지움)", 0)
-    print("관측 %s행 · 최근 %d일 보존 · 그 이전은 %d분당 1개" % (
+    before = os.path.getsize(a.db) if local else None
+    counts, total, drop_ids = plan(conn, a.keep_days, a.bucket_minutes * 60)
+    drop = len(drop_ids)
+    print("대상 %s · 관측 %s행 · 최근 %d일 보존 · 그 이전은 %d분당 1개" % (
+        a.db if not local else os.path.abspath(a.db),
         "{:,}".format(total), a.keep_days, a.bucket_minutes))
     for k, label in (("recent", "최근이라 그대로"), ("change", "값이 바뀐 관측"),
                      ("edge", "첫·마지막 관측"), ("bucket", "구간 대표")):
@@ -163,12 +206,16 @@ def main():
     if not a.apply:
         print("\n예행이다. 실제로 지우려면 --apply 를 붙여라.")
         return 0
-    n = apply_prune(conn)
-    conn.execute("VACUUM")
-    conn.close()
-    after = os.path.getsize(a.db)
-    print("\n%s행 삭제 · %.2fMB → %.2fMB" % ("{:,}".format(n),
-                                          before / 1048576, after / 1048576))
+    n = apply_prune(conn, drop_ids)
+    if local:
+        conn.execute("VACUUM")   # 원격(Turso)은 서버가 공간을 관리한다 — 안 보낸다
+        conn.close()
+        after = os.path.getsize(a.db)
+        print("\n%s행 삭제 · %.2fMB → %.2fMB" % ("{:,}".format(n),
+                                              before / 1048576, after / 1048576))
+    else:
+        conn.close()
+        print("\n%s행 삭제 (원격 — VACUUM은 서버 몫)" % "{:,}".format(n))
     return 0
 
 

@@ -7,7 +7,7 @@ description: >-
   "브랜드명 수정해줘". 수집 — "무신사에서 2000아카이브스 수집해줘".
   분석 — "2000아카이브스 인사이트 뽑아줘", "EDA 먼저 보여줘".
 metadata:
-  version: 1.3.0
+  version: 1.3.1
   db-schema: v3 (D65)
 ---
 
@@ -302,6 +302,12 @@ cd ${INTEL_REPO:-~/workspace/commerce-intel} && source .venv/bin/activate
 | 속성 재사용 | `python3 skills/commerce-intel/scripts/intel_db.py reuse-attrs {raw.json}` |
 | 데이터 내보내기 | `python3 skills/commerce-intel/scripts/intel_db.py export --table {테이블명}` |
 | 라이프사이클 태그 | `python3 skills/commerce-intel/scripts/intel_db.py tag-lifecycle` |
+| 관측 솎기(prune) | `python3 skills/commerce-intel/scripts/prune.py` (예행) / `--apply` (실제 삭제) |
+
+관측 솎기는 **매주 일요일 04:10에 crontab으로 자동 실행**된다(D75) — Turso 정본을
+직접 솎고 로그는 레포 `data/prune-cron.log`에 남는다. 30일 이내 관측은 손대지 않고,
+값이 바뀐 순간·첫/끝 관측은 영구 보존, 지워지는 건 변화 없는 구간의 중복뿐이다.
+수동으로 돌릴 때는 예행(기본)으로 삭제 규모를 먼저 확인하고 `--apply`한다.
 
 ## 분석 (Analyze + Report)
 
