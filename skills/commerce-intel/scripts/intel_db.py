@@ -264,7 +264,7 @@ def load_file(conn, path, quiet=False, db_path=None):
     안 넘기면 DEFAULT_DB 기준(환경변수 규약과 같다).
     """
     data = json.loads(Path(path).read_text(encoding="utf-8"))
-    meta, items = data.get("meta", {}), data.get("items", [])
+    meta, items = data.get("meta", {}), data.get("items") or data.get("data", [])
     site = meta.get("site")
     collected_at = meta.get("collected_at") or now_str()
     ctx = context_of(meta)
