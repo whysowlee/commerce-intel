@@ -715,11 +715,18 @@ def ensure_rule_proxies(db_path, contexts, cards_path=None, quiet=False):
         return None
 
 
-def build(db_path, contexts, ai_notes=None, auto_proxy=True, own_brands=None):
-    """분석 단을 돌리고 그 판정 결과에서 실을 것을 고른다."""
+def build(db_path, contexts, ai_notes=None, auto_proxy=True, own_brands=None,
+          signals=None):
+    """분석 단을 돌리고 그 판정 결과에서 실을 것을 고른다.
+
+    `signals` — eda.py --out 산출물(dict). 요청 문맥이 같으면 분석 단이 EDA를
+    재수행하지 않는다 (D74). 주의: auto_proxy가 이 사이에 새 프록시 판정을
+    만들 수 있다 — EDA의 축 검사는 데이터 품질 수준이라 무시해도 되는 차이다.
+    """
     if auto_proxy:
         ensure_rule_proxies(db_path, contexts)
-    res = an.analyze(db_path, contexts, ai_notes, own_brands=own_brands)
+    res = an.analyze(db_path, contexts, ai_notes, own_brands=own_brands,
+                     signals=signals)
     if not res["ok"]:
         return None, res
     hyps = res["hypotheses"]
@@ -1110,6 +1117,8 @@ def main():
                     "있으면 템플릿 액션 대신 실린다 (D64)")
     ap.add_argument("--no-auto-proxy", action="store_true",
                     help="rule 프록시 자동 생성을 건너뛴다 (기본은 만든다 — D51)")
+    ap.add_argument("--signals", help="eda.py --out 산출 JSON — 요청 문맥이 같으면 "
+                                      "EDA를 재수행하지 않고 재사용한다 (D74)")
     a = ap.parse_args()
 
     target = a.target or (", ".join(a.context) if a.context else "전체")
@@ -1117,8 +1126,12 @@ def main():
     if a.ai_notes:
         import json
         notes = json.loads(open(a.ai_notes, encoding="utf-8").read())
+    signals = None
+    if a.signals:
+        import json as _j
+        signals = _j.loads(open(a.signals, encoding="utf-8").read())
     res, raw = build(a.db, a.context, notes, auto_proxy=not a.no_auto_proxy,
-                     own_brands=a.own_brand)
+                     own_brands=a.own_brand, signals=signals)
     if res is not None and a.ai_actions:
         import json as _json
         res["ai_actions"] = _json.loads(open(a.ai_actions, encoding="utf-8").read())

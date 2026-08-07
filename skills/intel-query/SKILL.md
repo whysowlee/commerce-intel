@@ -7,7 +7,7 @@ description: >-
   "브랜드명 수정해줘". 수집 — "무신사에서 2000아카이브스 수집해줘".
   분석 — "2000아카이브스 인사이트 뽑아줘", "EDA 먼저 보여줘".
 metadata:
-  version: 1.2.0
+  version: 1.3.0
   db-schema: v3 (D65)
 ---
 
@@ -339,8 +339,26 @@ python3 skills/commerce-intel/scripts/eda.py \
 python3 skills/commerce-intel/scripts/insight.py \
     --context "{context}" \
     --target "{target}" \
+    --signals data/eda-signals.json \
     --out output/
 ```
+
+- `--signals`: A단계에서 만든 EDA 결과를 재사용한다 — **사용자에게 보여준 EDA와
+  분석이 쓴 EDA가 같은 파일**이 되고, Turso 왕복도 아낀다. 요청 문맥이 다르면
+  자동으로 EDA를 새로 수행하니 안심하고 넘겨도 된다. A단계를 건너뛰었으면 생략.
+- **방법론 조정**: 분석 기법은 6종 고정이다 — 그룹 비교 · 순위 상관 ·
+  이중차분(가격 변경 효과) · 용량-반응(할인 폭별) · 쌍체 비교(플랫폼 간) ·
+  소진 속도. 사용자가 "그룹 비교는 빼줘", "소진 속도 위주로" 같은 요청을 하면
+  `--ai-notes` JSON으로 조정한다:
+  ```bash
+  # 예: {"exclude": [{"method": "group_compare", "reason": "사용자 요청"}]}
+  python3 skills/commerce-intel/scripts/insight.py --context "{context}" \
+      --target "{target}" --ai-notes data/notes.json --out output/
+  ```
+  method 값: `group_compare` / `correlation` / `did` / `dose_response` /
+  `paired_platform` / `depletion`. 6종 밖의 기법("회귀분석 해줘")은 파이프라인이
+  실행하지 않는다 — 필요하면 queryDB로 데이터를 뽑아 즉석에서 답하되, 그 결과는
+  5관문 검증을 거치지 않았음을 함께 말한다.
 
 - `{target}` 예: `2000아카이브스`, `여성데님팬츠` — 리포트 제목에 쓰인다
 - 출력 PDF 2개:
@@ -375,8 +393,10 @@ python3 skills/intel-fashion-md/scripts/sanity_check.py \
 ### 분석 안전 규칙
 
 1. **EDA → 분석 → 리포트 순서를 지킨다.** EDA 없이 바로 분석하지 않는다.
-2. **대규모 분석(관측 10,000건 이상) 전에 예상 소요를 안내한다.** 규모는 EDA의
-   grain 검사(또는 COUNT 쿼리)로 먼저 확인한다.
+2. **분석 전에 예상 소요를 항상 안내한다.** Turso 직접 연결 분석은 쿼리·프록시
+   판정이 건건이 네트워크를 타서 **소규모(관측 ~1,000건)도 30분 안팎**이다
+   (실측 2026-08-07: 상품 774건·관측 1,070건 → 29분). EDA는 1분 미만이니
+   "EDA 먼저 → 규모·소요 안내 → 확인 후 분석" 순서가 기본이다.
 3. **PDF 출력 경로를 사용자에게 안내한다.** Aside에서 PDF를 직접 열 수는 없으므로
    "output/ 디렉토리에 생성됐습니다"로 경로를 알려준다.
 4. **분석 실패 시 에러를 사람이 읽는 표현으로 바꿔서 전달한다.** Python traceback을
@@ -391,7 +411,7 @@ python3 skills/intel-fashion-md/scripts/sanity_check.py \
 1. context 결정: brand:2000아카이브스 + brand:2000 Archives (한글·영문 둘 다)
 2. EDA 실행 → data/eda-signals.json 읽고 핵심 발견을 사용자에게 요약
 3. "분석 진행할까요?" 확인 (관측 10,000건 이상이면 예상 소요 안내)
-4. insight.py 실행 (분석 + 리포트 생성)
+4. insight.py 실행 — --signals로 2번의 EDA 결과를 재사용 (분석 + 리포트 생성)
 5. PDF 경로 안내: "output/insight-2000아카이브스-20260807-1430.pdf 에 생성됐습니다"
 6. 강한 주장 상위 3개를 요약해서 보여줌
 
