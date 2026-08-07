@@ -445,9 +445,11 @@ python3 skills/intel-fashion-md/scripts/sanity_check.py \
 
 ```bash
 cp -r skills/intel-query ~/.aside/u/0/skills/user/intel-query
-# 또는 심링크 (원본 수정이 바로 반영):
-# ln -s ~/workspace/commerce-intel/skills/intel-query ~/.aside/u/0/skills/user/intel-query
 ```
+
+**심링크는 쓰지 않는다** — `ln -s`로 걸면 Aside 스킬 목록에 안 잡힌다
+(2026-08-07 실측: 심링크로 교체하자 스킬이 목록에서 사라졌고, 실제 폴더
+복사로 되돌리니 복구됐다). 스킬을 갱신하면 위 명령으로 다시 복사한다.
 
 1. Aside 브라우저 설치 + Claude 구독 활성화
 2. 위 명령으로 스킬 폴더 복사
