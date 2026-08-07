@@ -974,6 +974,54 @@ def cmd_stats(conn, args):
         print(f"  {c['context']}: {c['n']}건 ({c['a']} ~ {c['b']})")
 
 
+def cmd_clean_orphans(conn, args):
+    """대량 삭제가 남긴 고아 참조 행 정리 (D73).
+
+    상품·관측을 지워도 그 수집이 남긴 `runs`·`contexts`·`brands` 행은 남는다 —
+    시트 미러의 runs 탭에 죽은 수집 이력이 계속 보이고, check-run이 "이미
+    수집했다"고 오판하며(재수집 차단), 브랜드 사전이 유령 행으로 부푼다
+    (2026-08-07 실측: 대량 삭제 후 runs 1,533 · brands 1,585 · contexts 14 고아).
+
+    지우는 것:
+    - runs: 관측이 하나도 참조하지 않는 행. 단 **최근 48시간은 남긴다** —
+      "수집은 했는데 전부 중복이라 관측 0건"인 정상 이력이 있고, 그걸 지우면
+      check-run 중복 방지가 뚫려 같은 대상을 바로 재수집하게 된다
+    - contexts: 관측이 참조하지 않는 행 (다음 수집이 필요하면 다시 만든다)
+    - brands: 상품·별명·입점처 어디서도 참조하지 않는 행
+
+    --dry-run이면 지울 개수만 보여준다.
+    """
+    cutoff = (datetime.now() - timedelta(hours=48)).strftime("%Y-%m-%d %H:%M:%S")
+    # DELETE는 같은 문장을 SELECT COUNT(*)→DELETE로 치환해 쓴다 — 별칭은
+    # SQLite DELETE 문법이 요구하는 `AS` 형태로만 쓴다
+    targets = [
+        ("runs", "SELECT COUNT(*) FROM runs AS r WHERE NOT EXISTS "
+                 "(SELECT 1 FROM obs_base o WHERE o.run_id = r.id) "
+                 "AND r.collected_at < ?", (cutoff,)),
+        ("contexts", "SELECT COUNT(*) FROM contexts AS c WHERE NOT EXISTS "
+                     "(SELECT 1 FROM obs_base o WHERE o.context_id = c.context_id)", ()),
+        ("brands", "SELECT COUNT(*) FROM brands AS b WHERE NOT EXISTS "
+                   "(SELECT 1 FROM product_base p WHERE p.brand_id = b.brand_id) "
+                   "AND NOT EXISTS (SELECT 1 FROM brand_aliases a "
+                   "WHERE a.brand_id = b.brand_id) "
+                   "AND NOT EXISTS (SELECT 1 FROM brand_platforms bp "
+                   "WHERE bp.brand_id = b.brand_id)", ()),
+    ]
+    total = 0
+    for name, count_sql, params in targets:
+        n = conn.execute(count_sql, params).fetchone()[0]
+        total += n
+        print(f"{name}: 고아 {n}건" + (" (48시간 이내 수집 이력은 보존)"
+                                        if name == "runs" else ""))
+        if n and not args.dry_run:
+            conn.execute(count_sql.replace("SELECT COUNT(*)", "DELETE", 1), params)
+    if args.dry_run:
+        print(f"dry-run — 지우려면 --dry-run 없이 다시 실행 (총 {total}건)")
+        return
+    conn.commit()
+    print(f"정리 완료: 총 {total}건")
+
+
 def cmd_merge(conn, args):
     """다른 사람의 DB를 이 DB에 합친다 (D31 완화책).
 
@@ -1244,6 +1292,9 @@ def main():
     sub.add_parser("attr-stats")       # D35 — 속성별 판정 현황
     sp = sub.add_parser("tag-lifecycle")   # D35 — 자사 상품 온고잉/시즌 태깅
     sp.add_argument("--file", help="자사 목록 JSON (기본 assets/own-brand.json)")
+    sp = sub.add_parser("clean-orphans",   # D73 — 대량 삭제 후 참조 테이블 정리
+                        help="관측이 참조하지 않는 runs·contexts·brands 고아 행 정리")
+    sp.add_argument("--dry-run", action="store_true", help="지울 개수만 보여준다")
     args = p.parse_args()
 
     conn = connect(args.db)
@@ -1281,6 +1332,8 @@ def main():
         cmd_attr_stats(conn, args)
     elif args.cmd == "tag-lifecycle":
         cmd_tag_lifecycle(conn, args)
+    elif args.cmd == "clean-orphans":
+        cmd_clean_orphans(conn, args)
 
 
 if __name__ == "__main__":

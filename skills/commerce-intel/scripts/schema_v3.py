@@ -412,17 +412,29 @@ class LibsqlConnection:
         return self._raw.execute("SELECT total_changes()").fetchone()[0]
 
 
+def pick_token(explicit=None):
+    """Turso 인증 토큰 선택 — 인자 > INTEL_DB_WRITE_TOKEN > INTEL_DB_TOKEN (D73).
+
+    토큰이 읽기/쓰기로 분리됐다: INTEL_DB_TOKEN은 **읽기 전용**(팀 배포용),
+    INTEL_DB_WRITE_TOKEN은 **쓰기**(수집·적재 파이프라인 머신에만). 파이프라인
+    스크립트는 적재·sync_state·insights 쓰기가 필요하므로 쓰기 토큰이 있으면
+    그걸 쓴다 — 읽기 토큰만 가진 환경(팀원 조회)은 자동으로 읽기 전용이 되고,
+    쓰기가 필요한 명령은 DB 단에서 거부된다.
+    """
+    return (explicit or os.environ.get("INTEL_DB_WRITE_TOKEN")
+            or os.environ.get("INTEL_DB_TOKEN", ""))
+
+
 def open_db(target, token=None):
     """경로 또는 libsql:// URL → 커넥션. 이 저장소의 **모든 DB 열기 통로**다 (D67).
 
-    - libsql:// → Turso. 토큰은 인자 또는 INTEL_DB_TOKEN
+    - libsql:// → Turso. 토큰은 인자 > INTEL_DB_WRITE_TOKEN > INTEL_DB_TOKEN (D73)
     - 그 외     → 로컬 SQLite (file: 접두사 허용). row_factory=Row까지 맞춰 준다
     """
     import sqlite3
     if is_libsql_url(target):
         import libsql_experimental as libsql   # Turso 모드에서만 필요 (조건부 의존)
-        raw = libsql.connect(
-            target, auth_token=token or os.environ.get("INTEL_DB_TOKEN", ""))
+        raw = libsql.connect(target, auth_token=pick_token(token))
         conn = LibsqlConnection(raw)
     else:
         path = str(target)
