@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from schema_v3 import (SCHEMA_V3, TRIGGERS_V3, VIEWS_V3,   # noqa: E402
                        assign_category, default_db_target, is_libsql_url,
                        open_db,                        record_proxy_transition, rowid_parts)
+from intel_data import band_floor   # noqa: E402 — 누적판매 구간 하한 적재 (D76)
 
 # 작업 폴더 기준이다(스킬 §파일 규약). Turso 이전(D67) 후에는 INTEL_DB_URL이
 # 이기고, 없으면 기존 INTEL_DB(로컬 경로) → data/intel.db 순이다.
@@ -297,6 +298,12 @@ def load_file(conn, path, quiet=False, db_path=None):
         cols = [it.get(f) for f in OBS_FIELDS]
         so = it.get("sold_out")
         cols[OBS_FIELDS.index("sold_out")] = None if so is None else (1 if so else 0)
+        # 누적판매가 구간 표기("1.8천 개 이상")뿐이면 **하한을 정수로** 적재한다
+        # (D76 — 사용자 결정. D48의 "정수 칸 금지"를 purchase_count에 한해 뒤집음).
+        # 원문은 purchase_count_display에 그대로 남는다 — 하한임을 되짚을 수 있다.
+        _pi = OBS_FIELDS.index("purchase_count")
+        if cols[_pi] is None:
+            cols[_pi] = band_floor(cols[OBS_FIELDS.index("purchase_count_display")])
         try:
             conn.execute(
                 f"INSERT INTO observations (site, product_id, observed_at, context, "

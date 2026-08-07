@@ -1493,6 +1493,54 @@ def d71_tests():
     shutil.rmtree(work, ignore_errors=True)
 
 
+def d76_tests():
+    """누적판매 구간 하한 적재 (D76) — display만 있으면 purchase_count에 하한.
+
+    E-DB-43: 수치 없이 구간 표기만 온 관측은 purchase_count = band_floor(원문),
+    원문은 display에 보존. 수치가 있으면 수치가 이기고, 못 읽는 표기는 NULL 유지.
+    view/like는 예외 밖 — display가 있어도 정수 칸은 NULL이다.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    intel_db = importlib.import_module("intel_db")
+    work = Path(tempfile.mkdtemp(prefix="d76-"))
+    db = str(work / "b.db")
+    conn = intel_db.connect(db)
+    raw = {"meta": {"schema_version": "1.0", "site": "musinsa",
+                    "story": "brand-linesheet", "target": "T",
+                    "collected_at": "2026-08-07 10:00:00", "item_count": 4},
+           "items": [
+               {"product_id": "B1", "name": "구간만", "brand": "브랜드",
+                "purchase_count_display": "1.8천 개 이상",
+                "view_count_display": "2.4만 회 이상"},
+               {"product_id": "B2", "name": "수치우선", "brand": "브랜드",
+                "purchase_count": 777, "purchase_count_display": "1.8천 개 이상"},
+               {"product_id": "B3", "name": "못읽음", "brand": "브랜드",
+                "purchase_count_display": "인기 폭발"},
+               {"product_id": "B4", "name": "표기없음", "brand": "브랜드"},
+           ]}
+    f = work / "d76.json"
+    f.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+    intel_db.load_file(conn, f, quiet=True, db_path=db)
+    got = {r["product_id"]: r for r in conn.execute(
+        "SELECT product_id, purchase_count, purchase_count_display, view_count "
+        "FROM observations WHERE site='musinsa'")}
+    check("E-DB-43 구간 표기만 있으면 purchase_count = 하한(1.8천→1800)",
+          got["B1"]["purchase_count"] == 1800, dict(got["B1"]))
+    check("E-DB-43b 원문이 display에 그대로 보존된다",
+          got["B1"]["purchase_count_display"] == "1.8천 개 이상", dict(got["B1"]))
+    check("E-DB-43c view는 예외 밖 — display가 있어도 정수 칸 NULL",
+          got["B1"]["view_count"] is None, dict(got["B1"]))
+    check("E-DB-43d 수치가 있으면 수치가 이긴다", got["B2"]["purchase_count"] == 777,
+          dict(got["B2"]))
+    check("E-DB-43e 못 읽는 표기는 NULL 유지 (지어내지 않는다)",
+          got["B3"]["purchase_count"] is None, dict(got["B3"]))
+    check("E-DB-43f 표기 자체가 없으면 NULL", got["B4"]["purchase_count"] is None,
+          dict(got["B4"]))
+    conn.close()
+    shutil.rmtree(work, ignore_errors=True)
+
+
 def check_run_tests():
     """팀 중복 수집 방지 (D67) — **시간대 회귀 포함** (PR #13 리뷰 Blocker).
 
@@ -2323,6 +2371,9 @@ def main():
 
     print("[21g] 미완 항목 일괄 처리 (D71 · E-DB-39·40·41)")
     d71_tests()
+
+    print("[21h] 누적판매 구간 하한 적재 (D76 · E-DB-43)")
+    d76_tests()
 
     print("[21f] 레거시 proxy.db 병합 — 재이관 가드 (D69 · E-PM)")
     proxy_merge_tests()

@@ -109,7 +109,7 @@ async function writeDB(sql, writeToken) {
 
 ### 핵심 테이블 (반드시 뷰 이름으로 쿼리할 것)
 - 상품(products 뷰): site, product_id, name, brand, category, url, image_url, static_verified_at
-- 관측(observations 뷰): site, product_id, observed_at, context, price_original(정가), price_sale(판매가), discount_rate(할인율%), review_count, rating, view_count, purchase_count(누적판매), like_count(하트), viewers_now, sold_out(1=품절/0=판매중/NULL=미노출), rank, run_id
+- 관측(observations 뷰): site, product_id, observed_at, context, price_original(정가), price_sale(판매가), discount_rate(할인율%), review_count, rating, view_count, purchase_count(누적판매 — 무신사 구간 표기 "1.8천 개 이상"은 하한 1,800으로 적재된다(D76). 원문은 purchase_count_display 컬럼에 보존 — 이 값은 "적어도 이만큼"이지 정확값이 아니므로 평균·합계 해석 시 그 사실을 함께 말한다), like_count(하트), viewers_now, sold_out(1=품절/0=판매중/NULL=미노출), rank, run_id
 - 옵션(variants 뷰): site, product_id, option_id, option_name, color, size
 - 옵션관측(variant_observations 뷰): site, product_id, option_id, observed_at, sold_out, stock_qty
 - 상품속성(product_attributes 뷰): site, product_id, attr_name, value, basis
