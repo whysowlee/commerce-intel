@@ -222,6 +222,14 @@ CREATE TABLE IF NOT EXISTS sync_state (
     table_name TEXT PRIMARY KEY,
     last_synced_key TEXT,
     updated_at TEXT);
+-- 미러 변경 감지 (D72) — 증분 미러 탭 원본의 UPDATE·DELETE 횟수를 센다.
+-- 증분 미러는 rowid 진행점 뒤의 새 행만 올리므로, 이미 올라간 행의 수정·삭제는
+-- 이 카운터가 유일한 감지 경로다. TRIGGERS_V3의 AFTER 트리거가 채우고,
+-- sync_sheets가 탭 재구축 후 본 만큼 차감한다. table_name은 뷰(탭) 이름 기준.
+CREATE TABLE IF NOT EXISTS mirror_dirty (
+    table_name TEXT PRIMARY KEY,
+    changes INTEGER NOT NULL DEFAULT 0,
+    changed_at TEXT);
 
 -- ── 프록시 (본 DB 통합 — D69, 구 D65-8 별도 파일 폐기) ────────────────────
 -- lazy 판정으로 전환한 뒤 캐시가 천천히 쌓이므로 분리의 이점이 약해졌고,
@@ -692,6 +700,60 @@ CREATE TRIGGER trg_attr_upd INSTEAD OF UPDATE ON product_attributes BEGIN
   WHERE attr_name=OLD.attr_name AND pk=(
     SELECT p.pk FROM product_base p JOIN sites s ON s.site_id=p.site_id
     WHERE s.name=OLD.site AND p.product_id=OLD.product_id);
+END;
+
+-- ── 미러 변경 감지 (D72) — 증분 미러 탭 원본의 UPDATE·DELETE를 센다 ────────
+-- INSERT는 세지 않는다: append는 증분 미러의 정상 경로다. 카운터가 0이 아니면
+-- sync_sheets가 그 탭을 전체 재구축한다. 한계: INSERT OR REPLACE의 내부 삭제는
+-- 재귀 트리거가 꺼져 있어 DELETE 트리거를 안 태운다 — 그 경로는 sync_sheets의
+-- 총계 대조(audit)와 --repair가 받친다.
+DROP TRIGGER IF EXISTS trg_obs_dirty_upd;
+CREATE TRIGGER trg_obs_dirty_upd AFTER UPDATE ON obs_base BEGIN
+  INSERT INTO mirror_dirty VALUES ('observations', 1, datetime('now','localtime'))
+  ON CONFLICT(table_name) DO UPDATE SET changes = changes + 1,
+      changed_at = excluded.changed_at;
+END;
+DROP TRIGGER IF EXISTS trg_obs_dirty_del;
+CREATE TRIGGER trg_obs_dirty_del AFTER DELETE ON obs_base BEGIN
+  INSERT INTO mirror_dirty VALUES ('observations', 1, datetime('now','localtime'))
+  ON CONFLICT(table_name) DO UPDATE SET changes = changes + 1,
+      changed_at = excluded.changed_at;
+END;
+DROP TRIGGER IF EXISTS trg_vobs_dirty_upd;
+CREATE TRIGGER trg_vobs_dirty_upd AFTER UPDATE ON variant_obs_base BEGIN
+  INSERT INTO mirror_dirty VALUES ('variant_observations', 1, datetime('now','localtime'))
+  ON CONFLICT(table_name) DO UPDATE SET changes = changes + 1,
+      changed_at = excluded.changed_at;
+END;
+DROP TRIGGER IF EXISTS trg_vobs_dirty_del;
+CREATE TRIGGER trg_vobs_dirty_del AFTER DELETE ON variant_obs_base BEGIN
+  INSERT INTO mirror_dirty VALUES ('variant_observations', 1, datetime('now','localtime'))
+  ON CONFLICT(table_name) DO UPDATE SET changes = changes + 1,
+      changed_at = excluded.changed_at;
+END;
+DROP TRIGGER IF EXISTS trg_pxc_dirty_upd;
+CREATE TRIGGER trg_pxc_dirty_upd AFTER UPDATE ON proxy_cache BEGIN
+  INSERT INTO mirror_dirty VALUES ('proxy_cache', 1, datetime('now','localtime'))
+  ON CONFLICT(table_name) DO UPDATE SET changes = changes + 1,
+      changed_at = excluded.changed_at;
+END;
+DROP TRIGGER IF EXISTS trg_pxc_dirty_del;
+CREATE TRIGGER trg_pxc_dirty_del AFTER DELETE ON proxy_cache BEGIN
+  INSERT INTO mirror_dirty VALUES ('proxy_cache', 1, datetime('now','localtime'))
+  ON CONFLICT(table_name) DO UPDATE SET changes = changes + 1,
+      changed_at = excluded.changed_at;
+END;
+DROP TRIGGER IF EXISTS trg_phist_dirty_upd;
+CREATE TRIGGER trg_phist_dirty_upd AFTER UPDATE ON product_history BEGIN
+  INSERT INTO mirror_dirty VALUES ('product_changes', 1, datetime('now','localtime'))
+  ON CONFLICT(table_name) DO UPDATE SET changes = changes + 1,
+      changed_at = excluded.changed_at;
+END;
+DROP TRIGGER IF EXISTS trg_phist_dirty_del;
+CREATE TRIGGER trg_phist_dirty_del AFTER DELETE ON product_history BEGIN
+  INSERT INTO mirror_dirty VALUES ('product_changes', 1, datetime('now','localtime'))
+  ON CONFLICT(table_name) DO UPDATE SET changes = changes + 1,
+      changed_at = excluded.changed_at;
 END;
 """
 

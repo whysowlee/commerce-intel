@@ -12,8 +12,9 @@
 동작:
   - products·variants·platforms·runs: 탭 전체 다시 쓰기 (행 수가 작다)
   - observations·variant_observations: rowid 기준 증분 append (sync_state가 진행점 기억)
-  - 증분 탭은 동기화 전에 DB 행 수와 시트 행 수를 대조한다 — DB가 더 적으면
-    삭제가 있었던 것이니 탭을 전체 재구축한다 (증분 append는 삭제를 못 지운다)
+  - 증분 탭은 동기화 전에 편집·삭제를 감지한다(mirror_dirty 트리거 카운터 +
+    행 수 대조 보조) — 걸리면 탭을 전체 재구축한다 (증분 append는 이미 올라간
+    행의 수정·삭제를 반영하지 못한다)
   - 시트는 보는 창구다 — 시트에서 손으로 고친 값은 다음 미러에서 덮일 수 있다
   - 실패해도 수집·적재는 유효하다. exit 3 = 인증/설정 없음, exit 1 = 동기화 실패
 """
@@ -58,7 +59,7 @@ TABLE_DESC = {  # 안내 탭에 싣는 원본 탭 설명
 }
 NOTICE = ("이 스프레드시트는 로컬 정본 DB(data/intel.db)의 단방향 미러입니다. "
           "여기서 고친 값은 정본에 반영되지 않고 다음 동기화 때 덮일 수 있습니다. "
-          "DB에서 삭제된 행은 다음 동기화에서 자동 반영됩니다.")
+          "DB에서 수정·삭제된 행은 다음 동기화에서 자동 반영됩니다.")
 
 
 def open_spreadsheet(config_path, creds_path):
@@ -243,24 +244,47 @@ def set_sync_state(conn, table, key, now):
 def sync_incr_tab(conn, c, ws, table, total, now):
     """증분 탭 하나를 동기화한다. 반환: 시트 안착 실패 시 (올린 행, 늘어난 행), 아니면 None.
 
-    **삭제 감지** — 증분 append는 rowid 진행점 뒤의 새 행만 올린다. DB에서 행을
-    지우면 시트에 이미 올라간 행이 그대로 남는다(append-only 가정이 깨진다).
-    DB 행 수 < 시트 행 수면 삭제가 있었던 것이니 탭을 전체 재구축하고 진행점을
-    현재 최대 rowid로 리셋한다. 평시(DB ≥ 시트)는 기존 증분 append 그대로다.
+    증분 append는 rowid 진행점 뒤의 **새 행**만 올린다 — 이미 올라간 행의
+    수정(UPDATE)·삭제(DELETE)는 이 경로로는 영영 반영되지 않는다. 그래서
+    감지 경로가 둘이고, 걸리면 탭을 전체 재구축하고 진행점을 리셋한다:
+
+    1. **mirror_dirty 카운터** (D72) — 원본 테이블의 AFTER UPDATE/DELETE
+       트리거(schema_v3)가 센다. 편집·삭제 모두, 그리고 삭제 수와 신규 수가
+       상쇄돼 행 수가 안 변한 경우까지 잡는다 (PR #21 리뷰).
+    2. **행 수 대조** (보조) — DB 행 수 < 시트 행 수. 트리거가 생기기 전의
+       변경, INSERT OR REPLACE의 내부 삭제(재귀 트리거 off라 카운터 밖) 등
+       카운터가 못 본 경로를 받친다. 그마저 새는 잔여는 main()의 총계
+       대조(audit)와 --repair가 마지막으로 잡는다.
+
+    평시(카운터 0 · DB ≥ 시트)는 기존 증분 append 그대로다 — 감지 비용은
+    행 수 쿼리 하나뿐이고, 증분 조회는 재구축이 아닐 때만 실행한다.
     """
+    # c는 원본 테이블 커넥션 — D69(proxy.db 본 DB 통합) 이후 항상 conn과 같지만,
+    # "진행점은 정본(conn) 것"이라는 구분을 서명에 남겨 둔다
+    drow = conn.execute("SELECT changes FROM mirror_dirty WHERE table_name=?",
+                        (table,)).fetchone()
+    dirty = drow["changes"] if drow else 0
+    before = sheet_rows(ws)
+    if dirty or (before is not None and total < before):
+        why = (f"편집·삭제 {dirty}건 감지" if dirty
+               else f"삭제 감지 (DB {total}행 < 시트 {before}행)")
+        print(f"{table}: {why} → 전체 재구축")
+        hdr, alldata, maxr = rows_of(c, table)
+        rebuild_tab(ws, hdr, alldata)
+        if dirty:
+            # 본 만큼만 차감 — 재구축 도중 새 변경이 끼어들었으면 다음 실행이 잡는다
+            conn.execute("UPDATE mirror_dirty SET changes = changes - ? "
+                         "WHERE table_name=?", (dirty, table))
+        # 전량 삭제면 maxr가 None이다 — "None" 문자열이 박히면 다음 실행의
+        # int()가 죽는다 (PR #21 리뷰). 0이면 다음 증분이 처음부터 다시 본다.
+        set_sync_state(conn, table, maxr or 0, now)
+        print(f"{table}: 재구축 {len(alldata)}행 (rowid ≤ {maxr or 0})")
+        return None
+
     row = conn.execute(
         "SELECT last_synced_key FROM sync_state WHERE table_name=?", (table,)).fetchone()
     last = int(row["last_synced_key"]) if row and row["last_synced_key"] else 0
     headers, data, max_rowid = rows_of(c, table, since_rowid=last)
-
-    before = sheet_rows(ws)
-    if before is not None and total < before:
-        print(f"{table}: 삭제 감지 (DB {total}행 < 시트 {before}행) → 전체 재구축")
-        hdr, alldata, maxr = rows_of(c, table)
-        rebuild_tab(ws, hdr, alldata)
-        set_sync_state(conn, table, maxr, now)
-        print(f"{table}: 재구축 {len(alldata)}행 (rowid ≤ {maxr})")
-        return None
     if not data:
         print(f"{table}: 새 관측 없음")
         return None

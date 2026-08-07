@@ -883,7 +883,11 @@ class IncrFakeWS:
 
 
 def sheet_deletion_tests():
-    """시트 미러 삭제 감지 (D72) — DB에서 지운 행이 시트에 남지 않아야 한다."""
+    """시트 미러 편집·삭제 감지 (D72) — DB에서 고치거나 지운 행이 시트에 남지 않아야 한다.
+
+    감지는 mirror_dirty 트리거 카운터(UPDATE·DELETE·상쇄 케이스)가 하고,
+    행 수 대조(DB < 시트)가 트리거 이전 상태를 받친다. 둘 다 여기서 돈다.
+    """
     sys.modules.pop("sync_sheets", None)
     sys.path.insert(0, str(SCRIPTS))
     import importlib
@@ -935,6 +939,34 @@ def sheet_deletion_tests():
     body = [r for r in ws.grid[1:] if any(str(c).strip() for c in r)]
     check("E-SH-5 재구축 뒤에도 증분이 이어진다 (4+1=5행)",
           miss is None and len(body) == 5, len(body))
+
+    # ── 편집(UPDATE) 감지 — 행 수가 안 변해도 시트에 반영돼야 한다 ─────────
+    conn.execute("UPDATE obs_base SET price_sale = 99999 WHERE id = 2")
+    conn.commit()
+    dirty = conn.execute("SELECT changes FROM mirror_dirty "
+                         "WHERE table_name='observations'").fetchone()[0]
+    check("E-SH-6 UPDATE가 mirror_dirty 카운터를 올린다", dirty == 1, dirty)
+    miss = ss.sync_incr_tab(conn, conn, ws, "observations", total(), now)
+    body = [r for r in ws.grid[1:] if any(str(c).strip() for c in r)]
+    flat = {str(c) for r in body for c in r}
+    dirty = conn.execute("SELECT changes FROM mirror_dirty "
+                         "WHERE table_name='observations'").fetchone()[0]
+    check("E-SH-7 편집 감지 → 재구축, 고친 값이 시트에 반영된다",
+          miss is None and "99999" in flat and len(body) == total() == 5,
+          (len(body), "99999" in flat))
+    check("E-SH-8 재구축 후 카운터가 차감돼 다음은 평시 경로", dirty == 0, dirty)
+
+    # ── 삭제+신규가 상쇄돼 행 수가 같아도 잡는다 (PR #21 리뷰 엣지) ─────────
+    gone = conn.execute("SELECT price_sale FROM obs_base WHERE id = 1").fetchone()[0]
+    conn.execute("DELETE FROM obs_base WHERE id = 1")
+    conn.commit()
+    add_obs(1, 21)                      # 행 수는 삭제 전과 같은 5로 돌아온다
+    miss = ss.sync_incr_tab(conn, conn, ws, "observations", total(), now)
+    body = [r for r in ws.grid[1:] if any(str(c).strip() for c in r)]
+    flat = {str(c) for r in body for c in r}
+    check("E-SH-9 순증감 0(삭제 1+신규 1)도 재구축 — 지운 행이 시트에 없다",
+          miss is None and len(body) == total() == 5 and str(gone) not in flat,
+          (len(body), gone))
     conn.close()
     shutil.rmtree(work, ignore_errors=True)
 
@@ -1459,21 +1491,21 @@ def history_tests():
           and ah[0]["new_value"] == "스트레이트", [dict(r) for r in ah])
 
     # 멱등 업그레이드 — 이력 표를 지우고 다시 connect하면 되살아난다 (라이브 v3 경로).
-    # D69: 스키마 마커가 proxy_history로 옮겨졌다 — 구 v3 DB(프록시 표 이전)를
-    # 흉내내려면 프록시 표까지 같이 지워야 마커 부재 업그레이드가 발동한다
+    # D72: 스키마 마커가 mirror_dirty로 옮겨졌다 — 구 v3 DB(프록시 표 이전)를
+    # 흉내내려면 마커 표까지 같이 지워야 마커 부재 업그레이드가 발동한다
     conn.executescript("DROP VIEW product_changes; DROP VIEW attr_changes;"
                        "DROP TABLE product_history; DROP TABLE attr_history;"
                        "DROP TABLE proxy_history; DROP TABLE proxy_cache;"
-                       "DROP TABLE proxy_defs;")
+                       "DROP TABLE proxy_defs; DROP TABLE mirror_dirty;")
     conn.commit()
     conn.close()
     conn = intel_db.connect(db)
     tabs = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE name IN "
         "('product_history','attr_history','product_changes','attr_changes',"
-        "'proxy_defs','proxy_cache','proxy_history')")}
+        "'proxy_defs','proxy_cache','proxy_history','mirror_dirty')")}
     check("E-DB-37f 기존 v3 DB도 connect()가 이력 표·뷰를 멱등 생성한다",
-          len(tabs) == 7, sorted(tabs))
+          len(tabs) == 8, sorted(tabs))
     # 업그레이드는 1회다 — 표가 갖춰진 뒤에는 connect가 SCHEMA_V3를 다시 보내지
     # 않는다 (PR #14 리뷰: 매 connect마다 DDL 27줄을 Turso로 왕복시키면 안 된다)
     check("E-DB-37g 표가 갖춰지면 스키마 업그레이드가 더는 필요 없다",

@@ -155,6 +155,9 @@ async function writeDB(sql) {
 6. **DELETE/UPDATE는 WHERE 절 필수.** WHERE 없는 DELETE/UPDATE는 절대 실행하지 않는다.
 7. **DROP TABLE, ALTER TABLE, ATTACH, PRAGMA는 금지.** 스키마 변경은 이 스킬의 일이 아니다.
 8. 실행 후 영향받은 행 수를 알려준다.
+9. 편집(수정·삭제)한 내용은 구글 시트 미러에 **다음 동기화 때 자동 반영**된다
+   (DB 트리거가 변경을 감지해 해당 탭을 재구축). 바로 반영하고 싶으면
+   "시트 미러링 해줘"로 수동 동기화를 요청받아 실행한다.
 
 ### 공통
 9. **물리 테이블(_base 접미사) 직접 접근 금지.** 반드시 뷰 이름(products, observations, variants, variant_observations, product_attributes)으로 쿼리한다 — 뷰가 시각 변환·URL 조립·카테고리 계층 펴기를 처리한다.
