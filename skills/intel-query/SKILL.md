@@ -142,6 +142,41 @@ async function writeDB(sql, writeToken) {
 - 품절 현황: `WHERE sold_out = 1`
 - 카테고리별: product_categories JOIN categories (플랫폼 원본) 또는 product_attributes `WHERE attr_name LIKE 'ai_카테고리_%'` (AI 분류)
 - NULL은 "사이트가 안 보여준 값"이다 — 0과 다르다. 집계 시 `IS NOT NULL`로 거른다
+- 리오더/한정 등 이름 뱃지: `product_attributes WHERE attr_name='name_badge'`
+  (이름 **맨 앞** 대괄호 토큰, 예: 'REORDER'·'단독'. 쉼표로 여럿. D77)
+
+### 상품 겹침·플랫폼 교차·상품 매칭 규칙 (D77 — 필수)
+
+상품명을 원문 그대로 비교하면 같은 상품이 갈린다 — 뱃지 접두사(`[REORDER]` 등),
+색상 괄호, 공백 차이. 실측(2026-08-07): 원문 비교로 자사몰 상품 9개가 무신사의
+같은 상품과 다른 상품으로 집계됐다. 겹침·교차·"같은 상품" 질문은 반드시 아래
+정규화 키로 묶는다 (파이프라인 `intel_data.match_key`와 같은 규칙의 JS 이식):
+
+```js
+function matchKey(name) {
+  if (!name) return "";
+  const kept = [];
+  const base = String(name).toLowerCase()
+    .replace(/\[[^\]]*\]|\([^)]*\)/g, (m) => {
+      const inner = m.slice(1, -1).trim();
+      // 시즌 표기는 상품 식별의 일부 — 키에 남긴다 ((FW23) X ≠ (FW24) X)
+      if (/^(?:(?:fw|ss|sp|aw)\s?\d{2,4}|\d{2,4}\s?(?:fw|ss|sp|aw))$/i.test(inner))
+        kept.push(inner.toUpperCase().replace(/\s/g, ""));
+      return " ";
+    })
+    .replace(/[^0-9a-z가-힣]/g, "");
+  return base + (kept.length ? "|" + kept.sort().join("|") : "");
+}
+```
+
+- 색상 변형은 같은 키로 묶인다(**스타일 단위**). 고유 수가 상품 수보다 적게
+  나오는 게 정상이고, 어느 단위로 셌는지를 결과에 함께 말한다.
+- **검산 없이 표를 내보내지 않는다**: 분해(전용 + 2플랫폼 + 3플랫폼)의 합 =
+  전체 고유 키 수를 확인한다. 2026-08-07 실측: 검산 없이 낸 겹침 표에서 한
+  칸(2개 플랫폼)에 다른 칸의 값이 잘못 들어간 채 나갔다 — 합이 전체와 달라
+  검산 한 줄이면 즉시 잡혔을 오류다.
+- 뱃지를 걷어내도 정보는 사라지지 않는다 — 원문은 products.name에, 뱃지는
+  name_badge 속성에 있다.
 - 상품명이 바뀐 상품: `SELECT * FROM product_changes WHERE field='name' ORDER BY changed_at DESC LIMIT 50`
 - 카테고리 재분류: `SELECT * FROM product_changes WHERE field='category'` — 값은 '대 > 중 > 소' 경로 문자열
 - 이미지 교체 후 순위 변화: product_changes에서 `field='image_url'`인 상품·changed_at을 잡고, 같은 (site, product_id)의 observations를 changed_at 전/후로 나눠 rank를 비교한다

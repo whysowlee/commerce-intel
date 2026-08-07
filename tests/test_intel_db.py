@@ -1541,6 +1541,62 @@ def d76_tests():
     shutil.rmtree(work, ignore_errors=True)
 
 
+def d77_tests():
+    """상품명 뱃지 보존 (D77) — [REORDER] 등을 name_badge 속성으로.
+
+    E-DB-44: 대괄호 뱃지가 name_badge 속성(basis='name')으로 적재된다.
+    시즌 표기는 뱃지가 아니고, 재적재는 중복을 만들지 않으며, 이름에서
+    뱃지가 사라지면 D71 무효화가 속성을 지운다.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    intel_db = importlib.import_module("intel_db")
+    work = Path(tempfile.mkdtemp(prefix="d77-"))
+    db = str(work / "g.db")
+    conn = intel_db.connect(db)
+
+    def load(items, ts):
+        raw = {"meta": {"schema_version": "1.0", "site": "musinsa",
+                        "story": "brand-linesheet", "target": "T",
+                        "collected_at": ts, "item_count": len(items)},
+               "items": items}
+        f = work / f"{ts[-8:].replace(':', '')}.json"
+        f.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+        intel_db.load_file(conn, f, quiet=True, db_path=db)
+
+    load([{"product_id": "G1", "name": "[REORDER] BLESSED T (WHITE)", "brand": "브"},
+          {"product_id": "G2", "name": "[FW24] COAT (BLACK)", "brand": "브"},
+          {"product_id": "G3", "name": "[단독] [REORDER] CAP", "brand": "브"},
+          {"product_id": "G4", "name": "와이드 데님 팬츠 [블랙]", "brand": "브"},
+          {"product_id": "G5", "name": "부츠컷 [LC262PT04BL] 팬츠", "brand": "브"}],
+         "2026-08-07 10:00:00")
+    got = {r["product_id"]: r["value"] for r in conn.execute(
+        "SELECT product_id, value FROM product_attributes WHERE attr_name='name_badge'")}
+    check("E-DB-44 접두 대괄호 뱃지가 name_badge로 적재된다 (basis='name')",
+          got.get("G1") == "REORDER", got)
+    check("E-DB-44b 시즌 표기([FW24])는 뱃지가 아니다", "G2" not in got, got)
+    check("E-DB-44c 뱃지 여럿이면 정렬해 쉼표로 잇는다", got.get("G3") == "REORDER,단독", got)
+    check("E-DB-44f 이름 중간·끝 대괄호(색상·품번)는 뱃지가 아니다",
+          "G4" not in got and "G5" not in got, got)
+    # 같은 파일 재적재 — 중복 행이 생기지 않는다
+    load([{"product_id": "G1", "name": "[REORDER] BLESSED T (WHITE)", "brand": "브"}],
+         "2026-08-07 11:00:00")
+    n = conn.execute("SELECT COUNT(*) FROM product_attributes "
+                     "WHERE product_id='G1' AND attr_name='name_badge'").fetchone()[0]
+    check("E-DB-44d 재적재해도 name_badge는 1행이다", n == 1, n)
+    # 이름에서 뱃지가 빠지면 (리오더 종료) — D71 무효화가 지운다
+    load([{"product_id": "G1", "name": "BLESSED T (WHITE)", "brand": "브"}],
+         "2026-08-07 12:00:00")
+    n = conn.execute("SELECT COUNT(*) FROM product_attributes "
+                     "WHERE product_id='G1' AND attr_name='name_badge'").fetchone()[0]
+    hist = conn.execute("SELECT old_value, new_value FROM attr_history "
+                        "WHERE attr_name='name_badge' ORDER BY id DESC LIMIT 1").fetchone()
+    check("E-DB-44e 뱃지가 사라지면 속성이 무효화된다 (이력에 old 보존)",
+          n == 0 and hist and hist["old_value"] == "REORDER", (n, tuple(hist or ())))
+    conn.close()
+    shutil.rmtree(work, ignore_errors=True)
+
+
 def check_run_tests():
     """팀 중복 수집 방지 (D67) — **시간대 회귀 포함** (PR #13 리뷰 Blocker).
 
@@ -2374,6 +2430,9 @@ def main():
 
     print("[21h] 누적판매 구간 하한 적재 (D76 · E-DB-43)")
     d76_tests()
+
+    print("[21i] 상품명 뱃지 보존 (D77 · E-DB-44)")
+    d77_tests()
 
     print("[21f] 레거시 proxy.db 병합 — 재이관 가드 (D69 · E-PM)")
     proxy_merge_tests()

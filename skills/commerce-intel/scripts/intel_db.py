@@ -33,7 +33,26 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from schema_v3 import (SCHEMA_V3, TRIGGERS_V3, VIEWS_V3,   # noqa: E402
                        assign_category, default_db_target, is_libsql_url,
                        open_db,                        record_proxy_transition, rowid_parts)
-from intel_data import band_floor   # noqa: E402 — 누적판매 구간 하한 적재 (D76)
+from intel_data import SEASON_RE, band_floor   # noqa: E402 — D76·D77
+import re                                      # noqa: E402
+
+# 상품명 뱃지 (D77) — **이름 맨 앞의 대괄호만** 뱃지다([REORDER]·[단독]·[기획]
+# 같은 마케팅 플래그). 이름 중간·끝의 대괄호는 색상('[블랙]')·품번('[LC262PT04BL]')·
+# 옵션('[기장선택]') 표기라 뱃지가 아니다 — 2026-08-07 실측: 전 위치로 뽑자
+# 데님 전수조사에서 색상·품번 2,399건이 뱃지로 잘못 잡혔다. 소괄호는 색상/시즌
+# 변형, 시즌 표기([FW24])는 상품 식별의 일부라 뱃지로 빼지 않는다.
+BADGE_PREFIX_RE = re.compile(r"^\s*(?:\[[^\]]+\]\s*)+")
+BADGE_RE = re.compile(r"\[([^\]]+)\]")
+
+
+def name_badges(name):
+    """상품명 **접두** 뱃지 토큰 — 정렬·중복 제거된 리스트."""
+    m = BADGE_PREFIX_RE.match(str(name or ""))
+    if not m:
+        return []
+    found = {b.strip() for b in BADGE_RE.findall(m.group(0))
+             if b.strip() and not SEASON_RE.match(b.strip())}
+    return sorted(found)
 
 # 작업 폴더 기준이다(스킬 §파일 규약). Turso 이전(D67) 후에는 INTEL_DB_URL이
 # 이기고, 없으면 기존 INTEL_DB(로컬 경로) → data/intel.db 순이다.
@@ -483,6 +502,16 @@ def _upsert_product(conn, site, pid, it, seen_at, cache=None, run_pk=None):
             "INSERT INTO product_attributes (site, product_id, attr_name, value, "
             "basis, decided_at, ttl_days) VALUES (?,?,?,?,?,?,NULL)",
             (site, pid, aname, aval, basis or "unknown", seen_at))
+    # 상품명 뱃지 → name_badge 속성 (D77). 이름이 정본이고 이 값은 파생이다 —
+    # 이름이 바뀌면 basis='name' 무효화(D71)가 지우고, 다음 적재가 새 이름에서
+    # 다시 뽑는다. 겹침/매칭 분석은 match_key로 뱃지를 걷어내되(D77), "리오더
+    # 상품인가"는 이 속성으로 묻는다.
+    badges = name_badges(it.get("name"))
+    if badges:
+        conn.execute(
+            "INSERT INTO product_attributes (site, product_id, attr_name, value, "
+            "basis, decided_at, ttl_days) VALUES (?,?,'name_badge',?,'name',?,NULL)",
+            (site, pid, ",".join(badges), seen_at))
 
 
 def team_coverage(conn, site, context, cycle, config, creds):
