@@ -20,6 +20,7 @@ MD가 "참고용·정성적"이라고 못박았다(2026-08-03 인터뷰). 강한
     python3 insight.py --db data/intel.db --context "brand:로우클래식" --out output/
 """
 import argparse
+import json
 import os
 import sys
 from datetime import datetime
@@ -1124,17 +1125,14 @@ def main():
     target = a.target or (", ".join(a.context) if a.context else "전체")
     notes = None
     if a.ai_notes:
-        import json
         notes = json.loads(open(a.ai_notes, encoding="utf-8").read())
     signals = None
     if a.signals:
-        import json as _j
-        signals = _j.loads(open(a.signals, encoding="utf-8").read())
+        signals = json.loads(open(a.signals, encoding="utf-8").read())
     res, raw = build(a.db, a.context, notes, auto_proxy=not a.no_auto_proxy,
                      own_brands=a.own_brand, signals=signals)
     if res is not None and a.ai_actions:
-        import json as _json
-        res["ai_actions"] = _json.loads(open(a.ai_actions, encoding="utf-8").read())
+        res["ai_actions"] = json.loads(open(a.ai_actions, encoding="utf-8").read())
     if res is None:
         print("중단: %s" % raw.get("reason"))
         return 1

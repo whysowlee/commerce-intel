@@ -733,22 +733,38 @@ def strip_payload(h):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 분석이 실제로 인덱싱하는 EDA 필드 — _usable_metrics의 nulls, 러너들의
+# correlations 등. 재사용 전에 있는지 본다 (PR #24 리뷰: 구버전·손상 파일이
+# 문맥만 맞으면 통과해 뒤에서 KeyError로 죽는다)
+REQUIRED_EDA_KEYS = ("grain", "nulls", "distributions", "cardinality",
+                     "correlations", "timeseries", "survivorship", "signals")
+
+
 def reuse_or_run_eda(db_path, contexts, signals=None):
     """--signals로 받은 EDA 산출물을 재사용하거나, 안 맞으면 새로 돈다 (D74).
 
-    재사용 조건: ok=True이고 **요청 문맥이 정확히 같을 때**. 다르면 조용히
-    쓰지 않는다 — 다른 요청의 EDA로 분석하면 사용자가 본 근거와 분석 근거가
-    갈라진다(그걸 막자고 재사용을 만든 것이다). 경고를 남기고 새로 돈다.
-    재사용하면 Turso에서 전체 데이터 fetch 한 번이 절약되고, 무엇보다
-    **사용자에게 보여준 EDA와 분석이 쓴 EDA가 같은 파일**이 된다.
+    재사용 조건 셋: ok=True · **요청 문맥이 정확히 같음** · 필수 필드가 다 있음.
+    하나라도 어긋나면 조용히 쓰지 않는다 — 다른 요청의 EDA로 분석하면 사용자가
+    본 근거와 분석 근거가 갈라진다(그걸 막자고 재사용을 만든 것이다). 원인별
+    경고를 남기고 새로 돈다. 재사용하면 Turso에서 전체 데이터 fetch 한 번이
+    절약되고, 무엇보다 **사용자에게 보여준 EDA와 분석이 쓴 EDA가 같은 파일**이
+    된다.
     """
     want = sorted(str(c) for c in (contexts or []))
     if signals:
-        if signals.get("ok") and sorted(signals.get("requested_contexts") or []) == want:
+        missing = [k for k in REQUIRED_EDA_KEYS if k not in signals]
+        if not signals.get("ok"):
+            print("경고: --signals 파일의 EDA가 실패 상태(ok=False)다 "
+                  "— EDA를 새로 수행한다", file=sys.stderr)
+        elif sorted(signals.get("requested_contexts") or []) != want:
+            print("경고: --signals 파일이 이 요청의 EDA가 아니다 "
+                  f"(파일: {signals.get('requested_contexts')} / 요청: {want}) "
+                  "— EDA를 새로 수행한다", file=sys.stderr)
+        elif missing:
+            print(f"경고: --signals 파일에 필수 필드가 없다 ({', '.join(missing)}) "
+                  "— 구버전·손상 산출물로 보고 EDA를 새로 수행한다", file=sys.stderr)
+        else:
             return signals
-        print("경고: --signals 파일이 이 요청의 EDA가 아니다 "
-              f"(파일: {signals.get('requested_contexts')} / 요청: {want}) "
-              "— EDA를 새로 수행한다", file=sys.stderr)
     return run_eda(db_path, contexts)
 
 

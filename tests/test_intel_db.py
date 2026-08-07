@@ -1129,6 +1129,11 @@ def eda_reuse_tests():
     check("E-SG-4 analyze(plan_only)가 재사용 EDA로 계획을 만든다",
           res.get("ok") and res["eda"].get("_sentinel") == "reused",
           res.get("reason"))
+    broken = dict(loaded)
+    del broken["nulls"]                 # 구버전·손상 산출물 흉내 (필수 필드 누락)
+    got = an.reuse_or_run_eda(db, ["brand:t"], broken)
+    check("E-SG-5 필수 필드가 빠진 파일은 버리고 새로 돈다 (KeyError 방지)",
+          "_sentinel" not in got and got.get("ok") and "nulls" in got)
     shutil.rmtree(work, ignore_errors=True)
 
 

@@ -353,7 +353,8 @@ python3 skills/commerce-intel/scripts/insight.py \
   ```bash
   # 예: {"exclude": [{"method": "group_compare", "reason": "사용자 요청"}]}
   python3 skills/commerce-intel/scripts/insight.py --context "{context}" \
-      --target "{target}" --ai-notes data/notes.json --out output/
+      --target "{target}" --ai-notes data/notes.json \
+      --signals data/eda-signals.json --out output/
   ```
   method 값: `group_compare` / `correlation` / `did` / `dose_response` /
   `paired_platform` / `depletion`. 6종 밖의 기법("회귀분석 해줘")은 파이프라인이
@@ -410,7 +411,7 @@ python3 skills/intel-fashion-md/scripts/sanity_check.py \
 → 할 일:
 1. context 결정: brand:2000아카이브스 + brand:2000 Archives (한글·영문 둘 다)
 2. EDA 실행 → data/eda-signals.json 읽고 핵심 발견을 사용자에게 요약
-3. "분석 진행할까요?" 확인 (관측 10,000건 이상이면 예상 소요 안내)
+3. "분석 진행할까요?" 확인 (항상 예상 소요 안내 — 소규모도 30분 안팎)
 4. insight.py 실행 — --signals로 2번의 EDA 결과를 재사용 (분석 + 리포트 생성)
 5. PDF 경로 안내: "output/insight-2000아카이브스-20260807-1430.pdf 에 생성됐습니다"
 6. 강한 주장 상위 3개를 요약해서 보여줌
