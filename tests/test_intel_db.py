@@ -853,6 +853,238 @@ def incremental_key_tests():
     shutil.rmtree(work, ignore_errors=True)
 
 
+class IncrFakeWS:
+    """증분 동기화가 쓰는 만큼만 흉내 낸 워크시트 — 네트워크 없이 grid로 검증한다."""
+
+    def __init__(self, headers):
+        self.grid = [list(headers)]     # 1행 = 헤더
+        self.col_count = len(headers)
+        self.row_count = 1
+
+    def col_values(self, i):
+        return [str(r[i - 1]) if len(r) >= i and r[i - 1] is not None else ""
+                for r in self.grid]
+
+    def clear(self):
+        self.grid = []
+
+    def resize(self, rows=None, cols=None):
+        self.row_count, self.col_count = rows, cols
+
+    def update(self, values=None, range_name=None, value_input_option=None):
+        row = int(range_name[1:])       # "A1" · "A5002" — rebuild_tab은 A열만 쓴다
+        need = row - 1 + len(values)
+        self.grid += [[]] * (need - len(self.grid))
+        for i, v in enumerate(values):
+            self.grid[row - 1 + i] = list(v)
+
+    def append_rows(self, rows, value_input_option=None):
+        self.grid += [list(r) for r in rows]
+
+
+def sheet_deletion_tests():
+    """시트 미러 편집·삭제 감지 (D72) — DB에서 고치거나 지운 행이 시트에 남지 않아야 한다.
+
+    감지는 mirror_dirty 트리거 카운터(UPDATE·DELETE·상쇄 케이스)가 하고,
+    행 수 대조(DB < 시트)가 트리거 이전 상태를 받친다. 둘 다 여기서 돈다.
+    """
+    sys.modules.pop("sync_sheets", None)
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    intel_db = importlib.import_module("intel_db")
+    ss = importlib.reload(importlib.import_module("sync_sheets"))
+
+    work = Path(tempfile.mkdtemp(prefix="del-"))
+    conn = intel_db.connect(str(work / "d.db"))
+    conn.execute("INSERT INTO runs (run_id, site, story, target, collected_at) "
+                 "VALUES ('R','29cm','brand-linesheet','T','2026-08-04 10:00:00')")
+    conn.execute("INSERT INTO products (site, product_id, name, static_verified_at)"
+                 " VALUES ('29cm','P','n','2026-08-04 10:00:00')")
+    def add_obs(n, base):
+        for i in range(n):
+            conn.execute("INSERT INTO observations (site, product_id, observed_at,"
+                         " context, price_sale) VALUES ('29cm','P',?,'brand:t',?)",
+                         ("2026-08-04 %02d:00:00" % (base + i), 1000 + base + i))
+        conn.commit()
+    add_obs(5, 0)
+    now = "2026-08-07 12:00:00"
+    total = lambda: conn.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
+    headers = [d[1] for d in conn.execute("PRAGMA table_info(observations)")
+               if d[1] != "_rowid"]
+    ws = IncrFakeWS(headers)
+
+    miss = ss.sync_incr_tab(conn, conn, ws, "observations", total(), now)
+    check("E-SH-1 첫 동기화가 전량 append", miss is None and len(ws.grid) == 6,
+          str(len(ws.grid)))
+    add_obs(2, 5)
+    miss = ss.sync_incr_tab(conn, conn, ws, "observations", total(), now)
+    st = conn.execute("SELECT last_synced_key FROM sync_state "
+                      "WHERE table_name='observations'").fetchone()[0]
+    check("E-SH-2 삭제 없으면 증분 append 그대로 (5+2=7행·진행점 7)",
+          miss is None and len(ws.grid) == 8 and st == "7", (len(ws.grid), st))
+
+    # DB에서 3행 삭제 → 시트(7행)가 DB(4행)보다 많다 — 재구축돼야 한다
+    conn.execute("DELETE FROM obs_base WHERE id > 4")
+    conn.commit()
+    miss = ss.sync_incr_tab(conn, conn, ws, "observations", total(), now)
+    body = [r for r in ws.grid[1:] if any(str(c).strip() for c in r)]
+    st = conn.execute("SELECT last_synced_key FROM sync_state "
+                      "WHERE table_name='observations'").fetchone()[0]
+    check("E-SH-3 삭제 감지 → 전체 재구축, 시트 행 수 = DB 행 수",
+          miss is None and len(body) == total() == 4, (len(body), total()))
+    check("E-SH-4 재구축 후 진행점이 현재 최대 rowid로 리셋", st == "4", st)
+
+    add_obs(1, 20)
+    miss = ss.sync_incr_tab(conn, conn, ws, "observations", total(), now)
+    body = [r for r in ws.grid[1:] if any(str(c).strip() for c in r)]
+    check("E-SH-5 재구축 뒤에도 증분이 이어진다 (4+1=5행)",
+          miss is None and len(body) == 5, len(body))
+
+    # ── 편집(UPDATE) 감지 — 행 수가 안 변해도 시트에 반영돼야 한다 ─────────
+    conn.execute("UPDATE obs_base SET price_sale = 99999 WHERE id = 2")
+    conn.commit()
+    dirty = conn.execute("SELECT changes FROM mirror_dirty "
+                         "WHERE table_name='observations'").fetchone()[0]
+    check("E-SH-6 UPDATE가 mirror_dirty 카운터를 올린다", dirty == 1, dirty)
+    miss = ss.sync_incr_tab(conn, conn, ws, "observations", total(), now)
+    body = [r for r in ws.grid[1:] if any(str(c).strip() for c in r)]
+    flat = {str(c) for r in body for c in r}
+    dirty = conn.execute("SELECT changes FROM mirror_dirty "
+                         "WHERE table_name='observations'").fetchone()[0]
+    check("E-SH-7 편집 감지 → 재구축, 고친 값이 시트에 반영된다",
+          miss is None and "99999" in flat and len(body) == total() == 5,
+          (len(body), "99999" in flat))
+    check("E-SH-8 재구축 후 카운터가 차감돼 다음은 평시 경로", dirty == 0, dirty)
+
+    # ── 삭제+신규가 상쇄돼 행 수가 같아도 잡는다 (PR #21 리뷰 엣지) ─────────
+    gone = conn.execute("SELECT price_sale FROM obs_base WHERE id = 1").fetchone()[0]
+    conn.execute("DELETE FROM obs_base WHERE id = 1")
+    conn.commit()
+    add_obs(1, 21)                      # 행 수는 삭제 전과 같은 5로 돌아온다
+    miss = ss.sync_incr_tab(conn, conn, ws, "observations", total(), now)
+    body = [r for r in ws.grid[1:] if any(str(c).strip() for c in r)]
+    flat = {str(c) for r in body for c in r}
+    check("E-SH-9 순증감 0(삭제 1+신규 1)도 재구축 — 지운 행이 시트에 없다",
+          miss is None and len(body) == total() == 5 and str(gone) not in flat,
+          (len(body), gone))
+
+    # ── 행 수 대조 보조 경로 — 카운터가 못 본 삭제(트리거 이전 상태 가정) ───
+    # MIN 행을 지운다: MAX를 지우면 다음 INSERT가 같은 rowid를 재사용해 증분이
+    # 침묵한다 — 그 조합은 카운터 없이는 어떤 카운트 대조로도 안 잡히는 구멍이고,
+    # 바로 그 구멍 때문에 mirror_dirty 트리거가 1차 감지다.
+    gone2 = conn.execute("SELECT price_sale FROM obs_base "
+                         "WHERE id = (SELECT MIN(id) FROM obs_base)").fetchone()[0]
+    conn.execute("DELETE FROM obs_base WHERE id = (SELECT MIN(id) FROM obs_base)")
+    conn.execute("DELETE FROM mirror_dirty WHERE table_name='observations'")
+    conn.commit()                       # 카운터를 지워 "트리거 이전 삭제"를 흉내
+    add_obs(1, 22)                      # 새 행이 있어야 보조 대조가 돈다
+    miss = ss.sync_incr_tab(conn, conn, ws, "observations", total(), now)
+    body = [r for r in ws.grid[1:] if any(str(c).strip() for c in r)]
+    flat = {str(c) for r in body for c in r}
+    check("E-SH-10 카운터 밖 삭제도 행 수 대조가 잡아 재구축",
+          miss is None and len(body) == total() == 5 and str(gone2) not in flat,
+          (len(body), total(), gone2))
+
+    # ── 대형 탭 보류 임계 (2R 리뷰) — 임계 미만 변경은 재구축을 미룬다 ───────
+    conn.execute("UPDATE obs_base SET price_sale = 1 WHERE id = "
+                 "(SELECT MIN(id) FROM obs_base)")
+    conn.commit()
+    old_defer = ss.REBUILD_DEFER_ROWS
+    ss.REBUILD_DEFER_ROWS = 3           # 이 탭(5행)을 "대형"으로 취급
+    try:
+        miss = ss.sync_incr_tab(conn, conn, ws, "observations", total(), now)
+        dirty = conn.execute("SELECT changes FROM mirror_dirty "
+                             "WHERE table_name='observations'").fetchone()[0]
+        check("E-SH-11 대형 탭은 임계까지 재구축 보류 — 카운터는 남는다",
+              miss is None and dirty == 1, dirty)
+    finally:
+        ss.REBUILD_DEFER_ROWS = old_defer
+    miss = ss.sync_incr_tab(conn, conn, ws, "observations", total(), now)
+    body = [r for r in ws.grid[1:] if any(str(c).strip() for c in r)]
+    check("E-SH-12 임계 해제(소형 취급) 시 보류분이 재구축된다",
+          miss is None and "1" in {str(r[ws.grid[0].index('price_sale')]) for r in body},
+          body and body[0])
+
+    # ── 재구축 안착 검증 (2R 리뷰) — 부분 실패면 진행점·카운터를 안 옮긴다 ──
+    conn.execute("UPDATE obs_base SET price_sale = 2 WHERE id = "
+                 "(SELECT MIN(id) FROM obs_base)")
+    conn.commit()
+    real_update = ws.update
+    def lossy_update(values=None, range_name=None, value_input_option=None):
+        real_update(values=values[:-1] if range_name != "A1" and len(values) > 1
+                    else values, range_name=range_name)
+    ws.update = lossy_update            # 재구축 청크에서 1행을 흘리는 워크시트
+    miss = ss.sync_incr_tab(conn, conn, ws, "observations", total(), now)
+    dirty = conn.execute("SELECT changes FROM mirror_dirty "
+                         "WHERE table_name='observations'").fetchone()[0]
+    check("E-SH-13 재구축 부분 실패 → mismatch 반환 + 카운터 보존(재시도 예약)",
+          miss is not None and dirty == 1, (miss, dirty))
+    ws.update = real_update
+    miss = ss.sync_incr_tab(conn, conn, ws, "observations", total(), now)
+    check("E-SH-14 다음 실행이 재구축을 재시도해 성공한다", miss is None, miss)
+    conn.close()
+    shutil.rmtree(work, ignore_errors=True)
+
+
+def view_edit_tests():
+    """뷰 편집 트리거 (D72 · PR #21 2R) — 편집→감지→미러 사슬의 앞단.
+
+    intel-query는 뷰 이름으로만 쿼리한다(안전 규칙) — 뷰가 UPDATE/DELETE를
+    못 받으면 "편집이 시트에 자동 반영된다"는 약속 자체가 성립하지 않는다.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    intel_db = importlib.import_module("intel_db")
+
+    work = Path(tempfile.mkdtemp(prefix="vedit-"))
+    conn = intel_db.connect(str(work / "v.db"))
+    conn.execute("INSERT INTO runs (run_id, site, story, target, collected_at) "
+                 "VALUES ('R','29cm','brand-linesheet','T','2026-08-07 10:00:00')")
+    conn.execute("INSERT INTO products (site, product_id, name, brand, "
+                 "static_verified_at) VALUES ('29cm','P1','상품','브랜드','2026-08-07 10:00:00')")
+    conn.execute("INSERT INTO observations (site, product_id, observed_at, context,"
+                 " price_sale, sold_out) VALUES ('29cm','P1','2026-08-07 10:00:00',"
+                 "'brand:t',1000,0)")
+    conn.execute("INSERT INTO variants (site, product_id, option_id, option_name,"
+                 " color, size) VALUES ('29cm','P1','O1','블랙/M','블랙','M')")
+    conn.commit()
+
+    # UPDATE — 지표 컬럼은 고쳐지고 base까지 반영된다
+    conn.execute("UPDATE observations SET price_sale=2000, sold_out=1 "
+                 "WHERE site='29cm' AND product_id='P1'")
+    conn.commit()
+    row = conn.execute("SELECT price_sale, sold_out FROM obs_base").fetchone()
+    check("E-VE-1 뷰 UPDATE가 obs_base에 반영된다", tuple(row) == (2000, 1), tuple(row))
+    dirty = conn.execute("SELECT changes FROM mirror_dirty "
+                         "WHERE table_name='observations'").fetchone()
+    check("E-VE-2 뷰 UPDATE가 mirror_dirty 카운터를 올린다 (트리거 연쇄)",
+          dirty and dirty[0] >= 1, dirty and dirty[0])
+
+    # 식별자 변경은 거부된다
+    try:
+        conn.execute("UPDATE observations SET product_id='P2' WHERE product_id='P1'")
+        ok = False
+    except Exception as e:
+        ok = "식별자" in str(e)
+    check("E-VE-3 식별자 컬럼 변경은 RAISE로 거부된다", ok)
+
+    # DELETE — 뷰에서 지우면 base가 진다
+    conn.execute("DELETE FROM observations WHERE site='29cm' AND product_id='P1'")
+    conn.commit()
+    check("E-VE-4 뷰 DELETE가 obs_base를 지운다",
+          conn.execute("SELECT COUNT(*) FROM obs_base").fetchone()[0] == 0)
+
+    # products DELETE — 딸린 것(옵션·속성)까지 함께 진다
+    conn.execute("DELETE FROM products WHERE site='29cm' AND product_id='P1'")
+    conn.commit()
+    left = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+            for t in ("product_base", "variant_base", "attr_base")}
+    check("E-VE-5 products DELETE가 자식 테이블까지 정리한다",
+          all(v == 0 for v in left.values()), left)
+    conn.close()
+    shutil.rmtree(work, ignore_errors=True)
+
+
 def context_tests():
     """문맥 문자열 (D51) — 접두사가 두 번 붙으면 같은 대상이 두 문맥으로 갈린다."""
     sys.path.insert(0, str(SCRIPTS))
@@ -1373,21 +1605,21 @@ def history_tests():
           and ah[0]["new_value"] == "스트레이트", [dict(r) for r in ah])
 
     # 멱등 업그레이드 — 이력 표를 지우고 다시 connect하면 되살아난다 (라이브 v3 경로).
-    # D69: 스키마 마커가 proxy_history로 옮겨졌다 — 구 v3 DB(프록시 표 이전)를
-    # 흉내내려면 프록시 표까지 같이 지워야 마커 부재 업그레이드가 발동한다
+    # D72: 스키마 마커가 mirror_dirty로 옮겨졌다 — 구 v3 DB(프록시 표 이전)를
+    # 흉내내려면 마커 표까지 같이 지워야 마커 부재 업그레이드가 발동한다
     conn.executescript("DROP VIEW product_changes; DROP VIEW attr_changes;"
                        "DROP TABLE product_history; DROP TABLE attr_history;"
                        "DROP TABLE proxy_history; DROP TABLE proxy_cache;"
-                       "DROP TABLE proxy_defs;")
+                       "DROP TABLE proxy_defs; DROP TABLE mirror_dirty;")
     conn.commit()
     conn.close()
     conn = intel_db.connect(db)
     tabs = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE name IN "
         "('product_history','attr_history','product_changes','attr_changes',"
-        "'proxy_defs','proxy_cache','proxy_history')")}
+        "'proxy_defs','proxy_cache','proxy_history','mirror_dirty')")}
     check("E-DB-37f 기존 v3 DB도 connect()가 이력 표·뷰를 멱등 생성한다",
-          len(tabs) == 7, sorted(tabs))
+          len(tabs) == 8, sorted(tabs))
     # 업그레이드는 1회다 — 표가 갖춰진 뒤에는 connect가 SCHEMA_V3를 다시 보내지
     # 않는다 (PR #14 리뷰: 매 connect마다 DDL 27줄을 Turso로 왕복시키면 안 된다)
     check("E-DB-37g 표가 갖춰지면 스키마 업그레이드가 더는 필요 없다",
@@ -1946,6 +2178,12 @@ def main():
 
     print("[19] 증분 키 — 실제 sqlite3 (뷰·물리 테이블)")
     incremental_key_tests()
+
+    print("[19b] 시트 미러 — 편집·삭제 감지·재구축 (D72)")
+    sheet_deletion_tests()
+
+    print("[19c] 뷰 편집 트리거 — UPDATE/DELETE 사슬 (D72)")
+    view_edit_tests()
 
     print("[20] 수집기 — 인코딩·커버리지·카드 매핑 (D48)")
     collector_tests()

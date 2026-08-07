@@ -69,7 +69,7 @@ def _schema_version(conn):
 # 없으면 구버전 v3라서 SCHEMA_V3를 한 번 돌려 따라잡는다(D68 무이관 업그레이드).
 # SCHEMA_V3에 표를 또 추가하면 이 마커도 그 표로 바꾼다 — 안 바꾸면 기존 DB가
 # 새 표를 영영 못 받는다.
-_SCHEMA_MARKER = "proxy_history"
+_SCHEMA_MARKER = "mirror_dirty"
 
 
 def _needs_schema_upgrade(conn):

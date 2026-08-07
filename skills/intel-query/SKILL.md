@@ -2,11 +2,12 @@
 name: intel-query
 description: >-
   commerce-intel 정본 DB(Turso)를 자연어로 조회·편집하고, 커머스 플랫폼에서
-  상품·랭킹 데이터를 수집·적재한다. 조회 — "무신사에서 우리 브랜드 순위
-  변동 보여줘". 편집 — "이 상품 삭제해줘", "브랜드명 수정해줘".
-  수집 — "무신사에서 2000아카이브스 수집해줘".
+  상품·랭킹 데이터를 수집·적재하며, 분석·인사이트 PDF 리포트를 생성한다.
+  조회 — "무신사에서 우리 브랜드 순위 변동 보여줘". 편집 — "이 상품 삭제해줘",
+  "브랜드명 수정해줘". 수집 — "무신사에서 2000아카이브스 수집해줘".
+  분석 — "2000아카이브스 인사이트 뽑아줘", "EDA 먼저 보여줘".
 metadata:
-  version: 1.1.0
+  version: 1.2.0
   db-schema: v3 (D65)
 ---
 
@@ -154,10 +155,13 @@ async function writeDB(sql) {
 6. **DELETE/UPDATE는 WHERE 절 필수.** WHERE 없는 DELETE/UPDATE는 절대 실행하지 않는다.
 7. **DROP TABLE, ALTER TABLE, ATTACH, PRAGMA는 금지.** 스키마 변경은 이 스킬의 일이 아니다.
 8. 실행 후 영향받은 행 수를 알려준다.
+9. 편집(수정·삭제)한 내용은 구글 시트 미러에 **다음 동기화 때 자동 반영**된다
+   (DB 트리거가 변경을 감지해 해당 탭을 재구축). 바로 반영하고 싶으면
+   "시트 미러링 해줘"로 수동 동기화를 요청받아 실행한다.
 
 ### 공통
-9. **물리 테이블(_base 접미사) 직접 접근 금지.** 반드시 뷰 이름(products, observations, variants, variant_observations, product_attributes)으로 쿼리한다 — 뷰가 시각 변환·URL 조립·카테고리 계층 펴기를 처리한다.
-10. **에러 시 SQL 노출 금지.** 사용자에게 SQL 쿼리나 영문 컬럼명을 직접 보여주지 않는다. 사람이 읽는 표현으로만 응답한다.
+10. **물리 테이블(_base 접미사) 직접 접근 금지.** 반드시 뷰 이름(products, observations, variants, variant_observations, product_attributes)으로 쿼리한다 — 뷰가 시각 변환·URL 조립·카테고리 계층 펴기를 처리한다. 편집(UPDATE/DELETE)도 뷰 이름으로 한다 — 뷰 트리거가 물리 반영과 시트 미러 감지를 함께 처리한다. observations 수정은 지표 컬럼(가격·품절·순위 등)만 가능하고 식별자(site·product_id·observed_at·context)는 바꿀 수 없다.
+11. **에러 시 SQL 노출 금지.** 사용자에게 SQL 쿼리나 영문 컬럼명을 직접 보여주지 않는다. 사람이 읽는 표현으로만 응답한다.
 
 ## 응답 포맷
 
@@ -195,8 +199,18 @@ async function writeDB(sql) {
 - Python: 레포 루트에 `.venv`가 있어야 한다 (없으면 `docs/TURSO-SETUP.md`의 venv도 가능)
 - 환경변수: `INTEL_DB_URL`, `INTEL_DB_TOKEN`(**쓰기 토큰**)이 `~/.config/intel/env`
   또는 `.venv/bin/activate`에 설정돼 있어야 한다
+  - 환경변수가 설정돼 있으면 아래 모든 Python 명령에서 `--db` 플래그가 필요 없다 —
+    스크립트가 `INTEL_DB_URL`(Turso)에 직접 붙는다
+- 분석·리포트에는 추가 패키지가 필요하다: `reportlab`(PDF 생성),
+  `libsql-experimental`(Turso 직접 연결). 없으면 설치:
+  ```bash
+  cd ${INTEL_REPO:-~/workspace/commerce-intel} && source .venv/bin/activate
+  pip install reportlab libsql-experimental
+  ```
+- 리포트 PDF는 레포의 `output/` 디렉토리에 생성된다. Aside에서 PDF를 직접 열 수는
+  없으므로 생성 경로를 사용자에게 안내한다
 
-환경이 안 갖춰져 있으면(레포 없음·venv 없음·쓰기 토큰 없음) 수집 불가를
+환경이 안 갖춰져 있으면(레포 없음·venv 없음·쓰기 토큰 없음) 수집·분석 불가를
 안내하고 조회만 가능하다고 말한다 — 조회는 이 환경 없이도 된다.
 
 ### 수집 워크플로우
@@ -283,6 +297,103 @@ cd ${INTEL_REPO:-~/workspace/commerce-intel} && source .venv/bin/activate
 | 데이터 내보내기 | `python3 skills/commerce-intel/scripts/intel_db.py export --table {테이블명}` |
 | 라이프사이클 태그 | `python3 skills/commerce-intel/scripts/intel_db.py tag-lifecycle` |
 
+## 분석 (Analyze + Report)
+
+사용자가 분석·인사이트·리포트를 요청하면 레포의 분석 파이프라인을 Bash로 호출한다
+(수집과 같은 패턴). 환경 전제는 수집과 동일 + `reportlab`·`libsql-experimental`.
+모든 명령은 레포 루트에서 실행:
+
+```bash
+cd ${INTEL_REPO:-~/workspace/commerce-intel} && source .venv/bin/activate && source ~/.config/intel/env
+```
+
+`{context}` 예: `brand:2000아카이브스`, `market:여성데님팬츠`, `ranking:바지`.
+브랜드는 한글·영문 표기가 별개 행이다 — `--context`를 여러 번 줘서 둘 다 건다
+(`--context "brand:2000아카이브스" --context "brand:2000 Archives"`).
+
+### A. EDA (탐색적 데이터 분석) — 분석 전 필수
+
+```bash
+python3 skills/commerce-intel/scripts/eda.py \
+    --context "{context}" \
+    --out data/eda-signals.json
+```
+
+- `INTEL_DB_URL`이 설정돼 있으면 `--db` 불필요 (Turso 직접 연결)
+- 출력: `data/eda-signals.json` — 7개 고정 검사(grain, null map, 분포/이상치,
+  축 카디널리티, 상관+세분화, 시간 커버리지, 생존 편향) 결과
+- 이 JSON을 읽고 핵심 발견(관측 규모·결측·이상치·편향 경고)을 사용자에게 요약한다
+
+### B. 분석 + PDF 리포트 생성
+
+`insight.py` 하나가 분석(방법론 결정·검정·5관문 판정)과 PDF 생성을 모두 수행한다
+— `analyze.py`를 따로 돌릴 필요 없다:
+
+```bash
+python3 skills/commerce-intel/scripts/insight.py \
+    --context "{context}" \
+    --target "{target}" \
+    --out output/
+```
+
+- `{target}` 예: `2000아카이브스`, `여성데님팬츠` — 리포트 제목에 쓰인다
+- 출력 PDF 2개:
+  - `output/insight-{target}-{타임스탬프}.pdf` (executive 3-6p): 강한 주장 + 약한 단서
+  - `output/detail-{target}-{타임스탬프}.pdf` (상세 20-40p): EDA 프로필 + 가설별 증거
+- 분석 결과는 `insights` 테이블에도 저장된다 — **쓰기 토큰**(`INTEL_DB_TOKEN`)이
+  필요하다 (수집과 같은 전제. 읽기 전용 토큰이면 insights 적재가 실패한다)
+- 분석 계획만 먼저 검토하고 싶으면:
+  `python3 skills/commerce-intel/scripts/analyze.py --context "{context}" --plan-only --out data/plan.json`
+
+### C. 랭킹 스냅샷 비교 (랭킹 데이터 한정)
+
+```bash
+python3 skills/commerce-intel/scripts/diff_snapshots.py data/snapshots \
+    --site {site} --target {target} \
+    --from {시작일} --to {종료일} --out data/ranking-diff.json
+```
+
+`--out`은 필수다. 결과 JSON을 읽고 순위 변동을 요약한다.
+
+### D. 도메인 sanity check (선택, 패션 MD 맥락)
+
+리포트의 수치 주장을 DB로 재검증한다. PDF가 아니라 **claims JSON**을 받는다 —
+리포트에서 검증할 수치 주장을 claims JSON으로 정리한 뒤 실행:
+
+```bash
+python3 skills/intel-fashion-md/scripts/sanity_check.py \
+    --db "$INTEL_DB_URL" --claims {claims JSON 경로}
+# DB 개요만 보려면: --profile (claims 없이)
+```
+
+### 분석 안전 규칙
+
+1. **EDA → 분석 → 리포트 순서를 지킨다.** EDA 없이 바로 분석하지 않는다.
+2. **대규모 분석(관측 10,000건 이상) 전에 예상 소요를 안내한다.** 규모는 EDA의
+   grain 검사(또는 COUNT 쿼리)로 먼저 확인한다.
+3. **PDF 출력 경로를 사용자에게 안내한다.** Aside에서 PDF를 직접 열 수는 없으므로
+   "output/ 디렉토리에 생성됐습니다"로 경로를 알려준다.
+4. **분석 실패 시 에러를 사람이 읽는 표현으로 바꿔서 전달한다.** Python traceback을
+   그대로 보여주지 않는다. `reportlab`/`libsql` import 에러면 위 설치 명령을 안내한다.
+
+### 분석 사용 예시
+
+```
+사용자: "2000아카이브스 인사이트 뽑아줘"
+
+→ 할 일:
+1. context 결정: brand:2000아카이브스 + brand:2000 Archives (한글·영문 둘 다)
+2. EDA 실행 → data/eda-signals.json 읽고 핵심 발견을 사용자에게 요약
+3. "분석 진행할까요?" 확인 (관측 10,000건 이상이면 예상 소요 안내)
+4. insight.py 실행 (분석 + 리포트 생성)
+5. PDF 경로 안내: "output/insight-2000아카이브스-20260807-1430.pdf 에 생성됐습니다"
+6. 강한 주장 상위 3개를 요약해서 보여줌
+
+사용자: "EDA만 먼저 보여줘"
+
+→ 분석까지 가지 않고 EDA 결과만 요약해서 보여준다.
+```
+
 ## 참고 파일
 
 | 파일 | 언제 읽는가 |
@@ -291,6 +402,9 @@ cd ${INTEL_REPO:-~/workspace/commerce-intel} && source .venv/bin/activate
 | 레포 `skills/platform-*/SKILL.md` | 수집 요청 시 해당 플랫폼 어댑터 |
 | 레포 `skills/commerce-intel/references/story-catalog.md` | 수집 시 계약 JSON 형식·검증된 절차 |
 | 레포 `skills/commerce-intel/references/db-contract.md` | 적재 규칙·null 의미론 |
+| 레포 `skills/commerce-intel/references/insight-spec.md` | 리포트 구조·5관문 요건·차트 규칙이 궁금할 때 |
+| 레포 `skills/commerce-intel/references/analysis-context.md` | 변수 역할(X/Y)·인과 함정·퍼널 구조를 알아야 할 때 |
+| 레포 `skills/intel-fashion-md/SKILL.md` | 패션 MD 도메인 맥락이 필요할 때 |
 
 ## 설치 (팀원 온보딩 — 사람이 읽는 절차)
 

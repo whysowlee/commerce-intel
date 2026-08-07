@@ -12,6 +12,9 @@
 동작:
   - products·variants·platforms·runs: 탭 전체 다시 쓰기 (행 수가 작다)
   - observations·variant_observations: rowid 기준 증분 append (sync_state가 진행점 기억)
+  - 증분 탭은 동기화 전에 편집·삭제를 감지한다(mirror_dirty 트리거 카운터 +
+    행 수 대조 보조) — 걸리면 탭을 전체 재구축한다 (증분 append는 이미 올라간
+    행의 수정·삭제를 반영하지 못한다)
   - 시트는 보는 창구다 — 시트에서 손으로 고친 값은 다음 미러에서 덮일 수 있다
   - 실패해도 수집·적재는 유효하다. exit 3 = 인증/설정 없음, exit 1 = 동기화 실패
 """
@@ -24,7 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from intel_db import connect  # noqa: E402
-from schema_v3 import rowid_parts  # noqa: E402
+from schema_v3 import default_db_target, rowid_parts  # noqa: E402
 
 # 프록시 표 2종도 본 DB에서 읽는다(D69 통합 — D65-8의 별도 proxy.db는 폐기).
 # 탭 구성은 분리 시절 그대로다 — 팀원이 보는 창구는 저장 위치와 무관하다.
@@ -55,7 +58,8 @@ TABLE_DESC = {  # 안내 탭에 싣는 원본 탭 설명
     "product_changes": "상품 정적 속성 변경 이력(이름·브랜드·카테고리·이미지). append only",
 }
 NOTICE = ("이 스프레드시트는 로컬 정본 DB(data/intel.db)의 단방향 미러입니다. "
-          "여기서 고친 값은 정본에 반영되지 않고 다음 동기화 때 덮일 수 있습니다.")
+          "여기서 고친 값은 정본에 반영되지 않고 다음 동기화 때 덮일 수 있습니다. "
+          "DB에서 수정·삭제된 행은 다음 동기화에서 자동 반영됩니다.")
 
 
 def open_spreadsheet(config_path, creds_path):
@@ -227,6 +231,123 @@ def rebuild_tab(ws, headers, data, chunk=5000):
                   value_input_option="RAW")
 
 
+def set_sync_state(conn, table, key, now):
+    """증분 진행점 갱신 — append·재구축·--repair 세 경로가 같은 규칙을 쓴다."""
+    conn.execute(
+        "INSERT INTO sync_state VALUES (?, ?, ?) "
+        "ON CONFLICT(table_name) DO UPDATE SET "
+        "last_synced_key=excluded.last_synced_key, "
+        "updated_at=excluded.updated_at", (table, str(key), now))
+    conn.commit()
+
+
+# 대형 탭 재구축 보류 임계 (PR #21 2R 리뷰) — proxy_cache처럼 수십만 행인 탭은
+# lazy 재판정 1건마다 전체를 다시 쓰면 "1건 → 48만 행 재구축"이 매 주기 반복된다.
+# 이보다 큰 탭은 변경이 REBUILD_DEFER_MIN 건 쌓일 때까지 재구축을 미룬다 —
+# 그동안 해당 행은 시트에서 옛 값이다(카운터는 남으므로 잊히지는 않는다).
+# 즉시 반영하고 싶으면 --repair.
+REBUILD_DEFER_ROWS = 200_000
+REBUILD_DEFER_MIN = 1_000
+
+
+def rebuild_and_reset(conn, c, ws, table, now):
+    """탭 전체 재구축 + 안착 검증 + 진행점 리셋. 반환 (성공, DB 행 수, 시트 행 수).
+
+    append 경로와 같은 원칙(2026-08-04 사고)을 재구축에도 적용한다 — 재구축도
+    5,000행 청크 쓰기라 부분 실패가 가능하다 (PR #21 2R 리뷰). **실제로 시트에
+    안착했는지 세어 보고, 맞을 때만 진행점을 옮긴다.** 실패면 진행점을 안
+    옮긴다 — 호출부가 카운터도 그대로 두면 다음 실행이 재구축을 재시도한다.
+    """
+    hdr, alldata, maxr = rows_of(c, table)
+    rebuild_tab(ws, hdr, alldata)
+    landed = sheet_rows(ws)
+    if landed is not None and landed != len(alldata):
+        print(f"{table}: !! 재구축 {len(alldata)}행 중 시트에 {landed}행만 안착 "
+              f"— 진행점을 옮기지 않는다 (다음 실행이 재시도)")
+        return False, len(alldata), landed
+    # 전량 삭제면 maxr가 None이다 — "None" 문자열이 박히면 다음 실행의
+    # int()가 죽는다 (PR #21 리뷰). 0이면 다음 증분이 처음부터 다시 본다.
+    set_sync_state(conn, table, maxr or 0, now)
+    print(f"{table}: 재구축 {len(alldata)}행 (rowid ≤ {maxr or 0})")
+    return True, len(alldata), landed
+
+
+def sync_incr_tab(conn, c, ws, table, total, now):
+    """증분 탭 하나를 동기화한다. 반환: 시트 안착 실패 시 (올린 행, 늘어난 행), 아니면 None.
+
+    증분 append는 rowid 진행점 뒤의 **새 행**만 올린다 — 이미 올라간 행의
+    수정(UPDATE)·삭제(DELETE)는 이 경로로는 영영 반영되지 않는다. 그래서
+    감지 경로가 둘이고, 걸리면 탭을 전체 재구축하고 진행점을 리셋한다:
+
+    1. **mirror_dirty 카운터** (D72) — 원본 테이블의 AFTER UPDATE/DELETE
+       트리거(schema_v3)가 센다. 편집·삭제 모두, 그리고 삭제 수와 신규 수가
+       상쇄돼 행 수가 안 변한 경우까지 잡는다 (PR #21 리뷰).
+    2. **행 수 대조** (보조) — 올릴 새 행이 있을 때, 기존 행 수(total − 신규)가
+       시트 행 수보다 적으면 트리거가 생기기 전의 삭제다. 새 행도 카운터도 없는
+       평시에는 여기서 시트를 읽지 않는다(2R 리뷰 — API 호출 절약). 그 경우의
+       잔여 어긋남(REPLACE 내부 삭제 등 카운터 밖 경로 포함)은 main()의 총계
+       대조가 잡는다 — 시트가 DB보다 많으면 자동 재구축, 적으면 --repair.
+
+    평시(카운터 0 · 새 행 없음)는 시트 읽기 없이 DB 쿼리 두 번으로 끝난다.
+    """
+    # c는 원본 테이블 커넥션 — D69(proxy.db 본 DB 통합) 이후 항상 conn과 같지만,
+    # "진행점은 정본(conn) 것"이라는 구분을 서명에 남겨 둔다
+    drow = conn.execute("SELECT changes FROM mirror_dirty WHERE table_name=?",
+                        (table,)).fetchone()
+    dirty = drow["changes"] if drow else 0
+    if dirty and total > REBUILD_DEFER_ROWS and dirty < REBUILD_DEFER_MIN:
+        print(f"{table}: 편집·삭제 {dirty}건 누적 — 대형 탭({total:,}행)이라 "
+              f"{REBUILD_DEFER_MIN:,}건까지 재구축 보류 (즉시 반영: --repair)")
+        dirty = 0                  # 이번 주기는 증분만 — 카운터는 그대로 남는다
+    if dirty:
+        print(f"{table}: 편집·삭제 {dirty}건 감지 → 전체 재구축")
+        ok, want, landed = rebuild_and_reset(conn, c, ws, table, now)
+        if not ok:                 # 카운터를 안 지운다 — 다음 실행이 재시도한다
+            return want, landed
+        # 본 만큼만 차감 — 재구축 도중 새 변경이 끼어들었으면 다음 실행이 잡는다
+        conn.execute("UPDATE mirror_dirty SET changes = changes - ? "
+                     "WHERE table_name=?", (dirty, table))
+        conn.commit()
+        return None
+
+    row = conn.execute(
+        "SELECT last_synced_key FROM sync_state WHERE table_name=?", (table,)).fetchone()
+    last = int(row["last_synced_key"]) if row and row["last_synced_key"] else 0
+    headers, data, max_rowid = rows_of(c, table, since_rowid=last)
+    if not data:
+        print(f"{table}: 새 관측 없음")
+        return None
+    before = sheet_rows(ws)
+    if before is not None and total - len(data) < before:
+        print(f"{table}: 삭제 감지 (DB 기존 {total - len(data)}행 < 시트 {before}행) "
+              f"→ 전체 재구축")
+        ok, want, landed = rebuild_and_reset(conn, c, ws, table, now)
+        return None if ok else (want, landed)
+
+    # ── 올린 뒤 실제로 늘었는지 보고, 그때만 진행점을 옮긴다 ──────────
+    # 이 검사가 없어서 2026-08-04에 **시트에 4분의 1만 올라간 채 sync_state는
+    # 완료를 주장**하고 있었다(DB 51,034행 / 시트 11,727행). 진행점이 앞서 나가면
+    # 다음 동기화는 "이미 다 했네" 하고 넘어가고 빠진 행은 영영 안 올라간다.
+    # 에러도 안 나는 종류라, 세어 보지 않으면 아무도 모른다.
+    #
+    # 통짜 append는 payload가 커지면 구글이 500을 낸다 — 2026-08-05 실측:
+    # proxy_cache 484,216행 한 호출에 Internal error. rebuild_tab과 같은
+    # 5,000행 단위로 끊는다. 중간 실패 시 진행점은 안 움직이고, 부분 반영은
+    # 다음 실행의 누적 대조가 잡아 --repair로 복구한다.
+    for i in range(0, len(data), 5000):
+        ws.append_rows(data[i:i + 5000], value_input_option="RAW")
+    after = sheet_rows(ws)
+    landed = None if (before is None or after is None) else after - before
+    if landed is not None and landed != len(data):
+        # **진행점을 옮기지 않는다.** 다음 실행이 같은 구간을 다시 시도한다.
+        print(f"{table}: !! {len(data)}행을 올렸는데 시트는 {landed}행 늘었다 "
+              f"— 진행점을 옮기지 않는다 (--repair 로 재구축)")
+        return len(data), landed
+    set_sync_state(conn, table, max_rowid, now)
+    print(f"{table}: 증분 {len(data)}행 append (rowid ≤ {max_rowid})")
+    return None
+
+
 def ensure_ws(sh, title, cols=26):
     import gspread       # sh가 있다는 건 이미 import에 성공했다는 뜻이다
     try:
@@ -238,7 +359,8 @@ def ensure_ws(sh, title, cols=26):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--db", default=os.environ.get("INTEL_DB", "data/intel.db"))
+    # D72: INTEL_DB_URL > INTEL_DB > data/intel.db — 다른 스크립트와 같은 규칙
+    p.add_argument("--db", default=default_db_target())
     p.add_argument("--config", default="data/sheets_config.json")
     p.add_argument("--creds", default=os.environ.get(
         "INTEL_SHEETS_CREDENTIALS", str(Path.home() / ".config/intel/service-account.json")))
@@ -318,11 +440,6 @@ def main():
             drop_if_empty(table)
             continue
         tab_rows.append([table, total, TABLE_DESC.get(table, "")])
-        row = conn.execute(
-            "SELECT last_synced_key FROM sync_state WHERE table_name=?", (table,)).fetchone()
-        last = int(row["last_synced_key"]) if row and row["last_synced_key"] else 0
-        result = rows_of(c, table, since_rowid=last)
-        headers, data, max_rowid = result[0], result[1], result[2]
         # `_rowid`는 증분 키일 뿐 데이터가 아니다 — 옛 이름은 뷰라
         # PRAGMA가 이것까지 돌려준다. 빼지 않으면 헤더가 데이터보다 한 칸 길어진다.
         full_headers = [d[1] for d in c.execute(f"PRAGMA table_info({table})")
@@ -344,52 +461,24 @@ def main():
                       f"(현재 {ws.col_count}열) — 셀 한도가 걱정되면 사람이 확인하고 지워라")
         if not ws.get_values("A1:A1"):
             ws.update(values=[full_headers], range_name="A1")
-        # ── 올린 뒤 실제로 늘었는지 보고, 그때만 진행점을 옮긴다 ──────────
-        # 이 검사가 없어서 2026-08-04에 **시트에 4분의 1만 올라간 채 sync_state는
-        # 완료를 주장**하고 있었다(DB 51,034행 / 시트 11,727행). 진행점이 앞서 나가면
-        # 다음 동기화는 "이미 다 했네" 하고 넘어가고 빠진 행은 영영 안 올라간다.
-        # 에러도 안 나는 종류라, 세어 보지 않으면 아무도 모른다.
-        if data:
-            before = sheet_rows(ws)
-            # 통짜 append는 payload가 커지면 구글이 500을 낸다 — 2026-08-05 실측:
-            # proxy_cache 484,216행 한 호출에 Internal error. rebuild_tab과 같은
-            # 5,000행 단위로 끊는다. 중간 실패 시 진행점은 안 움직이고, 부분 반영은
-            # 다음 실행의 누적 대조가 잡아 --repair로 복구한다.
-            for i in range(0, len(data), 5000):
-                ws.append_rows(data[i:i + 5000], value_input_option="RAW")
-            after = sheet_rows(ws)
-            landed = None if (before is None or after is None) else after - before
-            if landed is not None and landed != len(data):
-                # **진행점을 옮기지 않는다.** 다음 실행이 같은 구간을 다시 시도한다.
-                mismatch.append((table, len(data), landed))
-                print(f"{table}: !! {len(data)}행을 올렸는데 시트는 {landed}행 늘었다 "
-                      f"— 진행점을 옮기지 않는다 (--repair 로 재구축)")
-            else:
-                conn.execute(
-                    "INSERT INTO sync_state VALUES (?, ?, ?) "
-                    "ON CONFLICT(table_name) DO UPDATE SET "
-                    "last_synced_key=excluded.last_synced_key, "
-                    "updated_at=excluded.updated_at", (table, str(max_rowid), now))
-                conn.commit()
-                print(f"{table}: 증분 {len(data)}행 append (rowid ≤ {max_rowid})")
-        else:
-            print(f"{table}: 새 관측 없음")
+        miss = sync_incr_tab(conn, c, ws, table, total, now)
+        if miss:
+            mismatch.append((table,) + miss)
 
-        # 총계 대조 — 증분이 아니라 **누적**이 맞는지 본다. 과거에 어긋난 것도 여기서 걸린다
+        # 총계 대조 — 증분이 아니라 **누적**이 맞는지 본다. 과거에 어긋난 것도 여기서 걸린다.
+        # 시트가 DB보다 **많으면** 삭제 잔재다(카운터 밖 경로 — 트리거 이전 삭제·
+        # REPLACE 내부 삭제) — 늦출 이유가 없으니 자동 재구축한다. 시트가 **적으면**
+        # append 부분 실패 쪽이라 진행점 보존이 우선이다 — --repair가 맡는다.
         got = sheet_rows(ws)
         if got is not None and got != total:
-            audit.append((table, total, got))
-            if args.repair:
-                hdr, alldata, maxr = rows_of(c, table)
-                rebuild_tab(ws, hdr, alldata)
-                conn.execute(
-                    "INSERT INTO sync_state VALUES (?, ?, ?) ON CONFLICT(table_name) "
-                    "DO UPDATE SET last_synced_key=excluded.last_synced_key, "
-                    "updated_at=excluded.updated_at", (table, str(maxr), now))
-                conn.commit()
-                repaired.append((table, total, got))
-                audit.pop()
-                print(f"{table}: 재구축 {total}행 (시트에 {got}행뿐이었다)")
+            if got > total or args.repair:
+                ok, want, landed = rebuild_and_reset(conn, c, ws, table, now)
+                if ok:
+                    repaired.append((table, total, got))
+                else:
+                    audit.append((table, want, landed))
+            else:
+                audit.append((table, total, got))
 
     # 안내 탭 — 스토리 현황과 탭 가이드를 사람이 읽게 쓴다
     guide = [[NOTICE], [f"마지막 동기화: {now}"], [""],

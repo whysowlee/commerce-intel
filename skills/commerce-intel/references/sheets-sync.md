@@ -14,9 +14,30 @@ python3 scripts/sync_sheets.py     # DB 적재(load) 뒤에 호출한다
 
 - `products`·`variants`·`platforms`·`runs`·`brand_aliases`·`brand_platforms`·
   `proxy_defs` 탭은 전체 다시 쓰기, `observations`·`variant_observations`·
-  `proxy_cache` 탭은 rowid 기준 증분 append(`sync_state`가 진행점을 기억 —
-  중복 append 없음). 프록시 2종도 본 DB에서 읽는다(D69 — proxy.db 분리 폐기).
-  탭 구성은 그대로다.
+  `proxy_cache`·`product_changes` 탭은 rowid 기준 증분 append(`sync_state`가
+  진행점을 기억 — 중복 append 없음). 프록시 2종도 본 DB에서 읽는다(D69 —
+  proxy.db 분리 폐기). 탭 구성은 그대로다.
+- **편집·삭제 감지 (D72)** — 증분 append는 진행점 뒤의 **새 행**만 올리므로,
+  이미 올라간 행을 DB에서 고치거나(UPDATE) 지우면(DELETE) 시트에 옛 값이 남는다.
+  감지 경로는 둘이고, 걸리면 그 탭을 전체 재구축(`rebuild_tab`, 5,000행 청킹)하고
+  진행점을 현재 최대 rowid로 리셋한다:
+  1. **`mirror_dirty` 트리거 카운터** — 원본 테이블(obs_base 등 4종)의
+     AFTER UPDATE/DELETE 트리거가 센다. 편집·삭제 모두, **삭제 수와 신규 수가
+     상쇄돼 행 수가 안 변한 경우까지** 잡는다. 재구축 후 본 만큼 차감된다.
+     뷰(observations 등)에 대한 UPDATE/DELETE도 뷰 편집 트리거 → base 쓰기 →
+     카운터로 이어진다 — intel-query 편집이 이 사슬을 탄다.
+  2. **행 수 대조 (보조)** — 올릴 새 행이 있을 때 기존 행 수(DB − 신규)가 시트보다
+     적으면 트리거 이전의 삭제다. 그 밖의 잔여 어긋남은 매 동기화의 **총계 대조**가
+     잡는다 — 시트가 DB보다 **많으면**(삭제 잔재) 자동 재구축, **적으면**(append
+     부분 실패) 진행점 보존이 우선이라 `--repair` 수동 실행이 필요하다.
+  재구축도 append와 같은 안착 검증을 거친다 — 시트 행 수가 안 맞으면 진행점·
+  카운터를 옮기지 않고 다음 동기화가 재시도한다.
+  **대형 탭 보류**: 200,000행 초과 탭(proxy_cache 등)은 변경이 1,000건 쌓일
+  때까지 재구축을 미룬다 — lazy 재판정 1건마다 48만 행을 다시 쓰는 낭비를 막는다.
+  보류 중엔 해당 행이 시트에서 옛 값이다(카운터는 남는다). 즉시 반영: `--repair`.
+  평시(카운터 0 · 새 행 없음)는 시트 읽기 API를 추가로 쓰지 않는다.
+  콘솔 로그: `"{table}: 편집·삭제 {n}건 감지 → 전체 재구축"`.
+  수정·삭제된 행은 다음 동기화에서 자동 반영된다 — 사람이 시트를 고칠 필요 없다.
 - **스토리별 뷰 탭 3개** — `뷰_라인시트`(brand:) · `뷰_전수조사`(market:) ·
   `뷰_랭킹`(ranking:). context 접두사로 걸러 **상품별 최신 관측**을 사람이 읽는 헤더로
   낸다. **context 열이 앞쪽(2열)에 있어** 스토리 안의 세부 대상(랭킹 카테고리·브랜드명)은

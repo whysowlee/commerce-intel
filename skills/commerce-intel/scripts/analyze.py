@@ -48,6 +48,7 @@ from intel_data import (brand_key, cat_axes, category_hierarchy,  # noqa: E402
                         collect, display_value, incomparable_reason,
                         matched_pairs, num_axes, product_series, role_of,
                         style_rows)
+from schema_v3 import default_db_target                             # noqa: E402
 
 # ── 관문 임계 ───────────────────────────────────────────────────────────────
 # 임계는 2026-08-03에 한 번 완화했다. 우리가 모으는 데이터는 표본이 크지 않고
@@ -803,7 +804,8 @@ def analyze(db_path, contexts, ai_notes=None, plan_only=False, own_brands=None):
 
 def main():
     ap = argparse.ArgumentParser(description="분석 단 — 방법론 결정 · 실행 · 5관문 판정")
-    ap.add_argument("--db", default="data/intel.db")
+    # D72: INTEL_DB_URL(Turso) > INTEL_DB > data/intel.db. 명시적 --db가 이긴다
+    ap.add_argument("--db", default=default_db_target())
     ap.add_argument("--context", action="append", default=[])
     ap.add_argument("--plan-only", action="store_true",
                     help="계획만 세우고 멈춘다 — AI가 이걸 읽고 예외를 판단한다")
