@@ -28,6 +28,7 @@ from collections import Counter, defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from intel_data import cat_axes, collect, num_axes  # noqa: E402
+from schema_v3 import default_db_target  # noqa: E402
 
 # ── 임계값 (programmatic-eda/references/quality_thresholds.md 차용) ──────────
 NULL_WARN, NULL_FAIL = 5.0, 30.0      # 결측률 % — db-contract와 같은 값
@@ -465,7 +466,8 @@ def run(db_path, contexts):
 
 def main():
     ap = argparse.ArgumentParser(description="EDA 고정 세트 — 인사이트 엔진의 입력을 만든다")
-    ap.add_argument("--db", default="data/intel.db")
+    # D72: INTEL_DB_URL(Turso) > INTEL_DB > data/intel.db. 명시적 --db가 이긴다
+    ap.add_argument("--db", default=default_db_target())
     ap.add_argument("--context", action="append", default=[],
                     help='관측 문맥. 예: "brand:로우클래식" (여러 번 가능, 생략하면 전체)')
     ap.add_argument("--out", help="결과 JSON 경로 (생략하면 표준출력)")

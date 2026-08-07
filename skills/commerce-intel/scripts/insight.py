@@ -28,6 +28,7 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import analyze as an                                        # noqa: E402
 from intel_db import connect as db_connect                  # noqa: E402
+from schema_v3 import default_db_target, is_libsql_url      # noqa: E402
 import chart                                                # noqa: E402
 from pdf_doc import Doc                                     # noqa: E402
 
@@ -674,7 +675,11 @@ def ensure_rule_proxies(db_path, contexts, cards_path=None, quiet=False):
                                        "proxy-cards-default.json")
     if not os.path.exists(cards):
         return None
-    out = os.path.join(os.path.dirname(db_path) or ".", ".px-auto.json")
+    # libsql:// URL은 dirname이 "libsql:/"로 파생돼 열 수 없는 경로가 된다 —
+    # Turso 정본일 때 스크래치 JSON은 로컬 data/에 둔다 (D72)
+    base = "data" if is_libsql_url(str(db_path)) else (os.path.dirname(db_path) or ".")
+    os.makedirs(base, exist_ok=True)
+    out = os.path.join(base, ".px-auto.json")
     try:
         r = subprocess.run(
             [sys.executable, os.path.join(here, "proxy_auto.py"), "--db", db_path,
@@ -1092,7 +1097,8 @@ def save_to_db(db_path, res, target, contexts, stamp, detail_pdf, pages):
 
 def main():
     ap = argparse.ArgumentParser(description="인사이트 엔진 — 강한 주장 5 + 약한 단서 20")
-    ap.add_argument("--db", default="data/intel.db")
+    # D72: INTEL_DB_URL(Turso) > INTEL_DB > data/intel.db. 명시적 --db가 이긴다
+    ap.add_argument("--db", default=default_db_target())
     ap.add_argument("--context", action="append", default=[])
     ap.add_argument("--out", default="output", help="PDF를 넣을 디렉터리")
     ap.add_argument("--target", help="리포트 제목에 쓸 대상 이름 (생략하면 문맥에서)")

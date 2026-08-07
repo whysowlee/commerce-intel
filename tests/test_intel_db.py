@@ -853,6 +853,92 @@ def incremental_key_tests():
     shutil.rmtree(work, ignore_errors=True)
 
 
+class IncrFakeWS:
+    """증분 동기화가 쓰는 만큼만 흉내 낸 워크시트 — 네트워크 없이 grid로 검증한다."""
+
+    def __init__(self, headers):
+        self.grid = [list(headers)]     # 1행 = 헤더
+        self.col_count = len(headers)
+        self.row_count = 1
+
+    def col_values(self, i):
+        return [str(r[i - 1]) if len(r) >= i and r[i - 1] is not None else ""
+                for r in self.grid]
+
+    def clear(self):
+        self.grid = []
+
+    def resize(self, rows=None, cols=None):
+        self.row_count, self.col_count = rows, cols
+
+    def update(self, values=None, range_name=None, value_input_option=None):
+        row = int(range_name[1:])       # "A1" · "A5002" — rebuild_tab은 A열만 쓴다
+        need = row - 1 + len(values)
+        self.grid += [[]] * (need - len(self.grid))
+        for i, v in enumerate(values):
+            self.grid[row - 1 + i] = list(v)
+
+    def append_rows(self, rows, value_input_option=None):
+        self.grid += [list(r) for r in rows]
+
+
+def sheet_deletion_tests():
+    """시트 미러 삭제 감지 (D72) — DB에서 지운 행이 시트에 남지 않아야 한다."""
+    sys.modules.pop("sync_sheets", None)
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    intel_db = importlib.import_module("intel_db")
+    ss = importlib.reload(importlib.import_module("sync_sheets"))
+
+    work = Path(tempfile.mkdtemp(prefix="del-"))
+    conn = intel_db.connect(str(work / "d.db"))
+    conn.execute("INSERT INTO runs (run_id, site, story, target, collected_at) "
+                 "VALUES ('R','29cm','brand-linesheet','T','2026-08-04 10:00:00')")
+    conn.execute("INSERT INTO products (site, product_id, name, static_verified_at)"
+                 " VALUES ('29cm','P','n','2026-08-04 10:00:00')")
+    def add_obs(n, base):
+        for i in range(n):
+            conn.execute("INSERT INTO observations (site, product_id, observed_at,"
+                         " context, price_sale) VALUES ('29cm','P',?,'brand:t',?)",
+                         ("2026-08-04 %02d:00:00" % (base + i), 1000 + base + i))
+        conn.commit()
+    add_obs(5, 0)
+    now = "2026-08-07 12:00:00"
+    total = lambda: conn.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
+    headers = [d[1] for d in conn.execute("PRAGMA table_info(observations)")
+               if d[1] != "_rowid"]
+    ws = IncrFakeWS(headers)
+
+    miss = ss.sync_incr_tab(conn, conn, ws, "observations", total(), now)
+    check("E-SH-1 첫 동기화가 전량 append", miss is None and len(ws.grid) == 6,
+          str(len(ws.grid)))
+    add_obs(2, 5)
+    miss = ss.sync_incr_tab(conn, conn, ws, "observations", total(), now)
+    st = conn.execute("SELECT last_synced_key FROM sync_state "
+                      "WHERE table_name='observations'").fetchone()[0]
+    check("E-SH-2 삭제 없으면 증분 append 그대로 (5+2=7행·진행점 7)",
+          miss is None and len(ws.grid) == 8 and st == "7", (len(ws.grid), st))
+
+    # DB에서 3행 삭제 → 시트(7행)가 DB(4행)보다 많다 — 재구축돼야 한다
+    conn.execute("DELETE FROM obs_base WHERE id > 4")
+    conn.commit()
+    miss = ss.sync_incr_tab(conn, conn, ws, "observations", total(), now)
+    body = [r for r in ws.grid[1:] if any(str(c).strip() for c in r)]
+    st = conn.execute("SELECT last_synced_key FROM sync_state "
+                      "WHERE table_name='observations'").fetchone()[0]
+    check("E-SH-3 삭제 감지 → 전체 재구축, 시트 행 수 = DB 행 수",
+          miss is None and len(body) == total() == 4, (len(body), total()))
+    check("E-SH-4 재구축 후 진행점이 현재 최대 rowid로 리셋", st == "4", st)
+
+    add_obs(1, 20)
+    miss = ss.sync_incr_tab(conn, conn, ws, "observations", total(), now)
+    body = [r for r in ws.grid[1:] if any(str(c).strip() for c in r)]
+    check("E-SH-5 재구축 뒤에도 증분이 이어진다 (4+1=5행)",
+          miss is None and len(body) == 5, len(body))
+    conn.close()
+    shutil.rmtree(work, ignore_errors=True)
+
+
 def context_tests():
     """문맥 문자열 (D51) — 접두사가 두 번 붙으면 같은 대상이 두 문맥으로 갈린다."""
     sys.path.insert(0, str(SCRIPTS))
@@ -1946,6 +2032,9 @@ def main():
 
     print("[19] 증분 키 — 실제 sqlite3 (뷰·물리 테이블)")
     incremental_key_tests()
+
+    print("[19b] 시트 미러 — 삭제 감지·재구축 (D72)")
+    sheet_deletion_tests()
 
     print("[20] 수집기 — 인코딩·커버리지·카드 매핑 (D48)")
     collector_tests()

@@ -14,9 +14,16 @@ python3 scripts/sync_sheets.py     # DB 적재(load) 뒤에 호출한다
 
 - `products`·`variants`·`platforms`·`runs`·`brand_aliases`·`brand_platforms`·
   `proxy_defs` 탭은 전체 다시 쓰기, `observations`·`variant_observations`·
-  `proxy_cache` 탭은 rowid 기준 증분 append(`sync_state`가 진행점을 기억 —
-  중복 append 없음). 프록시 2종도 본 DB에서 읽는다(D69 — proxy.db 분리 폐기).
-  탭 구성은 그대로다.
+  `proxy_cache`·`product_changes` 탭은 rowid 기준 증분 append(`sync_state`가
+  진행점을 기억 — 중복 append 없음). 프록시 2종도 본 DB에서 읽는다(D69 —
+  proxy.db 분리 폐기). 탭 구성은 그대로다.
+- **삭제 감지 (D72)** — 증분 append는 진행점 뒤의 새 행만 올리므로 DB에서 지운
+  행이 시트에 남는다. 증분 탭마다 동기화 전에 DB 행 수와 시트 행 수(헤더 제외)를
+  대조해, **DB가 더 적으면 삭제가 있었던 것으로 보고 그 탭을 전체 재구축**한다
+  (`rebuild_tab`, 5,000행 청킹). 재구축 후 진행점은 현재 최대 rowid로 리셋된다.
+  평시(DB ≥ 시트)는 기존 증분 append 그대로다. 콘솔 로그:
+  `"{table}: 삭제 감지 (DB {n}행 < 시트 {m}행) → 전체 재구축"`.
+  삭제된 행은 다음 동기화에서 자동 반영된다 — 사람이 시트를 고칠 필요 없다.
 - **스토리별 뷰 탭 3개** — `뷰_라인시트`(brand:) · `뷰_전수조사`(market:) ·
   `뷰_랭킹`(ranking:). context 접두사로 걸러 **상품별 최신 관측**을 사람이 읽는 헤더로
   낸다. **context 열이 앞쪽(2열)에 있어** 스토리 안의 세부 대상(랭킹 카테고리·브랜드명)은
