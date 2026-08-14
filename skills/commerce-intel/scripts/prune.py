@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""오래된 관측을 솎는다 — **값이 바뀐 순간은 무조건 남긴다** (D45).
+"""⚠️ 폐기됨 (2026-08-13) — 이 스크립트는 시트가 아니라 Turso를 손대간다.
+
+정본이 Google Sheets로 옮겨서(intel-query SKILL.md v2.0) 여기서 아무리 실행해도
+정본에는 아무 효과가 없다. 시트 쪽 정리는 Aside 루틴 `vlWHt4HN0nYwK0vj`가
+계산해 보고하고, 삭제는 사용자 승인 후에만 한다.
+자세한 배경과 대체 경로는 `legacy_guard.py` 문서 주석을 보라.
+내부 함수(plan / apply_prune)는 회귀 테스트가 그대로 쓰므로 남겨둔다 —
+막힌 것은 main()이다.
+
+--- 이하 원문 ---
+
+오래된 관측을 솎는다 — **값이 바뀐 순간은 무조건 남긴다** (D45).
 
     python3 prune.py --dry-run                        # 얼마나 줄지 먼저 본다
     python3 prune.py --apply                          # 실제로 지운다
@@ -47,6 +58,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import schema_v3
+from legacy_guard import block_if_legacy
 
 KEEP_DAYS = 30        # 이보다 최근은 손대지 않는다
 BUCKET_SEC = 3600     # 오래된 구간은 이 간격당 1개만
@@ -174,6 +186,8 @@ def cron_line():
 
 
 def main():
+    # 폐기된 경로다 (2026-08-13). --cron으로 crontab 줄만 뽑는 것까지 막는다 —
+    # 그 줄을 등록하면 폐기된 경로가 다시 주간로 실행된다.
     ap = argparse.ArgumentParser(description="오래된 관측 솎기 — 변화 순간은 보존 (D45)")
     ap.add_argument("--db", default=schema_v3.default_db_target(),
                     help="경로 또는 libsql:// URL (기본: INTEL_DB_URL > INTEL_DB > data/intel.db)")
@@ -182,6 +196,10 @@ def main():
     ap.add_argument("--apply", action="store_true", help="실제로 지운다 (없으면 예행)")
     ap.add_argument("--cron", action="store_true", help="주간 자동 실행 crontab 줄만 출력")
     a = ap.parse_args()
+
+    # Turso를 가리키면 막는다. --cron은 대상과 무관하게 막는다 — 그 줄을
+    # crontab에 넣으면 폐기된 경로가 다시 주간으로 돌아온다.
+    block_if_legacy("prune.py", None if a.cron else a.db)
 
     if a.cron:
         print(cron_line())

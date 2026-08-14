@@ -1,4 +1,21 @@
-# Turso 이전·팀원 온보딩 (D67)
+# Turso 이전·팀원 온보딩 (D67) — ⚠️ 폐기됨 (2026-08-13)
+
+> **이 문서는 역사적 기록이다. 따라 하지 말 것.**
+>
+> 정본 DB는 **Google Sheets**로 옮겨갔다 (`intel-query` SKILL.md v2.0,
+> 2026-08-10). 전환 사유가 바로 여기 적힌 Turso 무료 티어의 **읽기 차단**이다
+> (`SQL read operations are forbidden`). 즉 그 차단은 고쳐야 할 장애가 아니라
+> 이미 전환을 끝낸 원인이다 — **대시보드 확인이나 플랜 업그레이드로
+> 되살리려 하지 말 것.**
+>
+> 현재 운영 경로는 전부 Aside 루틴 + `intel-query` 스킬(Google Sheets API)이다:
+> 수집·적재 `JRVcsK61lr4EOhwi` / 용량 감시·솞기 제안 `vlWHt4HN0nYwK0vj` /
+> 주간 백업 `6pUxuVdZ2rzhz43e`. 시트 미러링은 시트가 곳 정본이므로 불필요하다.
+>
+> `sync_sheets.py`·`prune.py`·`intel_db.py load`는 `legacy_guard.py`가 막고 있다
+> (Turso URL을 대상으로 할 때만). 삭제하지 않고 남긴 이유는 그 파일 주석에 있다.
+
+--- 이하 원문 (2026-08-05 작성) ---
 
 정본 DB를 로컬 SQLite에서 Turso(libSQL) 클라우드로 옮겨 **팀원 여러 명이 하나의
 정본에 수집·조회**하게 한다. 환경변수가 없으면 모든 도구는 지금처럼 로컬

@@ -30,6 +30,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from legacy_guard import block_if_legacy  # noqa: E402
 from schema_v3 import (SCHEMA_V3, TRIGGERS_V3, VIEWS_V3,   # noqa: E402
                        assign_category, default_db_target, is_libsql_url,
                        open_db,                        record_proxy_transition, rowid_parts)
@@ -1332,6 +1333,12 @@ def main():
                         help="관측이 참조하지 않는 runs·contexts·brands 고아 행 정리")
     sp.add_argument("--dry-run", action="store_true", help="지울 개수만 보여준다")
     args = p.parse_args()
+
+    # 적재 계열은 폐기된 경로다 (2026-08-13) — Turso에 쌓아봐야 시트 정본에
+    # 반영되지 않는다. 조회·검사 계열(check, proxy-audit 등)은 읽기만 하므로
+    # 그대로 둔다 — 과거 Turso DB를 들여다볼 일이 남아 있다.
+    if args.cmd in ("load", "proxy-load"):
+        block_if_legacy("intel_db.py load", args.db)
 
     conn = connect(args.db)
     if args.cmd == "init":

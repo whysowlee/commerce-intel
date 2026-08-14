@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""정본 DB → 구글 시트 단방향 미러. SPEC-INTEL §3 구현.
+"""⚠️ 폐기됨 (2026-08-13) — 정본이 Google Sheets로 옮겨서 미러링 자체가 불필요하다.
+
+이 스크립트는 **Turso → 시트** 방향으로 쓴다. 정본이 시트가 된 지금은 방향이
+거꿤로, 돌리면 Turso에 멈춰 있는 2026-08-07 스냅샷으로 최신 시트를 덮어쓴다.
+자세한 배경과 대체 경로는 `legacy_guard.py` 문서 주석을 보라.
+내부 함수(rows_of 등)는 회귀 테스트가 그대로 쓰므로 남겨둔다 — 막힌 것은 main()이다.
+
+--- 이하 원문 ---
+
+정본 DB → 구글 시트 단방향 미러. SPEC-INTEL §3 구현.
 
     python3 sync_sheets.py                     # data/intel.db → 설정된 스프레드시트
     python3 sync_sheets.py --db data/intel.db --config data/sheets_config.json
@@ -27,6 +36,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from intel_db import connect  # noqa: E402
+from legacy_guard import block_if_legacy  # noqa: E402
 from schema_v3 import default_db_target, rowid_parts  # noqa: E402
 
 # 프록시 표 2종도 본 DB에서 읽는다(D69 통합 — D65-8의 별도 proxy.db는 폐기).
@@ -358,6 +368,10 @@ def ensure_ws(sh, title, cols=26):
 
 
 def main():
+    # 폐기된 경로다 (2026-08-13). 인자 파싱 전에 막는다 — 어떤 옵션으로도
+    # 시트를 덮어쓰는 경로에 도달하지 못하게 한다.
+    block_if_legacy("sync_sheets.py")
+
     p = argparse.ArgumentParser(description=__doc__)
     # D72: INTEL_DB_URL > INTEL_DB > data/intel.db — 다른 스크립트와 같은 규칙
     p.add_argument("--db", default=default_db_target())
